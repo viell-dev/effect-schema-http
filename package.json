@@ -26,7 +26,7 @@
     "lint": "oxlint && eslint .",
     "test": "vitest run",
     "test:integration": "vitest run tests/request.integration.test.ts",
-    "test:unit": "vitest run src/request.test.ts",
+    "test:unit": "vitest run src",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },

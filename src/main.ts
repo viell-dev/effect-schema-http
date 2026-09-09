@@ -51,3 +51,14 @@ export {
   type ResponseOf,
   type ResponseRule,
 } from "./request.js";
+
+export {
+  NoPreviousRequest,
+  invalidateRequestGate,
+  makeRequestGate,
+  refreshRequest,
+  reloadRequest,
+  runRequest,
+  type RequestGate,
+  type RequestGateOptions,
+} from "./requestGate.js";

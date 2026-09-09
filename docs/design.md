@@ -199,6 +199,38 @@ ignored by non-Fetch transports. This keeps portable wire semantics distinct fro
 pretending one can fully replace the other. An explicit `Cache-Control` header wins over `CachePolicy.control`, and a
 Fetch cache override merges into any application-provided `FetchHttpClient.RequestInit` instead of replacing it.
 
+## Request gates
+
+Request plans remain cold and repeatable. Stateful reuse is an explicit layer around an input-to-Effect function rather
+than a hidden property of a plan:
+
+```ts
+const users =
+  yield *
+  makeRequestGate(
+    (filters: Filters) =>
+      getUsers().pipe(setUrlParam("page", String(filters.page)), setUrlParam("search", filters.search), toEffect),
+    { key: ({ page, search }) => JSON.stringify([page, search]) },
+  );
+
+yield * users.run(filters); // reuse when the key matches the latest success
+yield * users.refresh(filters); // bypass reuse for this input
+yield * users.reload; // rerun the input that produced the latest success
+```
+
+The key function makes equality explicit instead of guessing whether arbitrary objects are structurally equal. An
+optional `equivalent` function supports composite keys that cannot use `Object.is`.
+
+The gate retains only its latest successful input and value. A failed request does not replace that pair, which means a
+temporary invalid form state cannot evict the last useful table result. Mapped HTTP responses remain successes here,
+regardless of status. Same-key concurrent calls share an in-flight request. Different keys may run concurrently, but an
+older completion cannot overwrite a newer successful completion. `invalidate` clears the retained pair and prevents
+requests that were already in flight from repopulating it; `peek` reads the retained value without executing anything.
+
+Gate state has an explicit Effect lifetime: `makeRequestGate` allocates a new isolated gate. It is suitable for decoded,
+reusable values, not live streaming bodies whose ownership cannot safely be shared. Interruption of the fiber executing
+a shared request completes its waiters with the same interrupted exit.
+
 ## Test shape
 
 Three layers catch different failures:
@@ -206,10 +238,11 @@ Three layers catch different failures:
 1. Type assertions in unit tests verify body setters, inherited defaults, response replacement, discriminated envelope
    narrowing, and Effect requirements.
 2. Unit tests under `src/` inject a fake Fetch implementation to check laziness, schema failures, immutable overrides,
-   retry/cache policy, default merging, and the unhandled-response path.
+   retry/cache policy, default merging, the unhandled-response path, and request-gate concurrency.
 3. Integration tests under `tests/` run a disposable server on an ephemeral loopback port and use the real Fetch client.
-   They exercise GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS; positional path interpolation; actual
-   URL/header/body serialization; and mapped 404, 409, 410, and 501 responses without depending on an external service.
+   They exercise GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, and the extension method PROPFIND; positional path
+   interpolation; actual URL/header/body serialization; and mapped 404, 409, 410, and 501 responses without depending
+   on an external service.
 
 Run them separately with `pnpm test:unit` and `pnpm test:integration`, or together with `pnpm test`.
 
