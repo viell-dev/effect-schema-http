@@ -1,7 +1,14 @@
 import { FetchHttpClient, HttpClientRequest } from "@effect/platform";
 import { Effect, Either, Layer, Match, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { createApi, createRequest, RequestBodyNotAllowed, response, UnhandledResponse } from "./main.js";
+import {
+  createApi,
+  createRequest,
+  InvalidPathArguments,
+  RequestBodyNotAllowed,
+  response,
+  UnhandledResponse,
+} from "./main.js";
 
 const User = Schema.Struct({ id: Schema.Number, name: Schema.String });
 const ThinUser = Schema.Struct({ id: Schema.Number });
@@ -17,28 +24,58 @@ const mockFetch = (handler: (request: Request) => Promise<Response>): typeof fet
     handler(input instanceof Request ? input : new Request(input, init))) as typeof fetch;
 
 describe("createRequest", () => {
-  it("infers and encodes positional path segments", async () => {
-    const getPost = createRequest({
+  it("infers, validates, and encodes placeholders anywhere in a path", async () => {
+    const getFile = createRequest({
       method: "GET",
-      path: "https://example.test/users/:userId/posts/:postId",
+      path: "https://example.test/v:version/files/:name.:ext",
       responses: [response({ key: "post", status: 200 }, Schema.Struct({ id: Schema.String }))] as const,
     });
 
-    expectTypeOf(getPost).parameters.toEqualTypeOf<[value: string, value: string]>();
+    expectTypeOf(getFile).parameters.toEqualTypeOf<[value: string, value: string, value: string]>();
 
-    const result = await getPost("user/1", "post 2").effect.pipe(
+    const result = await getFile("2", "report name", "json").effect.pipe(
       Effect.provide(
         fetchLayer(
           mockFetch(async (request) => {
-            expect(request.url).toBe("https://example.test/users/user%2F1/posts/post%202");
-            return Response.json({ id: "post 2" });
+            expect(request.url).toBe("https://example.test/v2/files/report%20name.json");
+            return Response.json({ id: "report name" });
           }),
         ),
       ),
       Effect.runPromise,
     );
 
-    expect(result.body.id).toBe("post 2");
+    expect(result.body.id).toBe("report name");
+
+    const untypedGetFile = getFile as (...arguments_: Array<string>) => ReturnType<typeof getFile>;
+    expect(() => untypedGetFile("2", "report")).toThrow(InvalidPathArguments);
+  });
+
+  it("merges plural URL parameter updates over API and endpoint defaults", async () => {
+    const getUsers = createApi("https://example.test", {
+      urlParams: { apiKey: "k", page: "1" },
+    }).createRequest({
+      method: "GET",
+      path: "/users",
+      urlParams: { locale: "sv" },
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+    });
+
+    await getUsers()
+      .setUrlParams({ page: "2" })
+      .effect.pipe(
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async (request) => {
+              const url = new URL(request.url);
+              expect(url.pathname).toBe("/users");
+              expect(Object.fromEntries(url.searchParams)).toEqual({ apiKey: "k", page: "2", locale: "sv" });
+              return Response.json([]);
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
   });
 
   it("rejects GET and HEAD bodies at the definition and transformed-request boundaries", async () => {
@@ -230,17 +267,46 @@ describe("createRequest", () => {
             mockFetch(async (request) => {
               attempts += 1;
               expect(request.cache).toBe("reload");
+              expect(request.credentials).toBe("include");
+              expect(request.mode).toBe("cors");
               expect(request.headers.get("cache-control")).toBe("no-cache");
               if (attempts < 3) throw new Error("temporary network failure");
               return Response.json([{ id: 1, name: "Ada" }]);
             }),
           ),
         ),
+        Effect.provideService(FetchHttpClient.RequestInit, { credentials: "include", mode: "cors" }),
         Effect.runPromise,
       );
 
     expect(attempts).toBe(3);
     expect(result.body).toEqual([{ id: 1, name: "Ada" }]);
+  });
+
+  it("preserves explicit Cache-Control headers regardless of cache setter order", async () => {
+    const getUsers = createRequest({
+      method: "GET",
+      path: "https://example.test/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+    });
+    const requests: Array<Request> = [];
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return Response.json([]);
+      }),
+    );
+
+    await getUsers()
+      .setHeader("cache-control", "no-store")
+      .setCache({ control: "max-age=60" })
+      .effect.pipe(Effect.provide(layer), Effect.runPromise);
+    await getUsers()
+      .setCache({ control: "max-age=60" })
+      .setHeader("cache-control", "no-store")
+      .effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(requests.map((request) => request.headers.get("cache-control"))).toEqual(["no-store", "no-store"]);
   });
 
   it("fails with the untouched response when no rule matches", async () => {

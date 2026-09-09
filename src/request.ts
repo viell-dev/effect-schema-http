@@ -9,7 +9,7 @@ import {
   type HttpMethod,
   UrlParams,
 } from "@effect/platform";
-import { Data, Effect, type ParseResult, Schema } from "effect";
+import { Data, Effect, Option, type ParseResult, Schema } from "effect";
 
 type AnySchema = Schema.Schema.Any;
 
@@ -98,13 +98,51 @@ type InitialBodyReady<Body extends AnySchema | undefined, DefaultBody = undefine
     : true
   : true;
 
-type PathArguments<Path extends string> = Path extends `${infer Segment}/${infer Rest}`
-  ? Segment extends `:${string}`
-    ? readonly [value: string, ...PathArguments<Rest>]
+type LowercaseLetter =
+  | "a"
+  | "b"
+  | "c"
+  | "d"
+  | "e"
+  | "f"
+  | "g"
+  | "h"
+  | "i"
+  | "j"
+  | "k"
+  | "l"
+  | "m"
+  | "n"
+  | "o"
+  | "p"
+  | "q"
+  | "r"
+  | "s"
+  | "t"
+  | "u"
+  | "v"
+  | "w"
+  | "x"
+  | "y"
+  | "z";
+
+type PathParameterCharacter = LowercaseLetter | Uppercase<LowercaseLetter> | `${number}` | "_";
+
+type TakePathParameter<Input extends string, Name extends string = ""> = Input extends `${infer Character}${infer Rest}`
+  ? Character extends PathParameterCharacter
+    ? TakePathParameter<Rest, `${Name}${Character}`>
+    : readonly [name: Name, rest: Input]
+  : readonly [name: Name, rest: ""];
+
+type PathArguments<Path extends string> = Path extends `${infer Character}${infer Rest}`
+  ? Character extends ":"
+    ? TakePathParameter<Rest> extends readonly [infer Name extends string, infer Remaining extends string]
+      ? Name extends ""
+        ? PathArguments<Rest>
+        : readonly [value: string, ...PathArguments<Remaining>]
+      : never
     : PathArguments<Rest>
-  : Path extends `:${string}`
-    ? readonly [value: string]
-    : readonly [];
+  : readonly [];
 
 export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
   readonly response: HttpClientResponse.HttpClientResponse;
@@ -120,6 +158,12 @@ export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
 
 export class RequestBodyNotAllowed extends Data.TaggedError("RequestBodyNotAllowed")<{
   readonly request: HttpClientRequest.HttpClientRequest;
+}> {}
+
+export class InvalidPathArguments extends Data.TaggedError("InvalidPathArguments")<{
+  readonly path: string;
+  readonly expected: number;
+  readonly received: number;
 }> {}
 
 export interface CachePolicy {
@@ -231,13 +275,14 @@ const joinUrl = (baseUrl: string | undefined, path: string): string => {
 };
 
 const fillPath = (path: string, pathArguments: ReadonlyArray<string>): string => {
+  const parameterPattern = /:([A-Za-z_][A-Za-z0-9_]*)/g;
+  const expected = Array.from(path.matchAll(parameterPattern)).length;
+  if (pathArguments.length !== expected) {
+    throw new InvalidPathArguments({ path, expected, received: pathArguments.length });
+  }
+
   let argumentIndex = 0;
-  return path
-    .split("/")
-    .map((segment) =>
-      segment.startsWith(":") ? encodeURIComponent(pathArguments[argumentIndex++] ?? segment) : segment,
-    )
-    .join("/");
+  return path.replace(parameterPattern, () => encodeURIComponent(pathArguments[argumentIndex++]!));
 };
 
 const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers): boolean =>
@@ -304,7 +349,7 @@ const makePlan = <
     request = HttpClientRequest.setHeaders(request, state.headers);
     request = HttpClientRequest.setUrlParams(request, state.urlParams);
 
-    if (state.cache?.control !== undefined) {
+    if (state.cache?.control !== undefined && !Headers.has(request.headers, "cache-control")) {
       request = HttpClientRequest.setHeader(request, "cache-control", state.cache.control);
     }
 
@@ -326,7 +371,11 @@ const makePlan = <
     let send = client.execute(request);
 
     if (state.cache?.fetch !== undefined) {
-      send = Effect.provideService(send, FetchHttpClient.RequestInit, { cache: state.cache.fetch });
+      const existingRequestInit = yield* Effect.serviceOption(FetchHttpClient.RequestInit);
+      send = Effect.provideService(send, FetchHttpClient.RequestInit, {
+        ...Option.getOrElse(existingRequestInit, () => ({})),
+        cache: state.cache.fetch,
+      });
     }
 
     const raw = yield* send;
@@ -347,7 +396,7 @@ const makePlan = <
   return {
     setBody: (body: unknown) => makePlan<Body, Rules, true>(definition, rules, { ...state, body, hasBody: true }),
     setUrlParam: (key, value) => update({ urlParams: UrlParams.set(state.urlParams, key, value) }),
-    setUrlParams: (params) => update({ urlParams: UrlParams.fromInput(params) }),
+    setUrlParams: (params) => update({ urlParams: UrlParams.setAll(state.urlParams, params) }),
     setHeader: (name, value) => update({ headers: Headers.set(state.headers, name, value) }),
     setCache: (cache) => update({ cache }),
     setRetries: (retries) => update({ retries: Math.max(0, Math.floor(retries)) }),
@@ -389,7 +438,7 @@ const createRequestInternal =
 
     return makePlan<Body, Rules, BodyReady>({ ...definition, path: fillPath(definition.path, pathArguments) }, rules, {
       body: definition.defaultBody,
-      hasBody: Object.hasOwn(definition, "defaultBody"),
+      hasBody: definition.defaultBody !== undefined,
       headers,
       urlParams,
       cache: definition.cache ?? definition.baseOptions?.cache,

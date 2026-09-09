@@ -1,6 +1,7 @@
 export {
   UnhandledResponse,
   RequestBodyNotAllowed,
+  InvalidPathArguments,
   createApi,
   createRequest,
   response,

@@ -28,7 +28,9 @@ const users = getUsers()
   .setRetries(3).effect;
 ```
 
-Colon-prefixed path segments become positional endpoint arguments and are URL-encoded:
+Colon-prefixed placeholders become positional endpoint arguments and are URL-encoded. Placeholders can occupy a full
+segment or appear inside one, such as `/files/:name.:ext` or `/v:version/users`. A runtime arity check rejects degraded
+or untyped calls instead of sending unresolved placeholders:
 
 ```ts
 const getUserPost = api.createRequest({
@@ -126,7 +128,8 @@ GET and HEAD definitions reject body schemas, and execution checks again after r
 Fetch transport's actual constraint instead of advertising a request shape that its default transport cannot execute.
 
 Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
-typed API surface without making schemas for them part of the first version.
+typed API surface without making schemas for them part of the first version. Singular and plural query setters replace
+the named values they receive while retaining unrelated API and endpoint defaults.
 
 ## Retry and cache policy
 
@@ -137,7 +140,8 @@ No cache policy is supplied by default. API and endpoint definitions can specify
 can replace or clear it at a call site. Its `control` field writes a standard `Cache-Control` request header for HTTP
 caches and servers. Its optional `fetch` field controls Fetch's own cache mode, which is separate behavior and may be
 ignored by non-Fetch transports. This keeps portable wire semantics distinct from provider-specific settings without
-pretending one can fully replace the other.
+pretending one can fully replace the other. An explicit `Cache-Control` header wins over `CachePolicy.control`, and a
+Fetch cache override merges into any application-provided `FetchHttpClient.RequestInit` instead of replacing it.
 
 ## Test shape
 
