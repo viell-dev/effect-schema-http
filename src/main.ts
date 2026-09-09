@@ -1,5 +1,6 @@
 export {
   UnhandledResponse,
+  RequestBodyNotAllowed,
   createApi,
   createRequest,
   response,

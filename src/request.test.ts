@@ -1,7 +1,7 @@
-import { FetchHttpClient } from "@effect/platform";
+import { FetchHttpClient, HttpClientRequest } from "@effect/platform";
 import { Effect, Either, Layer, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { createApi, createRequest, response, UnhandledResponse } from "./main.js";
+import { createApi, createRequest, RequestBodyNotAllowed, response, UnhandledResponse } from "./main.js";
 
 const User = Schema.Struct({ id: Schema.Number, name: Schema.String });
 const ThinUser = Schema.Struct({ id: Schema.Number });
@@ -17,6 +17,62 @@ const mockFetch = (handler: (request: Request) => Promise<Response>): typeof fet
     handler(input instanceof Request ? input : new Request(input, init))) as typeof fetch;
 
 describe("createRequest", () => {
+  it("infers and encodes positional path segments", async () => {
+    const getPost = createRequest({
+      method: "GET",
+      path: "https://example.test/users/:userId/posts/:postId",
+      responses: [response({ status: 200 }, Schema.Struct({ id: Schema.String }))] as const,
+    });
+
+    expectTypeOf(getPost).parameters.toEqualTypeOf<[value: string, value: string]>();
+
+    const result = await getPost("user/1", "post 2").effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.url).toBe("https://example.test/users/user%2F1/posts/post%202");
+            return Response.json({ id: "post 2" });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(result.body.id).toBe("post 2");
+  });
+
+  it("rejects GET and HEAD bodies at the definition and transformed-request boundaries", async () => {
+    createRequest({
+      method: "GET",
+      path: "https://example.test/users",
+      // @ts-expect-error Fetch does not support GET request bodies.
+      body: Schema.Struct({ probe: Schema.Boolean }),
+      responses: [response({ status: 200 }, Schema.Array(User))] as const,
+    });
+
+    const getUsers = createRequest({
+      method: "GET",
+      path: "https://example.test/users",
+      responses: [response({ status: 200 }, Schema.Array(User))] as const,
+    });
+    const result = await getUsers()
+      .mapRequest(HttpClientRequest.bodyUnsafeJson({ probe: true }))
+      .effect.pipe(
+        Effect.either,
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async () => {
+              throw new Error("Fetch should not be reached");
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
+
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result)) expect(result.left).toBeInstanceOf(RequestBodyNotAllowed);
+  });
+
   it("is lazy and replaces only the response rule with the same matcher", async () => {
     const requests: Array<Request> = [];
     const api = createApi("https://example.test", {

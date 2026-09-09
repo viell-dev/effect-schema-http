@@ -96,6 +96,14 @@ type BodyContextOf<Body extends AnySchema | undefined> = Body extends AnySchema 
 
 type InitialBodyReady<Body extends AnySchema | undefined> = Body extends AnySchema ? false : true;
 
+type PathArguments<Path extends string> = Path extends `${infer Segment}/${infer Rest}`
+  ? Segment extends `:${string}`
+    ? readonly [value: string, ...PathArguments<Rest>]
+    : PathArguments<Rest>
+  : Path extends `:${string}`
+    ? readonly [value: string]
+    : readonly [];
+
 export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
   readonly response: HttpClientResponse.HttpClientResponse;
 }> {
@@ -107,6 +115,10 @@ export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
     return this.response.headers;
   }
 }
+
+export class RequestBodyNotAllowed extends Data.TaggedError("RequestBodyNotAllowed")<{
+  readonly request: HttpClientRequest.HttpClientRequest;
+}> {}
 
 export interface RequestOptions {
   readonly headers?: Headers.Input;
@@ -123,12 +135,13 @@ export interface ApiOptions<Defaults extends ReadonlyArray<AnyResponseRule> = re
 
 export interface RequestDefinition<
   Method extends HttpMethod.HttpMethod,
+  Path extends string,
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
 > extends RequestOptions {
   readonly method: Method;
-  readonly path: string;
-  readonly body?: Body;
+  readonly path: Path;
+  readonly body?: Method extends "GET" | "HEAD" ? never : Body;
   readonly responses?: Rules;
 }
 
@@ -159,16 +172,21 @@ export interface RequestPlan<
   readonly effect: BodyReady extends true
     ? Effect.Effect<
         ResponseOf<Rules>,
-        UnhandledResponse | HttpBody.HttpBodyError | HttpClientError.HttpClientError | ParseResult.ParseError,
+        | UnhandledResponse
+        | RequestBodyNotAllowed
+        | HttpBody.HttpBodyError
+        | HttpClientError.HttpClientError
+        | ParseResult.ParseError,
         HttpClient.HttpClient | BodyContextOf<Body> | ResponseContextOf<Rules>
       >
     : never;
 }
 
 export type Endpoint<
+  Path extends string,
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
-> = () => RequestPlan<Body, Rules, InitialBodyReady<Body>>;
+> = (...pathArguments: PathArguments<Path>) => RequestPlan<Body, Rules, InitialBodyReady<Body>>;
 
 interface InternalDefinition<Body extends AnySchema | undefined> extends RequestOptions {
   readonly method: HttpMethod.HttpMethod;
@@ -193,6 +211,16 @@ interface PlanState {
 const joinUrl = (baseUrl: string | undefined, path: string): string => {
   if (baseUrl === undefined) return path;
   return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+};
+
+const fillPath = (path: string, pathArguments: ReadonlyArray<string>): string => {
+  let argumentIndex = 0;
+  return path
+    .split("/")
+    .map((segment) =>
+      segment.startsWith(":") ? encodeURIComponent(pathArguments[argumentIndex++] ?? segment) : segment,
+    )
+    .join("/");
 };
 
 const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers): boolean =>
@@ -275,6 +303,10 @@ const makePlan = <
 
     for (const transform of state.requestTransforms) request = transform(request);
 
+    if ((request.method === "GET" || request.method === "HEAD") && request.body._tag !== "Empty") {
+      return yield* new RequestBodyNotAllowed({ request });
+    }
+
     const baseClient = yield* HttpClient.HttpClient;
     const apiClient = definition.baseOptions?.transformClient?.(baseClient) ?? baseClient;
     const endpointClient = definition.transformClient?.(apiClient) ?? apiClient;
@@ -325,11 +357,11 @@ const makePlan = <
 };
 
 const createRequestInternal =
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>>(
+  <Path extends string, Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>>(
     definition: InternalDefinition<Body>,
     rules: Rules,
-  ): Endpoint<Body, Rules> =>
-  () => {
+  ): Endpoint<Path, Body, Rules> =>
+  (...pathArguments: PathArguments<Path>) => {
     const baseHeaders = Headers.fromInput(definition.baseOptions?.headers);
     const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
     const baseParams = UrlParams.fromInput(definition.baseOptions?.urlParams ?? {});
@@ -338,33 +370,40 @@ const createRequestInternal =
       (transform): transform is NonNullable<typeof transform> => transform !== undefined,
     );
 
-    return makePlan<Body, Rules, InitialBodyReady<Body>>(definition, rules, {
-      body: undefined,
-      hasBody: false,
-      headers,
-      urlParams,
-      cache: definition.cache ?? definition.baseOptions?.cache,
-      retries: definition.retries ?? definition.baseOptions?.retries ?? 0,
-      requestTransforms,
-    });
+    return makePlan<Body, Rules, InitialBodyReady<Body>>(
+      { ...definition, path: fillPath(definition.path, pathArguments) },
+      rules,
+      {
+        body: undefined,
+        hasBody: false,
+        headers,
+        urlParams,
+        cache: definition.cache ?? definition.baseOptions?.cache,
+        retries: definition.retries ?? definition.baseOptions?.retries ?? 0,
+        requestTransforms,
+      },
+    );
   };
 
 export const createRequest = <
   const Method extends HttpMethod.HttpMethod,
+  const Path extends string,
   Body extends AnySchema | undefined = undefined,
   const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
 >(
-  definition: RequestDefinition<Method, Body, Rules>,
-): Endpoint<Body, Rules> => createRequestInternal(definition, definition.responses ?? ([] as unknown as Rules));
+  definition: RequestDefinition<Method, Path, Body, Rules>,
+): Endpoint<Path, Body, Rules> =>
+  createRequestInternal<Path, Body, Rules>(definition, definition.responses ?? ([] as unknown as Rules));
 
 export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> {
   readonly createRequest: <
     const Method extends HttpMethod.HttpMethod,
+    const Path extends string,
     Body extends AnySchema | undefined = undefined,
     const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
   >(
-    definition: RequestDefinition<Method, Body, Rules>,
-  ) => Endpoint<Body, MergeResponseRules<Defaults, Rules>>;
+    definition: RequestDefinition<Method, Path, Body, Rules>,
+  ) => Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>>;
 }
 
 export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> = readonly []>(
@@ -373,13 +412,14 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
 ): Api<Defaults> => ({
   createRequest: <
     const Method extends HttpMethod.HttpMethod,
+    const Path extends string,
     Body extends AnySchema | undefined = undefined,
     const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
   >(
-    definition: RequestDefinition<Method, Body, Rules>,
-  ): Endpoint<Body, MergeResponseRules<Defaults, Rules>> => {
+    definition: RequestDefinition<Method, Path, Body, Rules>,
+  ): Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>> => {
     const rules = mergeResponseRules(options.responses ?? [], definition.responses ?? []);
-    return createRequestInternal(
+    return createRequestInternal<Path, Body, MergeResponseRules<Defaults, Rules>>(
       { ...definition, baseUrl, baseOptions: options },
       rules as MergeResponseRules<Defaults, Rules>,
     );

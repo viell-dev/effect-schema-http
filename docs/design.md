@@ -28,6 +28,18 @@ const users = getUsers()
   .setRetries(3).effect;
 ```
 
+Colon-prefixed path segments become positional endpoint arguments and are URL-encoded:
+
+```ts
+const getUserPost = api.createRequest({
+  method: "GET",
+  path: "/users/:userId/posts/:postId",
+  responses: [response({ status: 200 }, BlogPost)],
+});
+
+const request = getUserPost(userId, postId);
+```
+
 The current spike uses `@effect/platform`'s `HttpClient` service. The Effect keeps the transport as an explicit
 requirement. Applications provide `FetchHttpClient.layer`, a Node client layer, or a test client. Accessing `.effect`
 does not choose a runtime or start a Promise.
@@ -76,9 +88,12 @@ This replacement model keeps the common thin-object case precise: replacing the 
 
 The endpoint definition optionally declares a request body schema, but the generated endpoint itself always takes no
 arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` is unavailable at the type level.
-The schema constrains and encodes the value. An optional or explicitly undefined body can be represented in the schema
-and set as such. A GET may declare and set a body as well; whether a particular transport accepts it is a transport
-limitation rather than an endpoint-type rule.
+The caller supplies the ordinary decoded TypeScript value—never a schema-wrapped value—and the library uses the
+endpoint's schema to constrain and encode it. An optional or explicitly undefined body can be represented in the schema
+and set as such.
+
+GET and HEAD definitions reject body schemas, and execution checks again after raw request transforms. This follows the
+Fetch transport's actual constraint instead of advertising a request shape that its default transport cannot execute.
 
 Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
 typed API surface without making schemas for them part of the first version.
