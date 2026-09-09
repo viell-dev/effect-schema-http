@@ -1,5 +1,5 @@
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "@effect/platform";
-import { Cause, Effect, Either, Layer, Match, Schedule, Schema } from "effect";
+import { Cause, Effect, Either, Layer, Match, ParseResult, Schedule, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   createApi,
@@ -9,6 +9,7 @@ import {
   InvalidPathArguments,
   InvalidRetryCount,
   RequestBody,
+  RequestBodyEncodeError,
   RequestBodyNotAllowed,
   response,
   ResponseBody,
@@ -396,7 +397,7 @@ describe("createRequest", () => {
     ).toThrow(DuplicateResponseKey);
   });
 
-  it("matches status and headers with predicates and exposes the raw response", async () => {
+  it("matches status and headers with predicates without exposing a consumed raw response", async () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
@@ -422,7 +423,8 @@ describe("createRequest", () => {
 
     expect(result.key).toBe("json");
     expect(result.status).toBe(200);
-    expect(result.response.headers["x-extra"]).toBe("kept");
+    expect(result.headers["x-extra"]).toBe("kept");
+    expect("response" in result).toBe(false);
   });
 
   it("uses declaration order for ties and lets a new plan rule take precedence", async () => {
@@ -453,6 +455,16 @@ describe("createRequest", () => {
       path: "https://example.test/trigger",
       responses: [response({ key: "done", status: 202 }, Schema.Void, { codec: ResponseBody.none })],
     });
+    const Acknowledgement = Schema.transform(Schema.Undefined, Schema.Literal("accepted"), {
+      strict: true,
+      decode: () => "accepted" as const,
+      encode: () => undefined,
+    });
+    const acknowledge = createRequest({
+      method: "POST",
+      path: "https://example.test/acknowledge",
+      responses: [response({ key: "accepted", status: 204 }, Acknowledgement, { codec: ResponseBody.none })],
+    });
 
     const text = await getStatus().effect.pipe(
       Effect.provide(fetchLayer(mockFetch(async () => new Response("ready")))),
@@ -462,14 +474,31 @@ describe("createRequest", () => {
       Effect.provide(fetchLayer(mockFetch(async () => new Response("discarded", { status: 202 })))),
       Effect.runPromise,
     );
+    const acknowledged = await acknowledge().effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => new Response(null, { status: 204 })))),
+      Effect.runPromise,
+    );
 
     expect(text.body).toBe("ready");
     expect(none.body).toBeUndefined();
+    expect(acknowledged.body).toBe("accepted");
 
     response(
       { key: "invalid", status: 204 },
       User,
       // @ts-expect-error A no-body codec requires a schema whose output accepts undefined.
+      { codec: ResponseBody.none },
+    );
+
+    const UndefinedFromString = Schema.transform(Schema.String, Schema.Undefined, {
+      strict: true,
+      decode: () => undefined,
+      encode: () => "undefined",
+    });
+    response(
+      { key: "invalid-transform", status: 204 },
+      UndefinedFromString,
+      // @ts-expect-error A no-body codec supplies undefined to the schema's encoded side, which is string here.
       { codec: ResponseBody.none },
     );
   });
@@ -631,6 +660,44 @@ describe("createRequest", () => {
       // @ts-expect-error The text codec requires a schema whose encoded representation is a string.
       bodyCodec: RequestBody.text(),
     });
+  });
+
+  it("wraps fallible request schema encoding with request context", async () => {
+    const XmlString = Schema.String.pipe(Schema.filter((value) => /^<action>[^<]+<\/action>$/.test(value)));
+    const trigger = createRequest({
+      method: "POST",
+      path: "https://example.test/actions",
+      body: XmlString,
+      bodyCodec: RequestBody.text("application/xml"),
+      responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+    });
+    let sent = false;
+
+    const result = await trigger()
+      .setBody("not xml")
+      .effect.pipe(
+        Effect.either,
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async () => {
+              sent = true;
+              return new Response(null, { status: 204 });
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
+
+    expect(sent).toBe(false);
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result)) {
+      expect(result.left).toBeInstanceOf(RequestBodyEncodeError);
+      if (result.left instanceof RequestBodyEncodeError) {
+        expect(result.left.request.method).toBe("POST");
+        expect(result.left.request.url).toBe("https://example.test/actions");
+        expect(ParseResult.isParseError(result.left.cause)).toBe(true);
+      }
+    }
   });
 
   it("can execute with a schema-encoded static body and override it through the setter", async () => {

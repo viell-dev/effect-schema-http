@@ -87,7 +87,6 @@ type ResponseEnvelope = {
   readonly headers: Headers;
   readonly body: ReadonlyArray<User>;
   readonly matched: { readonly key: "ok"; readonly status: 200 };
-  readonly response: HttpClientResponse;
 };
 ```
 
@@ -104,16 +103,17 @@ const description = Match.value(result).pipe(
 );
 ```
 
-`matched` preserves the complete selected matcher, and exact matcher headers are reflected in the header type. The raw
-`HttpClientResponse` is also retained as `response`, covering redirect metadata, streaming, and other transport details
-without discarding the typed envelope. `key`, `status`, and `matched` are deliberately redundant: `key` is the ergonomic
-discriminant, `status` is the actual status (and remains a literal for exact status matchers), and `matched` explains why
-the rule was selected. Effect's `Match` is useful for consuming the result but not for defining the response table: its
-runtime cases erase the schema and context information the request factory needs to retain in its generics.
+`matched` preserves the complete selected matcher, and exact matcher headers are reflected in the header type. A mapped
+envelope does not retain the original `HttpClientResponse`: its body has already been consumed and the response would
+not be safely replayable from a request gate. `key`, `status`, and `matched` are deliberately redundant: `key` is the
+ergonomic discriminant, `status` is the actual status (and remains a literal for exact status matchers), and `matched`
+explains why the rule was selected. Effect's `Match` is useful for consuming the result but not for defining the response
+table: its runtime cases erase the schema and context information the request factory needs to retain in its generics.
 
 `UnhandledResponse` retains the untouched `HttpClientResponse`, including its unconsumed body, instead of copying only
 status and headers. Ownership of that live body transfers to the caller, which must consume or cancel it when recovering
-from the error. Mapped `ResponseBody.none` responses are drained by the library.
+from the error. `ResponseDecodeError` also retains response metadata and the schema cause, although its body has already
+been consumed. Mapped `ResponseBody.none` responses are drained by the library.
 
 Files and multipart responses are intentionally not invented as a field yet. They should be introduced through body
 codecs so the envelope accurately describes whether `body`, `files`, or both exist for that response rule.
@@ -175,13 +175,18 @@ the schema's encoded type, so the caller still passes the schema's ordinary Type
 `setRequestBodyCodec(...)` can replace the endpoint codec on one immutable plan. `mapRequest` remains the final escape
 hatch for transport-specific bodies and request fields.
 
+Both schema encoding and wire encoding are fallible. A schema may reject an ordinary value supplied to `.setBody(...)`
+or fail while transforming it to its encoded representation. `RequestBodyEncodeError` retains the request constructed
+so far and the original schema or HTTP-body cause. These failures occur when the plan Effect is evaluated, before the
+HTTP client is called.
+
 Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default and
 uses the transport's JSON reader. `ResponseBody.text` reads the body as a string before schema decoding, so a schema can
 parse JSON itself or decode XML, YAML, or a domain-specific text format. The default reader can be set at API, endpoint,
 or plan scope; an explicit response-rule codec takes precedence. `ResponseBody.none` drains the incoming body and then
-decodes `undefined`. The no-body codec only accepts schemas whose output type includes `undefined`, preventing
-declarations that are guaranteed to fail. Additional byte, form, multipart, or streaming codecs can be added without
-changing the rule shape.
+decodes `undefined`. The no-body codec only accepts schemas whose encoded/input type includes `undefined`, preventing
+declarations that are guaranteed to fail while still allowing `undefined` to transform into a domain value. Additional
+byte, form, multipart, or streaming codecs can be added without changing the rule shape.
 
 Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
 typed API surface without making schemas for them part of the first version. Singular and plural query setters replace

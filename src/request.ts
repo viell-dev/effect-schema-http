@@ -122,7 +122,7 @@ type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema, ResponseBodyCode
 
 type CodecOptions<S extends AnySchema, Codec extends ResponseBodyCodecOrDefault> = Codec extends AnyResponseBodyCodec
   ? Codec["name"] extends "none"
-    ? undefined extends Schema.Schema.Type<S>
+    ? undefined extends Schema.Schema.Encoded<S>
       ? { readonly codec: Codec }
       : never
     : { readonly codec: Codec }
@@ -206,7 +206,6 @@ export interface ResponseEnvelope<Matcher extends ResponseMatcher, Body> {
   readonly headers: Headers.Headers & MatchedHeaders<Matcher>;
   readonly body: Body;
   readonly matched: Matcher;
-  readonly response: HttpClientResponse.HttpClientResponse;
 }
 
 type EnvelopeOfRule<Rule> =
@@ -222,7 +221,7 @@ type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> =
     : never;
 
 type BodyContextOf<Body extends AnySchema | undefined> = Body extends AnySchema ? Schema.Schema.Context<Body> : never;
-type RequestEncodingError<Body extends AnySchema | undefined> = Body extends AnySchema ? HttpBody.HttpBodyError : never;
+type RequestEncodingError<Body extends AnySchema | undefined> = Body extends AnySchema ? RequestBodyEncodeError : never;
 type ResponseDecodingError<Rules extends ReadonlyArray<AnyResponseRule>> = Rules extends readonly []
   ? never
   : ResponseDecodeError;
@@ -321,6 +320,11 @@ export class ResponseDecodeError extends Data.TaggedError("ResponseDecodeError")
     return this.response.status;
   }
 }
+
+export class RequestBodyEncodeError extends Data.TaggedError("RequestBodyEncodeError")<{
+  readonly request: HttpClientRequest.HttpClientRequest;
+  readonly cause: ParseResult.ParseError | HttpBody.HttpBodyError;
+}> {}
 
 export interface CachePolicy {
   readonly control?: string;
@@ -830,10 +834,12 @@ const makePlan = <
 
     if (definition.body !== undefined && state.hasBody) {
       const encoded = yield* Schema.encodeUnknown(definition.body)(state.body).pipe(
-        Effect.mapError((error) => HttpBody.HttpBodyError({ _tag: "SchemaError", error })),
+        Effect.mapError((cause) => new RequestBodyEncodeError({ request, cause })),
       );
       const bodyCodec = state.bodyCodec as RequestBodyCodec<unknown>;
-      request = yield* bodyCodec.encode(encoded, request);
+      request = yield* bodyCodec
+        .encode(encoded, request)
+        .pipe(Effect.mapError((cause) => new RequestBodyEncodeError({ request, cause })));
     }
 
     for (const transform of state.requestTransforms) request = transform(request);
@@ -871,7 +877,6 @@ const makePlan = <
       headers: raw.headers,
       body,
       matched: rule.match,
-      response: raw,
     } satisfies ResponseEnvelope<ResponseMatcher, unknown>;
     return envelope as ResponseOf<Rules>;
   });
