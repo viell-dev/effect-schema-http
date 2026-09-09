@@ -1,8 +1,9 @@
 # Design sketch
 
-The library defines an endpoint once, then creates immutable request plans at each call site. Every endpoint function
-is zero-argument. A plan remains lazy while the caller sets a body, query parameters, headers, execution policy, or
-response schemas; reading `.effect` produces the Effect that sends and decodes the request.
+The library defines an endpoint once, then creates immutable request plans at each call site. Endpoint functions take
+only their required path values; endpoints without placeholders are zero-argument. A plan remains lazy while the caller
+sets a body, query parameters, headers, execution policy, or response schemas; reading `.effect` produces the Effect
+that sends and decodes the request.
 
 ```ts
 const api = createApi("https://api.example.com", {
@@ -113,7 +114,7 @@ This replacement model keeps the common thin-object case precise: replacing the 
 
 ## Bodies and request fields
 
-The endpoint definition optionally declares a request body schema, but the generated endpoint itself always takes no
+The endpoint definition optionally declares a request body schema, but request bodies are never endpoint-function
 arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` is unavailable at the type level.
 The caller supplies the ordinary decoded TypeScript value—never a schema-wrapped value—and the library uses the
 endpoint's schema to constrain and encode it. An optional or explicitly undefined body can be represented in the schema
