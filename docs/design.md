@@ -158,12 +158,17 @@ Such a plan is immediately executable, while `.setBody(...)` can still replace t
 
 GET and HEAD definitions reject body schemas, and execution checks again after raw request transforms. This follows the
 Fetch transport's actual constraint instead of advertising a request shape that its default transport cannot execute.
+Other methods are intentionally open strings rather than a REST-shaped union. Standard methods and extension methods
+such as `PROPFIND` use the same request machinery; the selected transport remains responsible for rejecting invalid or
+forbidden method tokens.
 
-Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default;
-`ResponseBody.text` reads text before schema decoding; and `ResponseBody.none` drains the incoming body and then decodes
-`undefined`. The no-body codec only accepts schemas whose output type includes `undefined`, preventing declarations that
-are guaranteed to fail. Additional byte, form, multipart, or streaming codecs can be added without changing the rule
-shape.
+Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default and
+uses the transport's JSON reader. `ResponseBody.text` reads the body as a string before schema decoding, so a schema can
+parse JSON itself or decode XML, YAML, or a domain-specific text format. The default reader can be set at API, endpoint,
+or plan scope; an explicit response-rule codec takes precedence. `ResponseBody.none` drains the incoming body and then
+decodes `undefined`. The no-body codec only accepts schemas whose output type includes `undefined`, preventing
+declarations that are guaranteed to fail. Additional byte, form, multipart, or streaming codecs can be added without
+changing the rule shape.
 
 Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
 typed API surface without making schemas for them part of the first version. Singular and plural query setters replace

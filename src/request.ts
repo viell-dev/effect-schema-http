@@ -19,6 +19,8 @@ const pipeSelf = function (this: unknown, ...operations: ReadonlyArray<(value: u
 
 type AnySchema = Schema.Schema.Any;
 
+export type RequestMethod = string;
+
 export type StatusPredicate = (status: number) => boolean;
 export type HeaderPredicate = (value: string | undefined) => boolean;
 export type StatusMatcher = number | StatusPredicate;
@@ -64,29 +66,33 @@ export const ResponseBody = {
 } as const;
 
 type AnyResponseBodyCodec = ResponseBodyCodec;
+export type DefaultResponseBodyCodec = typeof ResponseBody.json | typeof ResponseBody.text;
+type ResponseBodyCodecOrDefault = AnyResponseBodyCodec | undefined;
 
 export interface ResponseRule<
   Matcher extends ResponseMatcher = ResponseMatcher,
   S extends AnySchema = AnySchema,
-  Codec extends AnyResponseBodyCodec = AnyResponseBodyCodec,
+  Codec extends ResponseBodyCodecOrDefault = undefined,
 > {
   readonly match: Matcher;
   readonly schema: S;
   readonly codec: Codec;
 }
 
-type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema, AnyResponseBodyCodec>;
+type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema, ResponseBodyCodecOrDefault>;
 
-type CodecOptions<S extends AnySchema, Codec extends AnyResponseBodyCodec> = Codec["name"] extends "none"
-  ? undefined extends Schema.Schema.Type<S>
-    ? { readonly codec: Codec }
-    : never
-  : { readonly codec: Codec };
+type CodecOptions<S extends AnySchema, Codec extends ResponseBodyCodecOrDefault> = Codec extends AnyResponseBodyCodec
+  ? Codec["name"] extends "none"
+    ? undefined extends Schema.Schema.Type<S>
+      ? { readonly codec: Codec }
+      : never
+    : { readonly codec: Codec }
+  : never;
 
 export const response = <
   const Matcher extends ResponseMatcher,
   const S extends AnySchema,
-  const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+  const Codec extends ResponseBodyCodecOrDefault = undefined,
 >(
   match: Matcher,
   schema: S,
@@ -94,11 +100,11 @@ export const response = <
 ): ResponseRule<Matcher, S, Codec> => ({
   match,
   schema,
-  codec: (options?.codec ?? ResponseBody.json) as unknown as Codec,
+  codec: options?.codec as Codec,
 });
 
 type MatcherOf<Rule extends AnyResponseRule> =
-  Rule extends ResponseRule<infer Matcher, AnySchema, AnyResponseBodyCodec> ? Matcher : never;
+  Rule extends ResponseRule<infer Matcher, AnySchema, ResponseBodyCodecOrDefault> ? Matcher : never;
 
 type KeyOf<Rule extends AnyResponseRule> = MatcherOf<Rule>["key"];
 
@@ -165,14 +171,16 @@ export interface ResponseEnvelope<Matcher extends ResponseMatcher, Body> {
 }
 
 type EnvelopeOfRule<Rule> =
-  Rule extends ResponseRule<infer Matcher, infer S, AnyResponseBodyCodec>
+  Rule extends ResponseRule<infer Matcher, infer S, ResponseBodyCodecOrDefault>
     ? ResponseEnvelope<Matcher, Schema.Schema.Type<S>>
     : never;
 
 export type ResponseOf<Rules extends ReadonlyArray<AnyResponseRule>> = EnvelopeOfRule<Rules[number]>;
 
 type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> =
-  Rules[number] extends ResponseRule<ResponseMatcher, infer S, AnyResponseBodyCodec> ? Schema.Schema.Context<S> : never;
+  Rules[number] extends ResponseRule<ResponseMatcher, infer S, ResponseBodyCodecOrDefault>
+    ? Schema.Schema.Context<S>
+    : never;
 
 type BodyContextOf<Body extends AnySchema | undefined> = Body extends AnySchema ? Schema.Schema.Context<Body> : never;
 type RequestEncodingError<Body extends AnySchema | undefined> = Body extends AnySchema ? HttpBody.HttpBodyError : never;
@@ -291,6 +299,7 @@ export interface RetryPolicy {
 export interface RequestOptions {
   readonly headers?: Headers.Input;
   readonly urlParams?: UrlParams.Input;
+  readonly responseCodec?: DefaultResponseBodyCodec;
   readonly cache?: CachePolicy;
   readonly timeout?: Duration.DurationInput;
   readonly retry?: RetryPolicy;
@@ -304,7 +313,7 @@ export interface ApiOptions<Defaults extends ReadonlyArray<AnyResponseRule> = re
 }
 
 export interface RequestDefinition<
-  Method extends HttpMethod.HttpMethod,
+  Method extends RequestMethod,
   Path extends string,
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
@@ -312,8 +321,8 @@ export interface RequestDefinition<
 > extends RequestOptions {
   readonly method: Method;
   readonly path: Path;
-  readonly body?: Method extends "GET" | "HEAD" ? never : Body;
-  readonly defaultBody?: Method extends "GET" | "HEAD"
+  readonly body?: Uppercase<Method> extends "GET" | "HEAD" ? never : Body;
+  readonly defaultBody?: Uppercase<Method> extends "GET" | "HEAD"
     ? never
     : Body extends AnySchema
       ? DefaultBody extends Schema.Schema.Type<Body>
@@ -343,6 +352,7 @@ export interface RequestPlan<
   readonly setHeaders: (headers: Headers.Input) => RequestPlan<Body, Rules, BodyReady>;
   readonly removeHeader: (name: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setCache: (cache: CachePolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setResponseCodec: (codec: DefaultResponseBodyCodec) => RequestPlan<Body, Rules, BodyReady>;
   readonly setBaseUrl: (baseUrl: string | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setTimeout: (timeout: Duration.DurationInput | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setRetry: (retry: RetryPolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
@@ -356,7 +366,7 @@ export interface RequestPlan<
   readonly setResponseSchema: <
     const Matcher extends ResponseMatcher,
     const S extends AnySchema,
-    const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+    const Codec extends ResponseBodyCodecOrDefault = undefined,
   >(
     match: Matcher,
     schema: S,
@@ -446,6 +456,13 @@ export const setCache =
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.setCache(cache);
 
+export const setResponseCodec =
+  (codec: DefaultResponseBodyCodec) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setResponseCodec(codec);
+
 export const setBaseUrl =
   (baseUrl: string | undefined) =>
   <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
@@ -492,7 +509,7 @@ export const setResponseSchema =
   <
     const Matcher extends ResponseMatcher,
     const S extends AnySchema,
-    const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+    const Codec extends ResponseBodyCodecOrDefault = undefined,
   >(
     match: Matcher,
     schema: S,
@@ -534,7 +551,7 @@ export const mapEndpoint: {
 );
 
 interface InternalDefinition<Body extends AnySchema | undefined> extends RequestOptions {
-  readonly method: HttpMethod.HttpMethod;
+  readonly method: RequestMethod;
   readonly path: string;
   readonly body?: Body;
   readonly defaultBody?: unknown;
@@ -548,6 +565,7 @@ interface PlanState {
   readonly hasBody: boolean;
   readonly headers: Headers.Headers;
   readonly urlParams: UrlParams.UrlParams;
+  readonly responseCodec: DefaultResponseBodyCodec;
   readonly cache: CachePolicy | undefined;
   readonly timeout: Duration.DurationInput | undefined;
   readonly retry: RetryPolicy | undefined;
@@ -567,6 +585,7 @@ interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly setHeaders: (headers: Headers.Input) => unknown;
   readonly removeHeader: (name: string) => unknown;
   readonly setCache: (cache: CachePolicy | undefined) => unknown;
+  readonly setResponseCodec: (codec: DefaultResponseBodyCodec) => unknown;
   readonly setBaseUrl: (baseUrl: string | undefined) => unknown;
   readonly setTimeout: (timeout: Duration.DurationInput | undefined) => unknown;
   readonly setRetry: (retry: RetryPolicy | undefined) => unknown;
@@ -706,8 +725,12 @@ const findResponseRule = (
   return selected;
 };
 
-const decodeResponse = (rule: AnyResponseRule, raw: HttpClientResponse.HttpClientResponse) =>
-  Effect.flatMap(rule.codec.decode(raw), Schema.decodeUnknown(rule.schema)).pipe(
+const decodeResponse = (
+  rule: AnyResponseRule,
+  raw: HttpClientResponse.HttpClientResponse,
+  defaultCodec: DefaultResponseBodyCodec,
+) =>
+  Effect.flatMap((rule.codec ?? defaultCodec).decode(raw), Schema.decodeUnknown(rule.schema)).pipe(
     Effect.mapError((error) =>
       ParseResult.isParseError(error)
         ? new ResponseDecodeError({ key: rule.match.key, response: raw, cause: error })
@@ -728,7 +751,9 @@ const makePlan = <
     makePlan<Body, Rules, BodyReady>(definition, rules, { ...state, ...next });
 
   const effect = Effect.gen(function* () {
-    let request = HttpClientRequest.make(definition.method)(joinUrl(state.baseUrl, definition.path));
+    let request = HttpClientRequest.make(definition.method as HttpMethod.HttpMethod)(
+      joinUrl(state.baseUrl, definition.path),
+    );
     request = HttpClientRequest.setHeaders(request, state.headers);
     request = HttpClientRequest.setUrlParams(request, state.urlParams);
 
@@ -742,7 +767,8 @@ const makePlan = <
 
     for (const transform of state.requestTransforms) request = transform(request);
 
-    if ((request.method === "GET" || request.method === "HEAD") && request.body._tag !== "Empty") {
+    const normalizedMethod = request.method.toUpperCase();
+    if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && request.body._tag !== "Empty") {
       return yield* new RequestBodyNotAllowed({ request });
     }
 
@@ -767,7 +793,7 @@ const makePlan = <
 
     if (rule === undefined) return yield* new UnhandledResponse({ response: raw });
 
-    const body = yield* decodeResponse(rule, raw);
+    const body = yield* decodeResponse(rule, raw, state.responseCodec);
     const envelope = {
       key: rule.match.key,
       status: raw.status,
@@ -790,6 +816,7 @@ const makePlan = <
     setHeaders: (headers) => update({ headers: Headers.setAll(state.headers, headers) }),
     removeHeader: (name) => update({ headers: Headers.remove(state.headers, name) }),
     setCache: (cache) => update({ cache }),
+    setResponseCodec: (responseCodec) => update({ responseCodec }),
     setBaseUrl: (baseUrl) => update({ baseUrl }),
     setTimeout: (timeout) => update({ timeout }),
     setRetry: (retry) => update({ retry: normalizeRetry(retry) }),
@@ -799,7 +826,7 @@ const makePlan = <
     setResponseSchema: <
       const Matcher extends ResponseMatcher,
       const S extends AnySchema,
-      const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+      const Codec extends ResponseBodyCodecOrDefault = undefined,
     >(
       match: Matcher,
       schema: S,
@@ -854,6 +881,7 @@ const createRequestInternal = <
       hasBody: definition.defaultBody !== undefined,
       headers,
       urlParams,
+      responseCodec: definition.responseCodec ?? definition.baseOptions?.responseCodec ?? ResponseBody.json,
       cache: definition.cache ?? definition.baseOptions?.cache,
       timeout: definition.timeout ?? definition.baseOptions?.timeout,
       retry,
@@ -865,7 +893,7 @@ const createRequestInternal = <
 };
 
 export const createRequest = <
-  const Method extends HttpMethod.HttpMethod,
+  const Method extends RequestMethod,
   const Path extends string,
   Body extends AnySchema | undefined = undefined,
   const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
@@ -886,7 +914,7 @@ export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> extends Pi
     options: ApiOptions<Overrides>,
   ) => Api<MergeResponseRules<Defaults, Overrides>>;
   readonly createRequest: <
-    const Method extends HttpMethod.HttpMethod,
+    const Method extends RequestMethod,
     const Path extends string,
     Body extends AnySchema | undefined = undefined,
     const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
@@ -922,6 +950,7 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
       return createApi<MergeResponseRules<Defaults, Overrides>>(baseUrl, {
         headers: Headers.setAll(Headers.fromInput(options.headers), overrides.headers ?? {}),
         urlParams: UrlParams.setAll(UrlParams.fromInput(options.urlParams ?? {}), overrides.urlParams ?? {}),
+        responseCodec: overrides.responseCodec ?? options.responseCodec,
         cache: overrides.cache ?? options.cache,
         timeout: overrides.timeout ?? options.timeout,
         retry,
@@ -941,7 +970,7 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
       });
     },
     createRequest: <
-      const Method extends HttpMethod.HttpMethod,
+      const Method extends RequestMethod,
       const Path extends string,
       Body extends AnySchema | undefined = undefined,
       const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],

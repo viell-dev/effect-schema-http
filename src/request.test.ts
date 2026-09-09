@@ -250,6 +250,35 @@ describe("createRequest", () => {
 
     expect(Either.isLeft(result)).toBe(true);
     if (Either.isLeft(result)) expect(result.left).toBeInstanceOf(RequestBodyNotAllowed);
+
+    createRequest({
+      method: "get",
+      path: "https://example.test/users",
+      // @ts-expect-error Fetch does not support GET request bodies regardless of method casing.
+      body: Schema.Struct({ probe: Schema.Boolean }),
+    });
+  });
+
+  it("passes custom HTTP methods through to the transport", async () => {
+    const inspectUsers = createRequest({
+      method: "PROPFIND",
+      path: "https://example.test/users",
+      responses: [response({ key: "multi-status", status: 207 }, Schema.Literal("inspected"))],
+    });
+
+    const result = await inspectUsers().effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.method).toBe("PROPFIND");
+            return Response.json("inspected", { status: 207 });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(result).toMatchObject({ key: "multi-status", body: "inspected" });
   });
 
   it("is lazy and replaces only the response rule with the same matcher", async () => {
@@ -423,6 +452,51 @@ describe("createRequest", () => {
       // @ts-expect-error A no-body codec requires a schema whose output accepts undefined.
       { codec: ResponseBody.none },
     );
+  });
+
+  it("inherits and overrides the response reader independently of response schemas", async () => {
+    const api = createApi("https://example.test", { responseCodec: ResponseBody.text });
+    const getTextParsedUser = api.createRequest({
+      method: "GET",
+      path: "/text-user",
+      responses: [response({ key: "ok", status: 200 }, Schema.parseJson(User))],
+    });
+    const getJsonUser = api.createRequest({
+      method: "GET",
+      path: "/json-user",
+      responseCodec: ResponseBody.json,
+      responses: [response({ key: "ok", status: 200 }, User)],
+    });
+    const getNoBody = api.createRequest({
+      method: "GET",
+      path: "/empty",
+      responses: [response({ key: "empty", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+    });
+
+    const textParsed = await getTextParsedUser().effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => new Response('{"id":1,"name":"Ada"}')))),
+      Effect.runPromise,
+    );
+    const json = await getJsonUser().effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => Response.json({ id: 2, name: "Grace" })))),
+      Effect.runPromise,
+    );
+    const planOverride = await getJsonUser()
+      .setResponseCodec(ResponseBody.text)
+      .setResponseSchema({ key: "ok", status: 200 }, Schema.parseJson(User))
+      .effect.pipe(
+        Effect.provide(fetchLayer(mockFetch(async () => new Response('{"id":3,"name":"Lin"}')))),
+        Effect.runPromise,
+      );
+    const empty = await getNoBody().effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => new Response(null, { status: 204 })))),
+      Effect.runPromise,
+    );
+
+    expect(textParsed.body).toEqual({ id: 1, name: "Ada" });
+    expect(json.body).toEqual({ id: 2, name: "Grace" });
+    expect(planOverride.body).toEqual({ id: 3, name: "Lin" });
+    expect(empty.body).toBeUndefined();
   });
 
   it("keeps mapped 4xx responses in the success channel", async () => {

@@ -100,6 +100,10 @@ describe("request integration", () => {
           outgoing.end();
           return;
         }
+        if (method === "PROPFIND") {
+          sendJson(outgoing, 207, currentUser);
+          return;
+        }
         if (method === "PUT") {
           const body = (await readJson(request)) as typeof ReplaceUser.Type;
           currentUser = { id: userId, ...body };
@@ -150,7 +154,7 @@ describe("request integration", () => {
     });
   });
 
-  it("supports GET, POST, PUT, PATCH, DELETE, HEAD, and OPTIONS with typed path segments", async () => {
+  it("supports standard and extension methods with typed path segments", async () => {
     const api = createApi(baseUrl, {
       responses: [
         response({ key: "not-found", status: 404 }, NotFound),
@@ -197,6 +201,11 @@ describe("request integration", () => {
         }),
       ] as const,
     });
+    const inspectUser = api.createRequest({
+      method: "PROPFIND",
+      path: "/users/:userId",
+      responses: [response({ key: "properties", status: 207 }, User)],
+    });
     const usersOptions = api.createRequest({
       method: "OPTIONS",
       path: "/users",
@@ -218,6 +227,9 @@ describe("request integration", () => {
 
     const fetched = await getUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(fetched).toMatchObject({ key: "ok", body: { id: userId, name: "Ada" } });
+
+    const inspected = await inspectUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    expect(inspected).toMatchObject({ key: "properties", status: 207, body: { id: userId } });
 
     const replaced = await replaceUser(userId)
       .setBody({ name: "Grace", email: "grace@example.test" })
@@ -261,7 +273,7 @@ describe("request integration", () => {
     const deleted = await deleteUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(deleted).toMatchObject({ key: "deleted", status: 204 });
 
-    expect(methods).toEqual(["POST", "GET", "PUT", "PATCH", "PATCH", "HEAD", "GET", "OPTIONS", "DELETE"]);
+    expect(methods).toEqual(["POST", "GET", "PROPFIND", "PUT", "PATCH", "PATCH", "HEAD", "GET", "OPTIONS", "DELETE"]);
   });
 
   it("returns mapped 404, 410, and 501 responses as ordinary discriminated values", async () => {
