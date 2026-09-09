@@ -16,7 +16,7 @@ const getUsers = api.createRequest({
   path: "/users",
   responses: [
     response({ key: "ok", status: 200 }, Schema.Array(User)),
-    response({ key: "empty", status: 204 }, Schema.Void, { body: "none" }),
+    response({ key: "empty", status: 204 }, Schema.Void, { codec: ResponseBody.none }),
     response({ key: "gone", status: 410 }, Gone),
   ],
 });
@@ -60,13 +60,14 @@ type ResponseEnvelope = {
   readonly status: 200;
   readonly headers: Headers;
   readonly body: ReadonlyArray<User>;
-  readonly matched: { readonly status: 200 };
+  readonly matched: { readonly key: "ok"; readonly status: 200 };
+  readonly response: HttpClientResponse;
 };
 ```
 
-The actual type is a discriminated union over all response rules. Each rule has a unique key, so checking
-`response.key` narrows both the envelope and its body without custom guards, even when several rules share a status.
-The key also makes the union work directly with Effect's `Match`:
+The actual type is a discriminated union over all response rules. Each declaration enforces unique keys at both the
+type and runtime levels, so checking `response.key` narrows both the envelope and its body without custom guards, even
+when several rules share a status. The key also makes the union work directly with Effect's `Match`:
 
 ```ts
 const description = Match.value(result).pipe(
@@ -77,12 +78,16 @@ const description = Match.value(result).pipe(
 );
 ```
 
-`matched` preserves the complete selected matcher, and known matcher headers are reflected in the header type. Effect's
-`Match` is useful for consuming the result but not for defining the response table: its runtime cases erase the schema
-and context information the request factory needs to retain in its generics.
+`matched` preserves the complete selected matcher, and exact matcher headers are reflected in the header type. The raw
+`HttpClientResponse` is also retained as `response`, covering redirect metadata, streaming, and other transport details
+without discarding the typed envelope. `key`, `status`, and `matched` are deliberately redundant: `key` is the ergonomic
+discriminant, `status` is the actual status (and remains a literal for exact status matchers), and `matched` explains why
+the rule was selected. Effect's `Match` is useful for consuming the result but not for defining the response table: its
+runtime cases erase the schema and context information the request factory needs to retain in its generics.
 
 `UnhandledResponse` retains the untouched `HttpClientResponse`, including its unconsumed body, instead of copying only
-status and headers. The caller can inspect, log, stream, or decode that response when recovering from the error.
+status and headers. Ownership of that live body transfers to the caller, which must consume or cancel it when recovering
+from the error. Mapped `ResponseBody.none` responses are drained by the library.
 
 Files and multipart responses are intentionally not invented as a field yet. They should be introduced through body
 codecs so the envelope accurately describes whether `body`, `files`, or both exist for that response rule.
@@ -94,7 +99,11 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
 - An endpoint response rule replaces an inherited rule with the same unique key.
 - `setResponseSchema` replaces the rule with the same key for one request plan. Other response possibilities stay
   intact. It may change both the matcher and schema. If the key is new, the rule is added.
-- Header-constrained rules beat status-only rules. Declaration order breaks equally specific ties.
+- Status and header matchers accept exact values or predicates. Exact strings remain convenient, while predicates
+  support status ranges and values such as `application/json; charset=utf-8` without introducing schema failures during
+  rule selection.
+- Header-constrained rules beat status-only rules. Within API and endpoint declarations, the first equally specific
+  rule wins. A plan rule with a new key is prepended, so it wins an equally specific tie at that call site.
 - API options flow to endpoints and plans. Endpoint options override API defaults; plan setters override both.
 
 This replacement model keeps the common thin-object case precise: replacing the `200` schema removes the original
@@ -116,7 +125,7 @@ const doFoo = api.createRequest({
   path: "/foo",
   body: FooCommand,
   defaultBody: { action: "foo" },
-  responses: [response({ key: "done", status: 204 }, Schema.Void, { body: "none" })],
+  responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
 });
 
 const request = doFoo();
@@ -126,6 +135,12 @@ Such a plan is immediately executable, while `.setBody(...)` can still replace t
 
 GET and HEAD definitions reject body schemas, and execution checks again after raw request transforms. This follows the
 Fetch transport's actual constraint instead of advertising a request shape that its default transport cannot execute.
+
+Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default;
+`ResponseBody.text` reads text before schema decoding; and `ResponseBody.none` drains the incoming body and then decodes
+`undefined`. The no-body codec only accepts schemas whose output type includes `undefined`, preventing declarations that
+are guaranteed to fail. Additional byte, form, multipart, or streaming codecs can be added without changing the rule
+shape.
 
 Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
 typed API surface without making schemas for them part of the first version. Singular and plural query setters replace
@@ -159,9 +174,6 @@ Run them separately with `pnpm test:unit` and `pnpm test:integration`, or togeth
 
 ## Remaining design questions
 
-1. Should header matchers remain exact literals, accept Effect Schemas, or use predicates? Schemas can validate and
-   transform headers, while predicates express ranges and vendor content types more naturally.
-2. Which response codecs are required initially beyond JSON and no-body: text, bytes, form data, multipart files, or
-   streaming bodies?
-3. Should retry configuration stay as a simple count plus advanced `transformClient`, or expose schedules and transient
+1. Which response codecs should follow JSON, text, and no-body: bytes, form data, multipart files, or streaming bodies?
+2. Should retry configuration stay as a simple count plus advanced `transformClient`, or expose schedules and transient
    response classification directly?

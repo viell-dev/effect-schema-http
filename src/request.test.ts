@@ -4,9 +4,12 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   createApi,
   createRequest,
+  DuplicateResponseKey,
   InvalidPathArguments,
   RequestBodyNotAllowed,
   response,
+  ResponseBody,
+  type Endpoint,
   UnhandledResponse,
 } from "./main.js";
 
@@ -152,6 +155,116 @@ describe("createRequest", () => {
     }
   });
 
+  it("keeps API and endpoint response rule order aligned in the endpoint type", () => {
+    const defaultRule = response({ key: "default", status: 404 }, NotFound);
+    const firstRule = response({ key: "first", status: 200 }, User);
+    const secondRule = response({ key: "second", status: 201 }, User);
+    const endpoint = createApi("https://example.test", { responses: [defaultRule] }).createRequest({
+      method: "GET",
+      path: "/users",
+      responses: [firstRule, secondRule],
+    });
+    type RulesOf<Value> = Value extends Endpoint<string, infer _Body, infer Rules, boolean> ? Rules : never;
+
+    expectTypeOf<RulesOf<typeof endpoint>>().toEqualTypeOf<
+      readonly [typeof firstRule, typeof secondRule, typeof defaultRule]
+    >();
+  });
+
+  it("rejects duplicate response keys in declarations", () => {
+    const duplicateRules = [
+      response({ key: "same", status: 200 }, User),
+      response({ key: "same", status: 201 }, User),
+    ] as const;
+
+    expect(() =>
+      createRequest({
+        method: "GET",
+        path: "https://example.test/users",
+        // @ts-expect-error Response keys must be unique within one declaration.
+        responses: duplicateRules,
+      }),
+    ).toThrow(DuplicateResponseKey);
+  });
+
+  it("matches status and headers with predicates and exposes the raw response", async () => {
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [
+        response(
+          {
+            key: "json",
+            status: (status) => status >= 200 && status < 300,
+            headers: { "content-type": (value) => value?.startsWith("application/json") ?? false },
+          },
+          User,
+        ),
+        response({ key: "success", status: (status) => status >= 200 && status < 300 }, User),
+      ],
+    });
+
+    const result = await getUser().effect.pipe(
+      Effect.provide(
+        fetchLayer(mockFetch(async () => Response.json({ id: 1, name: "Ada" }, { headers: { "x-extra": "kept" } }))),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(result.key).toBe("json");
+    expect(result.status).toBe(200);
+    expect(result.response.headers["x-extra"]).toBe("kept");
+  });
+
+  it("uses declaration order for ties and lets a new plan rule take precedence", async () => {
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ key: "first", status: 200 }, User), response({ key: "second", status: 200 }, User)],
+    });
+    const layer = fetchLayer(mockFetch(async () => Response.json({ id: 1, name: "Ada" })));
+
+    const declared = await getUser().effect.pipe(Effect.provide(layer), Effect.runPromise);
+    const overridden = await getUser()
+      .setResponseSchema({ key: "plan", status: 200 }, User)
+      .effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(declared.key).toBe("first");
+    expect(overridden.key).toBe("plan");
+  });
+
+  it("decodes text and drains no-body responses before decoding undefined", async () => {
+    const getStatus = createRequest({
+      method: "GET",
+      path: "https://example.test/status",
+      responses: [response({ key: "ok", status: 200 }, Schema.Literal("ready"), { codec: ResponseBody.text })],
+    });
+    const trigger = createRequest({
+      method: "POST",
+      path: "https://example.test/trigger",
+      responses: [response({ key: "done", status: 202 }, Schema.Void, { codec: ResponseBody.none })],
+    });
+
+    const text = await getStatus().effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => new Response("ready")))),
+      Effect.runPromise,
+    );
+    const none = await trigger().effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => new Response("discarded", { status: 202 })))),
+      Effect.runPromise,
+    );
+
+    expect(text.body).toBe("ready");
+    expect(none.body).toBeUndefined();
+
+    response(
+      { key: "invalid", status: 204 },
+      User,
+      // @ts-expect-error A no-body codec requires a schema whose output accepts undefined.
+      { codec: ResponseBody.none },
+    );
+  });
+
   it("keeps mapped 4xx responses in the success channel", async () => {
     const api = createApi("https://example.test", {
       responses: [
@@ -232,7 +345,7 @@ describe("createRequest", () => {
       path: "https://example.test/foo",
       body: Schema.Struct({ action: Schema.String }),
       defaultBody: { action: "foo" },
-      responses: [response({ key: "done", status: 204 }, Schema.Void, { body: "none" })] as const,
+      responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
     });
     const layer = fetchLayer(
       mockFetch(async (request) => {

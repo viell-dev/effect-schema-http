@@ -13,35 +13,86 @@ import { Data, Effect, Option, type ParseResult, Schema } from "effect";
 
 type AnySchema = Schema.Schema.Any;
 
+export type StatusPredicate = (status: number) => boolean;
+export type HeaderPredicate = (value: string | undefined) => boolean;
+export type StatusMatcher = number | StatusPredicate;
+export type HeaderMatcher = string | HeaderPredicate;
+
 export interface ResponseMatcher<
   Key extends string = string,
-  Status extends number = number,
-  MatchHeaders extends Readonly<Record<string, string>> | undefined = Readonly<Record<string, string>> | undefined,
+  Status extends StatusMatcher = StatusMatcher,
+  MatchHeaders extends Readonly<Record<string, HeaderMatcher>> | undefined =
+    Readonly<Record<string, HeaderMatcher>> | undefined,
 > {
   readonly key: Key;
   readonly status: Status;
   readonly headers?: MatchHeaders;
 }
 
-export interface ResponseRule<Matcher extends ResponseMatcher = ResponseMatcher, S extends AnySchema = AnySchema> {
-  readonly match: Matcher;
-  readonly schema: S;
-  readonly body: "json" | "none";
+export interface ResponseBodyCodec<Input = unknown> {
+  readonly name: string;
+  readonly decode: (
+    response: HttpClientResponse.HttpClientResponse,
+  ) => Effect.Effect<Input, HttpClientError.ResponseError>;
 }
 
-type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema>;
+const jsonBodyCodec = {
+  name: "json" as const,
+  decode: (raw: HttpClientResponse.HttpClientResponse) => raw.json,
+} satisfies ResponseBodyCodec<unknown>;
 
-export const response = <const Matcher extends ResponseMatcher, const S extends AnySchema>(
+const textBodyCodec = {
+  name: "text" as const,
+  decode: (raw: HttpClientResponse.HttpClientResponse) => raw.text,
+} satisfies ResponseBodyCodec<string>;
+
+const noBodyCodec = {
+  name: "none" as const,
+  decode: (raw: HttpClientResponse.HttpClientResponse) => Effect.as(raw.arrayBuffer, undefined),
+} satisfies ResponseBodyCodec<undefined>;
+
+export const ResponseBody = {
+  json: jsonBodyCodec,
+  text: textBodyCodec,
+  none: noBodyCodec,
+} as const;
+
+type AnyResponseBodyCodec = ResponseBodyCodec;
+
+export interface ResponseRule<
+  Matcher extends ResponseMatcher = ResponseMatcher,
+  S extends AnySchema = AnySchema,
+  Codec extends AnyResponseBodyCodec = AnyResponseBodyCodec,
+> {
+  readonly match: Matcher;
+  readonly schema: S;
+  readonly codec: Codec;
+}
+
+type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema, AnyResponseBodyCodec>;
+
+type CodecOptions<S extends AnySchema, Codec extends AnyResponseBodyCodec> = Codec["name"] extends "none"
+  ? undefined extends Schema.Schema.Type<S>
+    ? { readonly codec: Codec }
+    : never
+  : { readonly codec: Codec };
+
+export const response = <
+  const Matcher extends ResponseMatcher,
+  const S extends AnySchema,
+  const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+>(
   match: Matcher,
   schema: S,
-  options?: { readonly body?: "json" | "none" },
-): ResponseRule<Matcher, S> => ({
+  options?: CodecOptions<S, Codec>,
+): ResponseRule<Matcher, S, Codec> => ({
   match,
   schema,
-  body: options?.body ?? "json",
+  codec: (options?.codec ?? ResponseBody.json) as unknown as Codec,
 });
 
-type MatcherOf<Rule extends AnyResponseRule> = Rule extends ResponseRule<infer Matcher, AnySchema> ? Matcher : never;
+type MatcherOf<Rule extends AnyResponseRule> =
+  Rule extends ResponseRule<infer Matcher, AnySchema, AnyResponseBodyCodec> ? Matcher : never;
 
 type KeyOf<Rule extends AnyResponseRule> = MatcherOf<Rule>["key"];
 
@@ -66,29 +117,56 @@ type MergeResponseRules<
   infer Head extends AnyResponseRule,
   ...infer Tail extends ReadonlyArray<AnyResponseRule>,
 ]
-  ? MergeResponseRules<SetResponseRule<Defaults, Head>, Tail>
+  ? readonly [Head, ...MergeResponseRules<RemoveMatchingRule<Defaults, KeyOf<Head>>, Tail>]
   : Defaults;
 
+type DuplicateResponseKeyOf<
+  Rules extends ReadonlyArray<AnyResponseRule>,
+  Seen extends string = never,
+> = Rules extends readonly [infer Head extends AnyResponseRule, ...infer Tail extends ReadonlyArray<AnyResponseRule>]
+  ? KeyOf<Head> extends Seen
+    ? KeyOf<Head>
+    : DuplicateResponseKeyOf<Tail, Seen | KeyOf<Head>>
+  : never;
+
+type UniqueResponseRules<Rules extends ReadonlyArray<AnyResponseRule>> =
+  DuplicateResponseKeyOf<Rules> extends never
+    ? unknown
+    : { readonly "Duplicate response key": DuplicateResponseKeyOf<Rules> };
+
+type ExactMatchedHeaders<MatchHeaders extends Readonly<Record<string, HeaderMatcher>>> = {
+  readonly [Key in keyof MatchHeaders as MatchHeaders[Key] extends string ? Key : never]: MatchHeaders[Key];
+};
+
 type MatchedHeaders<Matcher extends ResponseMatcher> =
-  Matcher extends ResponseMatcher<string, number, infer MatchHeaders extends Readonly<Record<string, string>>>
-    ? MatchHeaders
+  Matcher extends ResponseMatcher<
+    string,
+    StatusMatcher,
+    infer MatchHeaders extends Readonly<Record<string, HeaderMatcher>>
+  >
+    ? ExactMatchedHeaders<MatchHeaders>
     : unknown;
+
+type MatchedStatus<Matcher extends ResponseMatcher> = Matcher["status"] extends number ? Matcher["status"] : number;
 
 export interface ResponseEnvelope<Matcher extends ResponseMatcher, Body> {
   readonly key: Matcher["key"];
-  readonly status: Matcher["status"];
+  readonly status: MatchedStatus<Matcher>;
   readonly headers: Headers.Headers & MatchedHeaders<Matcher>;
   readonly body: Body;
   readonly matched: Matcher;
+  readonly response: HttpClientResponse.HttpClientResponse;
 }
 
 type EnvelopeOfRule<Rule> =
-  Rule extends ResponseRule<infer Matcher, infer S> ? ResponseEnvelope<Matcher, Schema.Schema.Type<S>> : never;
+  Rule extends ResponseRule<infer Matcher, infer S, AnyResponseBodyCodec>
+    ? ResponseEnvelope<Matcher, Schema.Schema.Type<S>>
+    : never;
 
 export type ResponseOf<Rules extends ReadonlyArray<AnyResponseRule>> = EnvelopeOfRule<Rules[number]>;
 
 type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> =
-  Rules[number] extends ResponseRule<ResponseMatcher, infer S> ? Schema.Schema.Context<S> : never;
+  Rules[number] extends ResponseRule<ResponseMatcher, infer S, AnyResponseBodyCodec> ? Schema.Schema.Context<S> : never;
 
 type BodyContextOf<Body extends AnySchema | undefined> = Body extends AnySchema ? Schema.Schema.Context<Body> : never;
 
@@ -166,6 +244,11 @@ export class InvalidPathArguments extends Data.TaggedError("InvalidPathArguments
   readonly received: number;
 }> {}
 
+export class DuplicateResponseKey extends Data.TaggedError("DuplicateResponseKey")<{
+  readonly key: string;
+  readonly owner: "api" | "request";
+}> {}
+
 export interface CachePolicy {
   readonly control?: string;
   readonly fetch?: RequestCache;
@@ -181,7 +264,7 @@ export interface RequestOptions {
 }
 
 export interface ApiOptions<Defaults extends ReadonlyArray<AnyResponseRule> = readonly []> extends RequestOptions {
-  readonly responses?: Defaults;
+  readonly responses?: Defaults & UniqueResponseRules<Defaults>;
 }
 
 export interface RequestDefinition<
@@ -201,7 +284,7 @@ export interface RequestDefinition<
         ? DefaultBody
         : never
       : never;
-  readonly responses?: Rules;
+  readonly responses?: Rules & UniqueResponseRules<Rules>;
 }
 
 type BodySetter<
@@ -223,11 +306,15 @@ export interface RequestPlan<
   readonly mapRequest: (
     transform: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest,
   ) => RequestPlan<Body, Rules, BodyReady>;
-  readonly setResponseSchema: <const Matcher extends ResponseMatcher, const S extends AnySchema>(
+  readonly setResponseSchema: <
+    const Matcher extends ResponseMatcher,
+    const S extends AnySchema,
+    const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+  >(
     match: Matcher,
     schema: S,
-    options?: { readonly body?: "json" | "none" },
-  ) => RequestPlan<Body, SetResponseRule<Rules, ResponseRule<Matcher, S>>, BodyReady>;
+    options?: CodecOptions<S, Codec>,
+  ) => RequestPlan<Body, SetResponseRule<Rules, ResponseRule<Matcher, S, Codec>>, BodyReady>;
   readonly effect: BodyReady extends true
     ? Effect.Effect<
         ResponseOf<Rules>,
@@ -285,9 +372,17 @@ const fillPath = (path: string, pathArguments: ReadonlyArray<string>): string =>
   return path.replace(parameterPattern, () => encodeURIComponent(pathArguments[argumentIndex++]!));
 };
 
-const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers): boolean =>
-  rule.match.status === status &&
-  Object.entries(rule.match.headers ?? {}).every(([name, value]) => headers[name.toLowerCase()] === value);
+const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers): boolean => {
+  const statusMatches =
+    typeof rule.match.status === "number" ? rule.match.status === status : rule.match.status(status);
+  return (
+    statusMatches &&
+    Object.entries(rule.match.headers ?? {}).every(([name, matcher]) => {
+      const value = headers[name.toLowerCase()];
+      return typeof matcher === "string" ? value === matcher : matcher(value);
+    })
+  );
+};
 
 const specificity = (rule: AnyResponseRule): number => Object.keys(rule.match.headers ?? {}).length;
 
@@ -295,6 +390,14 @@ const setResponseRule = (
   rules: ReadonlyArray<AnyResponseRule>,
   rule: AnyResponseRule,
 ): ReadonlyArray<AnyResponseRule> => [rule, ...rules.filter((candidate) => candidate.match.key !== rule.match.key)];
+
+const validateUniqueResponseKeys = (rules: ReadonlyArray<AnyResponseRule>, owner: "api" | "request"): void => {
+  const keys = new Set<string>();
+  for (const rule of rules) {
+    if (keys.has(rule.match.key)) throw new DuplicateResponseKey({ key: rule.match.key, owner });
+    keys.add(rule.match.key);
+  }
+};
 
 const mergeResponseRules = (
   defaults: ReadonlyArray<AnyResponseRule>,
@@ -328,9 +431,7 @@ const findResponseRule = (
 };
 
 const decodeResponse = (rule: AnyResponseRule, raw: HttpClientResponse.HttpClientResponse) =>
-  rule.body === "none"
-    ? Schema.decodeUnknown(rule.schema)(undefined)
-    : HttpClientResponse.schemaBodyJson(rule.schema)(raw);
+  Effect.flatMap(rule.codec.decode(raw), Schema.decodeUnknown(rule.schema));
 
 const makePlan = <
   Body extends AnySchema | undefined,
@@ -386,10 +487,11 @@ const makePlan = <
     const body = yield* decodeResponse(rule, raw);
     return {
       key: rule.match.key,
-      status: rule.match.status,
+      status: raw.status,
       headers: raw.headers,
       body,
       matched: rule.match,
+      response: raw,
     } as ResponseOf<Rules>;
   });
 
@@ -401,15 +503,19 @@ const makePlan = <
     setCache: (cache) => update({ cache }),
     setRetries: (retries) => update({ retries: Math.max(0, Math.floor(retries)) }),
     mapRequest: (transform) => update({ requestTransforms: [...state.requestTransforms, transform] }),
-    setResponseSchema: <const Matcher extends ResponseMatcher, const S extends AnySchema>(
+    setResponseSchema: <
+      const Matcher extends ResponseMatcher,
+      const S extends AnySchema,
+      const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+    >(
       match: Matcher,
       schema: S,
-      options?: { readonly body?: "json" | "none" },
+      options?: CodecOptions<S, Codec>,
     ) => {
-      const rule = response(match, schema, options);
-      return makePlan<Body, SetResponseRule<Rules, ResponseRule<Matcher, S>>, BodyReady>(
+      const rule = response<Matcher, S, Codec>(match, schema, options);
+      return makePlan<Body, SetResponseRule<Rules, ResponseRule<Matcher, S, Codec>>, BodyReady>(
         definition,
-        setResponseRule(rules, rule) as SetResponseRule<Rules, ResponseRule<Matcher, S>>,
+        setResponseRule(rules, rule) as SetResponseRule<Rules, ResponseRule<Matcher, S, Codec>>,
         state,
       );
     },
@@ -455,11 +561,13 @@ export const createRequest = <
   const DefaultBody = undefined,
 >(
   definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
-): Endpoint<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>> =>
-  createRequestInternal<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>>(
+): Endpoint<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>> => {
+  validateUniqueResponseKeys(definition.responses ?? [], "request");
+  return createRequestInternal<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>>(
     definition,
     definition.responses ?? ([] as unknown as Rules),
   );
+};
 
 export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> {
   readonly createRequest: <
@@ -476,20 +584,26 @@ export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> {
 export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> = readonly []>(
   baseUrl: string,
   options: ApiOptions<Defaults> = {} as ApiOptions<Defaults>,
-): Api<Defaults> => ({
-  createRequest: <
-    const Method extends HttpMethod.HttpMethod,
-    const Path extends string,
-    Body extends AnySchema | undefined = undefined,
-    const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
-    const DefaultBody = undefined,
-  >(
-    definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
-  ): Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>, InitialBodyReady<Body, DefaultBody>> => {
-    const rules = mergeResponseRules(options.responses ?? [], definition.responses ?? []);
-    return createRequestInternal<Path, Body, MergeResponseRules<Defaults, Rules>, InitialBodyReady<Body, DefaultBody>>(
-      { ...definition, baseUrl, baseOptions: options },
-      rules as MergeResponseRules<Defaults, Rules>,
-    );
-  },
-});
+): Api<Defaults> => {
+  validateUniqueResponseKeys(options.responses ?? [], "api");
+  return {
+    createRequest: <
+      const Method extends HttpMethod.HttpMethod,
+      const Path extends string,
+      Body extends AnySchema | undefined = undefined,
+      const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
+      const DefaultBody = undefined,
+    >(
+      definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
+    ): Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>, InitialBodyReady<Body, DefaultBody>> => {
+      validateUniqueResponseKeys(definition.responses ?? [], "request");
+      const rules = mergeResponseRules(options.responses ?? [], definition.responses ?? []);
+      return createRequestInternal<
+        Path,
+        Body,
+        MergeResponseRules<Defaults, Rules>,
+        InitialBodyReady<Body, DefaultBody>
+      >({ ...definition, baseUrl, baseOptions: options }, rules as MergeResponseRules<Defaults, Rules>);
+    },
+  };
+};

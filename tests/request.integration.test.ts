@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";
 import { Effect, Match, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vitest";
-import { createApi, response } from "../src/main.js";
+import { createApi, response, ResponseBody } from "../src/main.js";
 
 const User = Schema.Struct({
   id: Schema.String,
@@ -181,19 +181,21 @@ describe("request integration", () => {
     const deleteUser = api.createRequest({
       method: "DELETE",
       path: "/users/:userId",
-      responses: [response({ key: "deleted", status: 204 }, Schema.Void, { body: "none" })] as const,
+      responses: [response({ key: "deleted", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
     });
     const headUser = api.createRequest({
       method: "HEAD",
       path: "/users/:userId",
       responses: [
-        response({ key: "exists", status: 200, headers: { "x-user-name": "Taken" } }, Schema.Void, { body: "none" }),
+        response({ key: "exists", status: 200, headers: { "x-user-name": "Taken" } }, Schema.Void, {
+          codec: ResponseBody.none,
+        }),
       ] as const,
     });
     const usersOptions = api.createRequest({
       method: "OPTIONS",
       path: "/users",
-      responses: [response({ key: "options", status: 204 }, Schema.Void, { body: "none" })] as const,
+      responses: [response({ key: "options", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
     });
     const getUserBlogPost = api.createRequest({
       method: "GET",
