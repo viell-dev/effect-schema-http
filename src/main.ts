@@ -6,6 +6,7 @@ export {
   response,
   type Api,
   type ApiOptions,
+  type CachePolicy,
   type Endpoint,
   type RequestDefinition,
   type RequestOptions,

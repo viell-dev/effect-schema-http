@@ -14,9 +14,11 @@ import { Data, Effect, type ParseResult, Schema } from "effect";
 type AnySchema = Schema.Schema.Any;
 
 export interface ResponseMatcher<
+  Key extends string = string,
   Status extends number = number,
   MatchHeaders extends Readonly<Record<string, string>> | undefined = Readonly<Record<string, string>> | undefined,
 > {
+  readonly key: Key;
   readonly status: Status;
   readonly headers?: MatchHeaders;
 }
@@ -41,25 +43,20 @@ export const response = <const Matcher extends ResponseMatcher, const S extends 
 
 type MatcherOf<Rule extends AnyResponseRule> = Rule extends ResponseRule<infer Matcher, AnySchema> ? Matcher : never;
 
-type SameType<Left, Right> =
-  (<T>() => T extends Left ? 1 : 2) extends <T>() => T extends Right ? 1 : 2
-    ? (<T>() => T extends Right ? 1 : 2) extends <T>() => T extends Left ? 1 : 2
-      ? true
-      : false
-    : false;
+type KeyOf<Rule extends AnyResponseRule> = MatcherOf<Rule>["key"];
 
-type RemoveMatchingRule<
-  Rules extends ReadonlyArray<AnyResponseRule>,
-  Matcher extends ResponseMatcher,
-> = Rules extends readonly [infer Head extends AnyResponseRule, ...infer Tail extends ReadonlyArray<AnyResponseRule>]
-  ? SameType<MatcherOf<Head>, Matcher> extends true
-    ? RemoveMatchingRule<Tail, Matcher>
-    : readonly [Head, ...RemoveMatchingRule<Tail, Matcher>]
+type RemoveMatchingRule<Rules extends ReadonlyArray<AnyResponseRule>, Key extends string> = Rules extends readonly [
+  infer Head extends AnyResponseRule,
+  ...infer Tail extends ReadonlyArray<AnyResponseRule>,
+]
+  ? KeyOf<Head> extends Key
+    ? RemoveMatchingRule<Tail, Key>
+    : readonly [Head, ...RemoveMatchingRule<Tail, Key>]
   : readonly [];
 
 type SetResponseRule<Rules extends ReadonlyArray<AnyResponseRule>, Rule extends AnyResponseRule> = readonly [
   Rule,
-  ...RemoveMatchingRule<Rules, MatcherOf<Rule>>,
+  ...RemoveMatchingRule<Rules, KeyOf<Rule>>,
 ];
 
 type MergeResponseRules<
@@ -73,11 +70,12 @@ type MergeResponseRules<
   : Defaults;
 
 type MatchedHeaders<Matcher extends ResponseMatcher> =
-  Matcher extends ResponseMatcher<number, infer MatchHeaders extends Readonly<Record<string, string>>>
+  Matcher extends ResponseMatcher<string, number, infer MatchHeaders extends Readonly<Record<string, string>>>
     ? MatchHeaders
     : unknown;
 
 export interface ResponseEnvelope<Matcher extends ResponseMatcher, Body> {
+  readonly key: Matcher["key"];
   readonly status: Matcher["status"];
   readonly headers: Headers.Headers & MatchedHeaders<Matcher>;
   readonly body: Body;
@@ -94,7 +92,11 @@ type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> =
 
 type BodyContextOf<Body extends AnySchema | undefined> = Body extends AnySchema ? Schema.Schema.Context<Body> : never;
 
-type InitialBodyReady<Body extends AnySchema | undefined> = Body extends AnySchema ? false : true;
+type InitialBodyReady<Body extends AnySchema | undefined, DefaultBody = undefined> = Body extends AnySchema
+  ? [DefaultBody] extends [undefined]
+    ? false
+    : true
+  : true;
 
 type PathArguments<Path extends string> = Path extends `${infer Segment}/${infer Rest}`
   ? Segment extends `:${string}`
@@ -120,10 +122,15 @@ export class RequestBodyNotAllowed extends Data.TaggedError("RequestBodyNotAllow
   readonly request: HttpClientRequest.HttpClientRequest;
 }> {}
 
+export interface CachePolicy {
+  readonly control?: string;
+  readonly fetch?: RequestCache;
+}
+
 export interface RequestOptions {
   readonly headers?: Headers.Input;
   readonly urlParams?: UrlParams.Input;
-  readonly cache?: RequestCache;
+  readonly cache?: CachePolicy;
   readonly retries?: number;
   readonly transformRequest?: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest;
   readonly transformClient?: (client: HttpClient.HttpClient) => HttpClient.HttpClient;
@@ -138,10 +145,18 @@ export interface RequestDefinition<
   Path extends string,
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
+  DefaultBody = undefined,
 > extends RequestOptions {
   readonly method: Method;
   readonly path: Path;
   readonly body?: Method extends "GET" | "HEAD" ? never : Body;
+  readonly defaultBody?: Method extends "GET" | "HEAD"
+    ? never
+    : Body extends AnySchema
+      ? DefaultBody extends Schema.Schema.Type<Body>
+        ? DefaultBody
+        : never
+      : never;
   readonly responses?: Rules;
 }
 
@@ -159,7 +174,7 @@ export interface RequestPlan<
   readonly setUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setUrlParams: (params: UrlParams.Input) => RequestPlan<Body, Rules, BodyReady>;
   readonly setHeader: (name: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
-  readonly setCache: (cache: RequestCache) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setCache: (cache: CachePolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setRetries: (retries: number) => RequestPlan<Body, Rules, BodyReady>;
   readonly mapRequest: (
     transform: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest,
@@ -186,12 +201,14 @@ export type Endpoint<
   Path extends string,
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
-> = (...pathArguments: PathArguments<Path>) => RequestPlan<Body, Rules, InitialBodyReady<Body>>;
+  BodyReady extends boolean = InitialBodyReady<Body>,
+> = (...pathArguments: PathArguments<Path>) => RequestPlan<Body, Rules, BodyReady>;
 
 interface InternalDefinition<Body extends AnySchema | undefined> extends RequestOptions {
   readonly method: HttpMethod.HttpMethod;
   readonly path: string;
   readonly body?: Body;
+  readonly defaultBody?: unknown;
   readonly baseUrl?: string;
   readonly baseOptions?: RequestOptions;
 }
@@ -201,7 +218,7 @@ interface PlanState {
   readonly hasBody: boolean;
   readonly headers: Headers.Headers;
   readonly urlParams: UrlParams.UrlParams;
-  readonly cache: RequestCache | undefined;
+  readonly cache: CachePolicy | undefined;
   readonly retries: number;
   readonly requestTransforms: ReadonlyArray<
     (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest
@@ -229,20 +246,10 @@ const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers
 
 const specificity = (rule: AnyResponseRule): number => Object.keys(rule.match.headers ?? {}).length;
 
-const sameMatcher = (left: ResponseMatcher, right: ResponseMatcher): boolean => {
-  const leftHeaders = Object.entries(left.headers ?? {});
-  const rightHeaders = Object.entries(right.headers ?? {});
-  return (
-    left.status === right.status &&
-    leftHeaders.length === rightHeaders.length &&
-    leftHeaders.every(([name, value]) => right.headers?.[name] === value)
-  );
-};
-
 const setResponseRule = (
   rules: ReadonlyArray<AnyResponseRule>,
   rule: AnyResponseRule,
-): ReadonlyArray<AnyResponseRule> => [rule, ...rules.filter((candidate) => !sameMatcher(candidate.match, rule.match))];
+): ReadonlyArray<AnyResponseRule> => [rule, ...rules.filter((candidate) => candidate.match.key !== rule.match.key)];
 
 const mergeResponseRules = (
   defaults: ReadonlyArray<AnyResponseRule>,
@@ -297,6 +304,10 @@ const makePlan = <
     request = HttpClientRequest.setHeaders(request, state.headers);
     request = HttpClientRequest.setUrlParams(request, state.urlParams);
 
+    if (state.cache?.control !== undefined) {
+      request = HttpClientRequest.setHeader(request, "cache-control", state.cache.control);
+    }
+
     if (definition.body !== undefined && state.hasBody) {
       request = yield* HttpClientRequest.schemaBodyJson(definition.body)(state.body)(request);
     }
@@ -314,8 +325,8 @@ const makePlan = <
       state.retries > 0 ? HttpClient.retryTransient(endpointClient, { times: state.retries }) : endpointClient;
     let send = client.execute(request);
 
-    if (state.cache !== undefined) {
-      send = Effect.provideService(send, FetchHttpClient.RequestInit, { cache: state.cache });
+    if (state.cache?.fetch !== undefined) {
+      send = Effect.provideService(send, FetchHttpClient.RequestInit, { cache: state.cache.fetch });
     }
 
     const raw = yield* send;
@@ -325,6 +336,7 @@ const makePlan = <
 
     const body = yield* decodeResponse(rule, raw);
     return {
+      key: rule.match.key,
       status: rule.match.status,
       headers: raw.headers,
       body,
@@ -357,10 +369,15 @@ const makePlan = <
 };
 
 const createRequestInternal =
-  <Path extends string, Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>>(
+  <
+    Path extends string,
+    Body extends AnySchema | undefined,
+    Rules extends ReadonlyArray<AnyResponseRule>,
+    BodyReady extends boolean,
+  >(
     definition: InternalDefinition<Body>,
     rules: Rules,
-  ): Endpoint<Path, Body, Rules> =>
+  ): Endpoint<Path, Body, Rules, BodyReady> =>
   (...pathArguments: PathArguments<Path>) => {
     const baseHeaders = Headers.fromInput(definition.baseOptions?.headers);
     const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
@@ -370,19 +387,15 @@ const createRequestInternal =
       (transform): transform is NonNullable<typeof transform> => transform !== undefined,
     );
 
-    return makePlan<Body, Rules, InitialBodyReady<Body>>(
-      { ...definition, path: fillPath(definition.path, pathArguments) },
-      rules,
-      {
-        body: undefined,
-        hasBody: false,
-        headers,
-        urlParams,
-        cache: definition.cache ?? definition.baseOptions?.cache,
-        retries: definition.retries ?? definition.baseOptions?.retries ?? 0,
-        requestTransforms,
-      },
-    );
+    return makePlan<Body, Rules, BodyReady>({ ...definition, path: fillPath(definition.path, pathArguments) }, rules, {
+      body: definition.defaultBody,
+      hasBody: Object.hasOwn(definition, "defaultBody"),
+      headers,
+      urlParams,
+      cache: definition.cache ?? definition.baseOptions?.cache,
+      retries: definition.retries ?? definition.baseOptions?.retries ?? 0,
+      requestTransforms,
+    });
   };
 
 export const createRequest = <
@@ -390,10 +403,14 @@ export const createRequest = <
   const Path extends string,
   Body extends AnySchema | undefined = undefined,
   const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
+  const DefaultBody = undefined,
 >(
-  definition: RequestDefinition<Method, Path, Body, Rules>,
-): Endpoint<Path, Body, Rules> =>
-  createRequestInternal<Path, Body, Rules>(definition, definition.responses ?? ([] as unknown as Rules));
+  definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
+): Endpoint<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>> =>
+  createRequestInternal<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>>(
+    definition,
+    definition.responses ?? ([] as unknown as Rules),
+  );
 
 export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> {
   readonly createRequest: <
@@ -401,9 +418,10 @@ export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> {
     const Path extends string,
     Body extends AnySchema | undefined = undefined,
     const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
+    const DefaultBody = undefined,
   >(
-    definition: RequestDefinition<Method, Path, Body, Rules>,
-  ) => Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>>;
+    definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
+  ) => Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>, InitialBodyReady<Body, DefaultBody>>;
 }
 
 export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> = readonly []>(
@@ -415,11 +433,12 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
     const Path extends string,
     Body extends AnySchema | undefined = undefined,
     const Rules extends ReadonlyArray<AnyResponseRule> = readonly [],
+    const DefaultBody = undefined,
   >(
-    definition: RequestDefinition<Method, Path, Body, Rules>,
-  ): Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>> => {
+    definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
+  ): Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>, InitialBodyReady<Body, DefaultBody>> => {
     const rules = mergeResponseRules(options.responses ?? [], definition.responses ?? []);
-    return createRequestInternal<Path, Body, MergeResponseRules<Defaults, Rules>>(
+    return createRequestInternal<Path, Body, MergeResponseRules<Defaults, Rules>, InitialBodyReady<Body, DefaultBody>>(
       { ...definition, baseUrl, baseOptions: options },
       rules as MergeResponseRules<Defaults, Rules>,
     );

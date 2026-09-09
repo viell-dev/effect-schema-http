@@ -1,5 +1,5 @@
 import { FetchHttpClient, HttpClientRequest } from "@effect/platform";
-import { Effect, Either, Layer, Schema } from "effect";
+import { Effect, Either, Layer, Match, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { createApi, createRequest, RequestBodyNotAllowed, response, UnhandledResponse } from "./main.js";
 
@@ -21,7 +21,7 @@ describe("createRequest", () => {
     const getPost = createRequest({
       method: "GET",
       path: "https://example.test/users/:userId/posts/:postId",
-      responses: [response({ status: 200 }, Schema.Struct({ id: Schema.String }))] as const,
+      responses: [response({ key: "post", status: 200 }, Schema.Struct({ id: Schema.String }))] as const,
     });
 
     expectTypeOf(getPost).parameters.toEqualTypeOf<[value: string, value: string]>();
@@ -47,13 +47,13 @@ describe("createRequest", () => {
       path: "https://example.test/users",
       // @ts-expect-error Fetch does not support GET request bodies.
       body: Schema.Struct({ probe: Schema.Boolean }),
-      responses: [response({ status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
     });
 
     const getUsers = createRequest({
       method: "GET",
       path: "https://example.test/users",
-      responses: [response({ status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
     });
     const result = await getUsers()
       .mapRequest(HttpClientRequest.bodyUnsafeJson({ probe: true }))
@@ -77,15 +77,17 @@ describe("createRequest", () => {
     const requests: Array<Request> = [];
     const api = createApi("https://example.test", {
       headers: { authorization: "Bearer token" },
-      responses: [response({ status: 404 }, NotFound)] as const,
+      responses: [response({ key: "not-found", status: 404 }, NotFound)] as const,
     });
     const getUsers = api.createRequest({
       method: "GET",
       path: "/users",
-      responses: [response({ status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
     });
 
-    const plan = getUsers().setUrlParam("fields", "id").setResponseSchema({ status: 200 }, Schema.Array(ThinUser));
+    const plan = getUsers()
+      .setUrlParam("fields", "id")
+      .setResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser));
 
     expect(requests).toEqual([]);
 
@@ -115,12 +117,15 @@ describe("createRequest", () => {
 
   it("keeps mapped 4xx responses in the success channel", async () => {
     const api = createApi("https://example.test", {
-      responses: [response({ status: 404 }, NotFound), response({ status: 410 }, Gone)] as const,
+      responses: [
+        response({ key: "not-found", status: 404 }, NotFound),
+        response({ key: "gone", status: 410 }, Gone),
+      ] as const,
     });
     const getUser = api.createRequest({
       method: "GET",
       path: "/users/1",
-      responses: [response({ status: 200 }, User)] as const,
+      responses: [response({ key: "ok", status: 200 }, User)] as const,
     });
 
     const result = await getUser().effect.pipe(
@@ -130,11 +135,18 @@ describe("createRequest", () => {
 
     expect(result).toMatchObject({ status: 410, body: { deletedAt: "2026-09-09" } });
     if (result.status === 410) expectTypeOf(result.body).toEqualTypeOf<typeof Gone.Type>();
+    const description = Match.value(result).pipe(
+      Match.when({ key: "ok" }, ({ body }) => body.name),
+      Match.when({ key: "not-found" }, ({ body }) => body.message),
+      Match.when({ key: "gone" }, ({ body }) => body.deletedAt),
+      Match.exhaustive,
+    );
+    expect(description).toBe("2026-09-09");
 
     const getDetailedUser = api.createRequest({
       method: "GET",
       path: "/detailed-users/1",
-      responses: [response({ status: 404 }, DetailedNotFound)] as const,
+      responses: [response({ key: "not-found", status: 404 }, DetailedNotFound)] as const,
     });
     const detailed = await getDetailedUser().effect.pipe(
       Effect.provide(
@@ -154,7 +166,7 @@ describe("createRequest", () => {
       method: "POST",
       path: "https://example.test/users",
       body: Schema.Struct({ name: Schema.String }),
-      responses: [response({ status: 201 }, User)] as const,
+      responses: [response({ key: "created", status: 201 }, User)] as const,
     });
 
     const plan = createUser();
@@ -176,16 +188,41 @@ describe("createRequest", () => {
     expect(result.body.name).toBe("Ada");
   });
 
+  it("can execute with a schema-encoded static body and override it through the setter", async () => {
+    const bodies: Array<unknown> = [];
+    const doFoo = createRequest({
+      method: "POST",
+      path: "https://example.test/foo",
+      body: Schema.Struct({ action: Schema.String }),
+      defaultBody: { action: "foo" },
+      responses: [response({ key: "done", status: 204 }, Schema.Void, { body: "none" })] as const,
+    });
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        bodies.push(await request.json());
+        return new Response(null, { status: 204 });
+      }),
+    );
+
+    await doFoo().effect.pipe(Effect.provide(layer), Effect.runPromise);
+    await doFoo().setBody({ action: "bar" }).effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(bodies).toEqual([{ action: "foo" }, { action: "bar" }]);
+  });
+
   it("allows cache and retry defaults to be overridden at a call site", async () => {
     let attempts = 0;
-    const getUsers = createApi("https://example.test", { cache: "force-cache", retries: 0 }).createRequest({
+    const getUsers = createApi("https://example.test", {
+      cache: { control: "max-age=3600", fetch: "force-cache" },
+      retries: 0,
+    }).createRequest({
       method: "GET",
       path: "/users",
-      responses: [response({ status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
     });
 
     const result = await getUsers()
-      .setCache("reload")
+      .setCache({ control: "no-cache", fetch: "reload" })
       .setRetries(2)
       .effect.pipe(
         Effect.provide(
@@ -193,6 +230,7 @@ describe("createRequest", () => {
             mockFetch(async (request) => {
               attempts += 1;
               expect(request.cache).toBe("reload");
+              expect(request.headers.get("cache-control")).toBe("no-cache");
               if (attempts < 3) throw new Error("temporary network failure");
               return Response.json([{ id: 1, name: "Ada" }]);
             }),
@@ -209,7 +247,7 @@ describe("createRequest", () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
-      responses: [response({ status: 200 }, User)] as const,
+      responses: [response({ key: "ok", status: 200 }, User)] as const,
     });
 
     const result = await getUser().effect.pipe(
