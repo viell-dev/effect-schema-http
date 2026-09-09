@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";
 import { Effect, Match, Schema } from "effect";
-import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import { createApi, response, ResponseBody } from "../src/main.js";
 
 const User = Schema.Struct({
@@ -137,6 +137,11 @@ describe("request integration", () => {
 
     const address = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  beforeEach(() => {
+    currentUser = { id: userId, name: "Ada", email: "ada@example.test" };
+    methods.length = 0;
   });
 
   afterAll(async () => {
