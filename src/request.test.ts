@@ -5,14 +5,21 @@ import {
   createApi,
   createRequest,
   DuplicateResponseKey,
+  extendApi,
   InvalidPathArguments,
   InvalidRetryCount,
   RequestBodyNotAllowed,
   response,
   ResponseBody,
   ResponseDecodeError,
+  mapEndpoint,
+  setBody as withBody,
+  setHeader as withHeader,
+  setResponseSchema as withResponseSchema,
+  setUrlParam as withUrlParam,
   type Endpoint,
   type ResponseOf,
+  toEffect,
   UnhandledResponse,
 } from "./main.js";
 
@@ -30,6 +37,53 @@ const mockFetch = (handler: (request: Request) => Promise<Response>): typeof fet
     handler(input instanceof Request ? input : new Request(input, init))) as typeof fetch;
 
 describe("createRequest", () => {
+  it("composes pipeable endpoints and plans without changing their lazy semantics", async () => {
+    const requests: Array<Request> = [];
+    const createUser = createRequest({
+      method: "POST",
+      path: "https://example.test/users",
+      body: Schema.Struct({ name: Schema.String }),
+      responses: [response({ key: "created", status: 201 }, User)],
+    });
+    const createAda = createUser.pipe(mapEndpoint(withBody({ name: "Ada" })));
+    const effect = createAda().pipe(withHeader("x-source", "composed"), toEffect);
+
+    expect(requests).toEqual([]);
+
+    const result = await effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            requests.push(request);
+            expect(request.headers.get("x-source")).toBe("composed");
+            expect(await request.json()).toEqual({ name: "Ada" });
+            return Response.json({ id: 1, name: "Ada" }, { status: 201 });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(result.body.name).toBe("Ada");
+    expect(requests).toHaveLength(1);
+
+    const getUsers = createRequest({
+      method: "GET",
+      path: "https://example.test/teams/:teamId/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+    const getThinUsers = getUsers.pipe(
+      mapEndpoint((plan) =>
+        plan.pipe(withUrlParam("fields", "id"), withResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser))),
+      ),
+    );
+
+    expectTypeOf(getThinUsers).parameters.toEqualTypeOf<[value: string]>();
+    const thinPlan = getThinUsers("team-1");
+    type ThinResult = Effect.Effect.Success<typeof thinPlan.effect>;
+    expectTypeOf<ThinResult["body"]>().toEqualTypeOf<ReadonlyArray<typeof ThinUser.Type>>();
+  });
+
   it("infers, validates, and encodes placeholders anywhere in a path", async () => {
     const getFile = createRequest({
       method: "GET",
@@ -126,11 +180,13 @@ describe("createRequest", () => {
       urlParams: { scope: "base", page: "1" },
       responses: [notFound],
     });
-    const adminApi = api.extend({
-      headers: { authorization: "Bearer admin" },
-      urlParams: { scope: "admin" },
-      responses: [unauthorized],
-    });
+    const adminApi = api.pipe(
+      extendApi({
+        headers: { authorization: "Bearer admin" },
+        urlParams: { scope: "admin" },
+        responses: [unauthorized],
+      }),
+    );
     const getUsers = adminApi.createRequest({
       method: "GET",
       path: "/users",

@@ -9,7 +9,7 @@ pnpm add viell-effect-schema-http effect @effect/platform
 ```ts
 import { FetchHttpClient } from "@effect/platform";
 import { Effect, Schema } from "effect";
-import { createApi, response } from "viell-effect-schema-http";
+import { createApi, response, setUrlParam, toEffect } from "viell-effect-schema-http";
 
 const User = Schema.Struct({ id: Schema.String, name: Schema.String });
 
@@ -23,7 +23,11 @@ const getUser = api.createRequest({
   responses: [response({ key: "ok", status: 200 }, User)],
 });
 
-const program = getUser("user-1").effect.pipe(Effect.provide(FetchHttpClient.layer));
+const program = getUser("user-1").pipe(
+  setUrlParam("expand", "profile"),
+  toEffect,
+  Effect.provide(FetchHttpClient.layer),
+);
 ```
 
 See [the design sketch](docs/design.md) for the proposed API, semantics, test strategy, and open questions.

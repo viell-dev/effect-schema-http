@@ -10,6 +10,12 @@ import {
   UrlParams,
 } from "@effect/platform";
 import { Cause, Data, type Duration, Effect, Option, ParseResult, Schedule, Schema } from "effect";
+import { dual } from "effect/Function";
+import type * as Pipeable from "effect/Pipeable";
+
+const pipeSelf = function (this: unknown, ...operations: ReadonlyArray<(value: unknown) => unknown>): unknown {
+  return operations.reduce<unknown>((value, operation) => operation(value), this);
+} as Pipeable.Pipeable["pipe"];
 
 type AnySchema = Schema.Schema.Any;
 
@@ -326,7 +332,8 @@ export interface RequestPlan<
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
   BodyReady extends boolean = InitialBodyReady<Body>,
-> {
+>
+  extends Pipeable.Pipeable {
   readonly setBody: BodySetter<Body, Rules>;
   readonly setUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setUrlParams: (params: UrlParams.Input) => RequestPlan<Body, Rules, BodyReady>;
@@ -374,7 +381,157 @@ export type Endpoint<
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
   BodyReady extends boolean = InitialBodyReady<Body>,
-> = (...pathArguments: PathArguments<Path>) => RequestPlan<Body, Rules, BodyReady>;
+> = ((...pathArguments: PathArguments<Path>) => RequestPlan<Body, Rules, BodyReady>) & Pipeable.Pipeable;
+
+export const setBody =
+  <Value>(body: Value) =>
+  <Body extends AnySchema, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: Value extends Schema.Schema.Type<Body> ? RequestPlan<Body, Rules, BodyReady> : never,
+  ): RequestPlan<Body, Rules, true> =>
+    plan.setBody(body as Schema.Schema.Type<Body>);
+
+export const setUrlParam =
+  (key: string, value: string) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setUrlParam(key, value);
+
+export const setUrlParams =
+  (params: UrlParams.Input) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setUrlParams(params);
+
+export const appendUrlParam =
+  (key: string, value: string) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.appendUrlParam(key, value);
+
+export const removeUrlParam =
+  (key: string) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.removeUrlParam(key);
+
+export const setHeader =
+  (name: string, value: string) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setHeader(name, value);
+
+export const setHeaders =
+  (headers: Headers.Input) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setHeaders(headers);
+
+export const removeHeader =
+  (name: string) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.removeHeader(name);
+
+export const setCache =
+  (cache: CachePolicy | undefined) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setCache(cache);
+
+export const setBaseUrl =
+  (baseUrl: string | undefined) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setBaseUrl(baseUrl);
+
+export const setTimeout =
+  (timeout: Duration.DurationInput | undefined) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setTimeout(timeout);
+
+export const setRetry =
+  (retry: RetryPolicy | undefined) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setRetry(retry);
+
+export const setRetries =
+  (retries: number) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setRetries(retries);
+
+export const mapRequest =
+  (transform: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.mapRequest(transform);
+
+export const mapClient =
+  (transform: (client: HttpClient.HttpClient) => HttpClient.HttpClient) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.mapClient(transform);
+
+export const setResponseSchema =
+  <
+    const Matcher extends ResponseMatcher,
+    const S extends AnySchema,
+    const Codec extends AnyResponseBodyCodec = typeof ResponseBody.json,
+  >(
+    match: Matcher,
+    schema: S,
+    options?: CodecOptions<S, Codec>,
+  ) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, SetResponseRule<Rules, ResponseRule<Matcher, S, Codec>>, BodyReady> =>
+    plan.setResponseSchema<Matcher, S, Codec>(match, schema, options);
+
+export const toEffect = <
+  Body extends AnySchema | undefined,
+  Rules extends ReadonlyArray<AnyResponseRule>,
+  BodyReady extends boolean,
+>(
+  plan: RequestPlan<Body, Rules, BodyReady>,
+): RequestPlan<Body, Rules, BodyReady>["effect"] => plan.effect;
+
+type PipeableEndpoint<Arguments extends ReadonlyArray<string>, Value> = ((...arguments_: Arguments) => Value) &
+  Pipeable.Pipeable;
+
+export const mapEndpoint: {
+  <Input, Output>(
+    transform: (value: Input) => Output,
+  ): <Arguments extends ReadonlyArray<string>>(
+    endpoint: PipeableEndpoint<Arguments, Input>,
+  ) => PipeableEndpoint<Arguments, Output>;
+  <Arguments extends ReadonlyArray<string>, Input, Output>(
+    endpoint: PipeableEndpoint<Arguments, Input>,
+    transform: (value: Input) => Output,
+  ): PipeableEndpoint<Arguments, Output>;
+} = dual(
+  2,
+  <Arguments extends ReadonlyArray<string>, Input, Output>(
+    endpoint: PipeableEndpoint<Arguments, Input>,
+    transform: (value: Input) => Output,
+  ): PipeableEndpoint<Arguments, Output> =>
+    makePipeableEndpoint((...arguments_: Arguments) => transform(endpoint(...arguments_))),
+);
 
 interface InternalDefinition<Body extends AnySchema | undefined> extends RequestOptions {
   readonly method: HttpMethod.HttpMethod;
@@ -400,7 +557,7 @@ interface PlanState {
   readonly clientTransforms: ReadonlyArray<(client: HttpClient.HttpClient) => HttpClient.HttpClient>;
 }
 
-interface InternalRequestPlan {
+interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly setBody: (body: unknown) => unknown;
   readonly setUrlParam: (key: string, value: string) => unknown;
   readonly setUrlParams: (params: UrlParams.Input) => unknown;
@@ -623,6 +780,7 @@ const makePlan = <
   });
 
   const plan = {
+    pipe: pipeSelf,
     setBody: (body: unknown) => makePlan<Body, Rules, true>(definition, rules, { ...state, body, hasBody: true }),
     setUrlParam: (key, value) => update({ urlParams: UrlParams.set(state.urlParams, key, value) }),
     setUrlParams: (params) => update({ urlParams: UrlParams.setAll(state.urlParams, params) }),
@@ -660,17 +818,22 @@ const makePlan = <
   return plan as unknown as RequestPlan<Body, Rules, BodyReady>;
 };
 
-const createRequestInternal =
-  <
-    Path extends string,
-    Body extends AnySchema | undefined,
-    Rules extends ReadonlyArray<AnyResponseRule>,
-    BodyReady extends boolean,
-  >(
-    definition: InternalDefinition<Body>,
-    rules: Rules,
-  ): Endpoint<Path, Body, Rules, BodyReady> =>
-  (...pathArguments: PathArguments<Path>) => {
+const makePipeableEndpoint = <Arguments extends ReadonlyArray<unknown>, Value>(
+  endpoint: (...arguments_: Arguments) => Value,
+): ((...arguments_: Arguments) => Value) & Pipeable.Pipeable => {
+  return Object.assign(endpoint, { pipe: pipeSelf });
+};
+
+const createRequestInternal = <
+  Path extends string,
+  Body extends AnySchema | undefined,
+  Rules extends ReadonlyArray<AnyResponseRule>,
+  BodyReady extends boolean,
+>(
+  definition: InternalDefinition<Body>,
+  rules: Rules,
+): Endpoint<Path, Body, Rules, BodyReady> => {
+  const endpoint = (...pathArguments: PathArguments<Path>) => {
     const baseHeaders = Headers.fromInput(definition.baseOptions?.headers);
     const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
     const baseParams = UrlParams.fromInput(definition.baseOptions?.urlParams ?? {});
@@ -698,6 +861,8 @@ const createRequestInternal =
       clientTransforms,
     });
   };
+  return makePipeableEndpoint(endpoint);
+};
 
 export const createRequest = <
   const Method extends HttpMethod.HttpMethod,
@@ -715,7 +880,7 @@ export const createRequest = <
   );
 };
 
-export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> {
+export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> extends Pipeable.Pipeable {
   readonly baseUrl: string;
   readonly extend: <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(
     options: ApiOptions<Overrides>,
@@ -737,6 +902,7 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
 ): Api<Defaults> => {
   validateUniqueResponseKeys(options.responses ?? [], "api");
   return {
+    pipe: pipeSelf,
     baseUrl,
     extend: <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(
       overrides: ApiOptions<Overrides>,
@@ -794,3 +960,8 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
     },
   };
 };
+
+export const extendApi =
+  <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(options: ApiOptions<Overrides>) =>
+  <Defaults extends ReadonlyArray<AnyResponseRule>>(api: Api<Defaults>): Api<MergeResponseRules<Defaults, Overrides>> =>
+    api.extend(options);

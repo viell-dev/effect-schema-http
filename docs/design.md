@@ -22,11 +22,13 @@ const getUsers = api.createRequest({
   ],
 });
 
-const users = getUsers()
-  .setUrlParam("fields", "id,name")
-  .setResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser))
-  .setCache({ control: "max-age=3600", fetch: "force-cache" })
-  .setRetries(3).effect;
+const users = getUsers().pipe(
+  setUrlParam("fields", "id,name"),
+  setResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser)),
+  setCache({ control: "max-age=3600", fetch: "force-cache" }),
+  setRetries(3),
+  toEffect,
+);
 ```
 
 Colon-prefixed placeholders become positional endpoint arguments and are URL-encoded. Placeholders can occupy a full
@@ -42,6 +44,23 @@ const getUserPost = api.createRequest({
 
 const request = getUserPost(userId, postId);
 ```
+
+Plans, endpoints, and APIs are pipeable. Plan combinators preserve body typestate and response unions, while
+`mapEndpoint` turns an endpoint into another ordinary endpoint with the same path arguments:
+
+```ts
+const getThinUsers = getUsers.pipe(
+  mapEndpoint((plan) =>
+    plan.pipe(setUrlParam("fields", "id,name"), setResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser))),
+  ),
+);
+
+yield * getThinUsers().effect; // sends once
+yield * getThinUsers().effect; // sends again with the same composed overrides
+```
+
+Composition does not add execution or caching semantics: every plan remains immutable and every evaluation of its cold
+Effect sends the request again.
 
 The current spike uses `@effect/platform`'s `HttpClient` service. The Effect keeps the transport as an explicit
 requirement. Applications provide `FetchHttpClient.layer`, a Node client layer, or a test client. Accessing `.effect`
@@ -106,8 +125,9 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
 - Header-constrained rules beat status-only rules. Within API and endpoint declarations, the first equally specific
   rule wins. A plan rule with a new key is prepended, so it wins an equally specific tie at that call site.
 - API options flow to endpoints and plans. Endpoint options override API defaults; plan setters override both.
-- `api.extend(options)` creates a sub-API with merged headers, query parameters, policies, transforms, and response
-  rules. APIs expose their base URL, and `.setBaseUrl(...)` can redirect one plan to a mirror or alternate host.
+- `api.extend(options)` and pipeable `extendApi(options)` create a sub-API with merged headers, query parameters,
+  policies, transforms, and response rules. APIs expose their base URL, and `setBaseUrl(...)` can redirect one plan to a
+  mirror or alternate host.
 
 This replacement model keeps the common thin-object case precise: replacing the `200` schema removes the original
 `200` body type, while inherited `404` and endpoint-specific `410` envelopes remain in the union.
