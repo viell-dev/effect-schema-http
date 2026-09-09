@@ -44,16 +44,14 @@ describe("request integration", () => {
     const getUsers = createApi(baseUrl, { headers: { authorization: "Bearer integration" } }).createRequest({
       method: "GET",
       path: "/users",
-      responses: [
-        response.success({ status: 200 }, Schema.Array(User)),
-        response.success({ status: 200, headers: { "x-response-shape": "thin" } }, Schema.Array(ThinUser)),
-      ] as const,
+      responses: [response({ status: 200 }, Schema.Array(User))] as const,
     });
 
     const result = await getUsers()
       .setUrlParam("fields", "id")
+      .setResponseSchema({ status: 200 }, Schema.Array(ThinUser))
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
 
-    expect(result).toEqual([{ id: 1 }]);
+    expect(result).toMatchObject({ status: 200, body: [{ id: 1 }] });
   });
 });

@@ -1,74 +1,118 @@
 # Design sketch
 
-The library defines an endpoint once, then creates immutable request plans at each call site. A plan is lazy: changing
-query parameters, headers, request middleware, or response schemas creates a new plan, and reading `.effect` produces
-the Effect that sends and decodes the request.
+The library defines an endpoint once, then creates immutable request plans at each call site. Every endpoint function
+is zero-argument. A plan remains lazy while the caller sets a body, query parameters, headers, execution policy, or
+response schemas; reading `.effect` produces the Effect that sends and decodes the request.
 
 ```ts
+const api = createApi("https://api.example.com", {
+  headers: { authorization: "Bearer ..." },
+  retries: 0,
+  responses: [response({ status: 404 }, MyApiNotFound)],
+});
+
 const getUsers = api.createRequest({
   method: "GET",
   path: "/users",
   responses: [
-    response.success({ status: 200 }, Schema.Array(User)),
-    response.success({ status: 200, headers: { "x-response-shape": "thin" } }, Schema.Array(ThinUser)),
-    response.success({ status: 204 }, Schema.Void, { body: "none" }),
-    response.failure({ status: 404 }, UserNotFound),
+    response({ status: 200 }, Schema.Array(User)),
+    response({ status: 204 }, Schema.Void, { body: "none" }),
+    response({ status: 410 }, Gone),
   ],
 });
 
 const users = getUsers()
   .setUrlParam("fields", "id,name")
-  .addResponseSchema(
-    response.success({ status: 200, headers: { "x-response-shape": "thin" } }, Schema.Array(ThinUser)),
-  ).effect;
+  .setResponseSchema({ status: 200 }, Schema.Array(ThinUser))
+  .setCache("force-cache")
+  .setRetries(3).effect;
 ```
 
-The current spike uses `@effect/platform`'s `HttpClient` service. The resulting Effect therefore keeps the transport as
-an explicit requirement. Applications provide `FetchHttpClient.layer`, a Node client layer, or a test client. Calling
-`.effect` does not choose a runtime or start a Promise.
+The current spike uses `@effect/platform`'s `HttpClient` service. The Effect keeps the transport as an explicit
+requirement. Applications provide `FetchHttpClient.layer`, a Node client layer, or a test client. Accessing `.effect`
+does not choose a runtime or start a Promise.
 
-## Proposed rules
+## Response model
 
-- Response rules match status and exact, case-insensitive header names. Header-constrained rules beat status-only
-  rules; declaration order breaks ties. This makes a default `200` and a more specific `200 + header` coexist without
-  order-dependent surprises.
-- A response rule states whether decoded data belongs in the success or error channel. HTTP status alone does not make
-  that decision.
-- JSON is the initial body codec. Empty responses explicitly use `{ body: "none" }`. Text, bytes, forms, streams, and
-  content-type negotiation should be codecs rather than flags once their requirements are known.
-- Call-site operations are immutable. `addResponseSchema` conservatively widens the result type because the original
-  responses remain possible. A separate contract-replacement operation can intentionally narrow it later.
-- An omitted request body schema makes a zero-argument endpoint. Supplying one makes the generated endpoint require
-  exactly one decoded body value; Effect Schema encodes it before sending.
-- `createApi(baseUrl, options)` only supplies defaults. `createRequest(...)` remains usable on its own.
+A mapped response is a normal success value regardless of its status. A `404`, `410`, or `503` only enters the Effect
+error channel when no response rule handles it. Transport failures, request encoding failures, and response decoding
+failures remain errors.
+
+Each mapped response produces an envelope:
+
+```ts
+type ResponseEnvelope = {
+  readonly status: 200;
+  readonly headers: Headers;
+  readonly body: ReadonlyArray<User>;
+  readonly matched: { readonly status: 200 };
+};
+```
+
+The actual type is a discriminated union over all response rules. Checking `response.status` narrows both the envelope
+and its body without custom guards. `matched` preserves the selected matcher for cases where multiple schemas share a
+status but differ by headers. Known matcher headers are also reflected in the header type.
+
+`UnhandledResponse` retains the untouched `HttpClientResponse`, including its unconsumed body, instead of copying only
+status and headers. The caller can inspect, log, stream, or decode that response when recovering from the error.
+
+Files and multipart responses are intentionally not invented as a field yet. They should be introduced through body
+codecs so the envelope accurately describes whether `body`, `files`, or both exist for that response rule.
+
+## Defaults and overrides
+
+- API response rules are inherited by every endpoint. This supports APIs with a common `404`, authentication response,
+  maintenance response, or other shared response shape.
+- An endpoint response rule replaces an inherited rule with the same status and header matcher.
+- `setResponseSchema` replaces the rule with the same matcher for one request plan. Other response possibilities stay
+  intact. If the matcher is new, it is added.
+- Header-constrained rules beat status-only rules. Declaration order breaks equally specific ties.
+- API options flow to endpoints and plans. Endpoint options override API defaults; plan setters override both.
+
+This replacement model keeps the common thin-object case precise: replacing the `200` schema removes the original
+`200` body type, while inherited `404` and endpoint-specific `410` envelopes remain in the union.
+
+## Bodies and request fields
+
+The endpoint definition optionally declares a request body schema, but the generated endpoint itself always takes no
+arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` is unavailable at the type level.
+The schema constrains and encodes the value. An optional or explicitly undefined body can be represented in the schema
+and set as such. A GET may declare and set a body as well; whether a particular transport accepts it is a transport
+limitation rather than an endpoint-type rule.
+
+Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
+typed API surface without making schemas for them part of the first version.
+
+## Retry and cache policy
+
+`retries` defaults to zero. API and endpoint definitions can choose another default, and `.setRetries(n)` changes it at
+one call site. The spike delegates retry classification to `HttpClient.retryTransient`.
+
+No cache option is supplied by default, preserving Fetch's default behavior. API and endpoint definitions can specify
+a `RequestCache`, and `.setCache(...)` can replace it at a call site. For example, `"force-cache"` can serve a stable
+dropdown while `"reload"` or `"no-store"` can power an explicit refresh. This option is Fetch-specific; non-Fetch
+transports may ignore it, so a transport-neutral cache abstraction remains a later design problem.
 
 ## Test shape
 
-Three layers are useful and catch different failures:
+Three layers catch different failures:
 
-1. Type tests compile representative endpoint definitions and assert inferred success, failure, body, and Effect
-   requirement types.
-2. Unit tests inject a fake Fetch implementation to check laziness, matching precedence, schema failures, immutable
-   overrides, default merging, and the unhandled-response path.
-3. Integration tests run a disposable server on an ephemeral loopback port and use the real Fetch client. They check
-   URL/header/body serialization, duplicate headers and query parameters, response body consumption, cancellation,
-   timeouts, and connection errors without depending on an external service.
+1. Type assertions in unit tests verify body setters, inherited defaults, response replacement, discriminated envelope
+   narrowing, and Effect requirements.
+2. Unit tests under `src/` inject a fake Fetch implementation to check laziness, schema failures, immutable overrides,
+   retry/cache policy, default merging, and the unhandled-response path.
+3. Integration tests under `tests/` run a disposable server on an ephemeral loopback port and use the real Fetch client.
+   They check actual URL/header/body serialization and response handling without depending on an external service.
 
 Run them separately with `pnpm test:unit` and `pnpm test:integration`, or together with `pnpm test`.
 
-## Open design questions
+## Remaining design questions
 
-1. Should decoded `4xx`/`5xx` schemas default to the Effect error channel, or should every mapping default to success
-   unless explicitly marked as a failure?
-2. Do endpoint functions with bodies look like `createUser(body)`, or should every endpoint stay zero-argument and use
-   `createUser().setBody(body)`?
-3. Should query, path, and request-header schemas be first-class endpoint inputs, or are schema-encoded bodies plus
-   typed mutation methods enough for the first version?
-4. Should response header matching remain exact literals, accept Effect Schemas, or use arbitrary predicates? Schemas
-   can validate and transform headers, while predicates are easier for ranges and vendor content types.
-5. When a call site knows that a mutation changes the contract, should it replace the entire response table (sound and
-   narrow) or override one matcher (ergonomic but still a union with the remaining cases)?
-6. What should callers receive: only the decoded body, or an envelope containing decoded body, status, and selected
-   headers? Returning only the body is simplest but loses pagination, rate-limit, and caching metadata.
-7. Are retries and caching configured as `HttpClient` middleware, per-plan Effect transforms, or both? Cache policy is
-   often request metadata, while retry is execution policy; one generic `options` bag would blur that distinction.
+1. Should header matchers remain exact literals, accept Effect Schemas, or use predicates? Schemas can validate and
+   transform headers, while predicates express ranges and vendor content types more naturally.
+2. For multiple response rules with the same status but different headers, is the `matched` field sufficient as a
+   discriminator, or should response rules have explicit names such as `"thin-users"`?
+3. Which response codecs are required initially beyond JSON and no-body: text, bytes, form data, multipart files, or
+   streaming bodies?
+4. Should retry configuration stay as a simple count plus advanced `transformClient`, or expose schedules and transient
+   response classification directly?
