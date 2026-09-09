@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";
 import { Effect, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createApi, response } from "./main.js";
+import { createApi, response } from "../src/main.js";
 
 const User = Schema.Struct({ id: Schema.Number, name: Schema.String });
 const ThinUser = Schema.Struct({ id: Schema.Number });
