@@ -45,6 +45,12 @@ const getUserPost = api.createRequest({
 const request = getUserPost(userId, postId);
 ```
 
+A backslash escapes a literal colon that would otherwise look like a placeholder. This keeps action-style paths usable:
+
+```ts
+path: "/users/:userId\\:archive"; // getUser(userId) sends /users/<encoded-id>:archive
+```
+
 Plans, endpoints, and APIs are pipeable. Plan combinators preserve body typestate and response unions, while
 `mapEndpoint` turns an endpoint into another ordinary endpoint with the same path arguments:
 
@@ -161,6 +167,13 @@ Fetch transport's actual constraint instead of advertising a request shape that 
 Other methods are intentionally open strings rather than a REST-shaped union. Standard methods and extension methods
 such as `PROPFIND` use the same request machinery; the selected transport remains responsible for rejecting invalid or
 forbidden method tokens.
+
+Request bodies also separate schema encoding from wire encoding. JSON is the default. `RequestBody.text(contentType)`,
+`RequestBody.uint8Array(contentType)`, `RequestBody.urlParams`, and `RequestBody.formData` cover common Fetch body
+shapes, while the exported codec interface permits another `HttpBody` representation. The codec's input type must match
+the schema's encoded type, so the caller still passes the schema's ordinary TypeScript type to `.setBody(...)`.
+`setRequestBodyCodec(...)` can replace the endpoint codec on one immutable plan. `mapRequest` remains the final escape
+hatch for transport-specific bodies and request fields.
 
 Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default and
 uses the transport's JSON reader. `ResponseBody.text` reads the body as a string before schema decoding, so a schema can

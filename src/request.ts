@@ -21,6 +21,45 @@ type AnySchema = Schema.Schema.Any;
 
 export type RequestMethod = string;
 
+export interface RequestBodyCodec<Input = unknown> {
+  readonly name: string;
+  readonly encode: (
+    input: Input,
+    request: HttpClientRequest.HttpClientRequest,
+  ) => Effect.Effect<HttpClientRequest.HttpClientRequest, HttpBody.HttpBodyError>;
+}
+
+const jsonRequestBodyCodec = {
+  name: "json" as const,
+  encode: (input: unknown, request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.bodyJson(request, input),
+} satisfies RequestBodyCodec<unknown>;
+
+export const RequestBody = {
+  json: jsonRequestBodyCodec,
+  text: (contentType?: string) =>
+    ({
+      name: "text" as const,
+      encode: (input: string, request: HttpClientRequest.HttpClientRequest) =>
+        Effect.succeed(HttpClientRequest.bodyText(request, input, contentType)),
+    }) satisfies RequestBodyCodec<string>,
+  uint8Array: (contentType?: string) =>
+    ({
+      name: "uint8-array" as const,
+      encode: (input: Uint8Array, request: HttpClientRequest.HttpClientRequest) =>
+        Effect.succeed(HttpClientRequest.bodyUint8Array(request, input, contentType)),
+    }) satisfies RequestBodyCodec<Uint8Array>,
+  urlParams: {
+    name: "url-params" as const,
+    encode: (input: UrlParams.Input, request: HttpClientRequest.HttpClientRequest) =>
+      Effect.succeed(HttpClientRequest.bodyUrlParams(request, input)),
+  } satisfies RequestBodyCodec<UrlParams.Input>,
+  formData: {
+    name: "form-data" as const,
+    encode: (input: FormData, request: HttpClientRequest.HttpClientRequest) =>
+      Effect.succeed(HttpClientRequest.bodyFormData(request, input)),
+  } satisfies RequestBodyCodec<FormData>,
+} as const;
+
 export type StatusPredicate = (status: number) => boolean;
 export type HeaderPredicate = (value: string | undefined) => boolean;
 export type StatusMatcher = number | StatusPredicate;
@@ -230,15 +269,17 @@ type TakePathParameter<Input extends string, Name extends string = ""> = Input e
     : readonly [name: Name, rest: Input]
   : readonly [name: Name, rest: ""];
 
-type PathArguments<Path extends string> = Path extends `${infer Character}${infer Rest}`
-  ? Character extends ":"
-    ? TakePathParameter<Rest> extends readonly [infer Name extends string, infer Remaining extends string]
-      ? Name extends ""
-        ? PathArguments<Rest>
-        : readonly [value: string, ...PathArguments<Remaining>]
-      : never
-    : PathArguments<Rest>
-  : readonly [];
+type PathArguments<Path extends string> = Path extends `\\:${infer Rest}`
+  ? PathArguments<Rest>
+  : Path extends `${infer Character}${infer Rest}`
+    ? Character extends ":"
+      ? TakePathParameter<Rest> extends readonly [infer Name extends string, infer Remaining extends string]
+        ? Name extends ""
+          ? PathArguments<Rest>
+          : readonly [value: string, ...PathArguments<Remaining>]
+        : never
+      : PathArguments<Rest>
+    : readonly [];
 
 export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
   readonly response: HttpClientResponse.HttpClientResponse;
@@ -322,6 +363,11 @@ export interface RequestDefinition<
   readonly method: Method;
   readonly path: Path;
   readonly body?: Uppercase<Method> extends "GET" | "HEAD" ? never : Body;
+  readonly bodyCodec?: Uppercase<Method> extends "GET" | "HEAD"
+    ? never
+    : Body extends AnySchema
+      ? RequestBodyCodec<Schema.Schema.Encoded<Body>>
+      : never;
   readonly defaultBody?: Uppercase<Method> extends "GET" | "HEAD"
     ? never
     : Body extends AnySchema
@@ -337,6 +383,14 @@ type BodySetter<
   Rules extends ReadonlyArray<AnyResponseRule>,
 > = Body extends AnySchema ? (body: Schema.Schema.Type<Body>) => RequestPlan<Body, Rules, true> : never;
 
+type RequestBodyCodecSetter<
+  Body extends AnySchema | undefined,
+  Rules extends ReadonlyArray<AnyResponseRule>,
+  BodyReady extends boolean,
+> = Body extends AnySchema
+  ? (codec: RequestBodyCodec<Schema.Schema.Encoded<Body>>) => RequestPlan<Body, Rules, BodyReady>
+  : never;
+
 export interface RequestPlan<
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
@@ -344,6 +398,7 @@ export interface RequestPlan<
 >
   extends Pipeable.Pipeable {
   readonly setBody: BodySetter<Body, Rules>;
+  readonly setRequestBodyCodec: RequestBodyCodecSetter<Body, Rules, BodyReady>;
   readonly setUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setUrlParams: (params: UrlParams.Input) => RequestPlan<Body, Rules, BodyReady>;
   readonly appendUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
@@ -399,6 +454,13 @@ export const setBody =
     plan: Value extends Schema.Schema.Type<Body> ? RequestPlan<Body, Rules, BodyReady> : never,
   ): RequestPlan<Body, Rules, true> =>
     plan.setBody(body as Schema.Schema.Type<Body>);
+
+export const setRequestBodyCodec =
+  <Input>(codec: RequestBodyCodec<Input>) =>
+  <Body extends AnySchema, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: Schema.Schema.Encoded<Body> extends Input ? RequestPlan<Body, Rules, BodyReady> : never,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setRequestBodyCodec(codec as RequestBodyCodec<Schema.Schema.Encoded<Body>>);
 
 export const setUrlParam =
   (key: string, value: string) =>
@@ -554,6 +616,7 @@ interface InternalDefinition<Body extends AnySchema | undefined> extends Request
   readonly method: RequestMethod;
   readonly path: string;
   readonly body?: Body;
+  readonly bodyCodec?: RequestBodyCodec<never>;
   readonly defaultBody?: unknown;
   readonly baseUrl?: string;
   readonly baseOptions?: RequestOptions;
@@ -563,6 +626,7 @@ interface PlanState {
   readonly baseUrl: string | undefined;
   readonly body: unknown;
   readonly hasBody: boolean;
+  readonly bodyCodec: RequestBodyCodec<never>;
   readonly headers: Headers.Headers;
   readonly urlParams: UrlParams.UrlParams;
   readonly responseCodec: DefaultResponseBodyCodec;
@@ -577,6 +641,7 @@ interface PlanState {
 
 interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly setBody: (body: unknown) => unknown;
+  readonly setRequestBodyCodec: (codec: RequestBodyCodec<never>) => unknown;
   readonly setUrlParam: (key: string, value: string) => unknown;
   readonly setUrlParams: (params: UrlParams.Input) => unknown;
   readonly appendUrlParam: (key: string, value: string) => unknown;
@@ -657,14 +722,16 @@ const joinUrl = (baseUrl: string | undefined, path: string): string => {
 };
 
 const fillPath = (path: string, pathArguments: ReadonlyArray<string>): string => {
-  const parameterPattern = /:([A-Za-z_][A-Za-z0-9_]*)/g;
+  const parameterPattern = /(?<!\\):([A-Za-z_][A-Za-z0-9_]*)/g;
   const expected = Array.from(path.matchAll(parameterPattern)).length;
   if (pathArguments.length !== expected) {
     throw new InvalidPathArguments({ path, expected, received: pathArguments.length });
   }
 
   let argumentIndex = 0;
-  return path.replace(parameterPattern, () => encodeURIComponent(pathArguments[argumentIndex++]!));
+  return path
+    .replace(parameterPattern, () => encodeURIComponent(pathArguments[argumentIndex++]!))
+    .replaceAll("\\:", ":");
 };
 
 const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers): boolean => {
@@ -762,7 +829,11 @@ const makePlan = <
     }
 
     if (definition.body !== undefined && state.hasBody) {
-      request = yield* HttpClientRequest.schemaBodyJson(definition.body)(state.body)(request);
+      const encoded = yield* Schema.encodeUnknown(definition.body)(state.body).pipe(
+        Effect.mapError((error) => HttpBody.HttpBodyError({ _tag: "SchemaError", error })),
+      );
+      const bodyCodec = state.bodyCodec as RequestBodyCodec<unknown>;
+      request = yield* bodyCodec.encode(encoded, request);
     }
 
     for (const transform of state.requestTransforms) request = transform(request);
@@ -808,6 +879,7 @@ const makePlan = <
   const plan = {
     pipe: pipeSelf,
     setBody: (body: unknown) => makePlan<Body, Rules, true>(definition, rules, { ...state, body, hasBody: true }),
+    setRequestBodyCodec: (bodyCodec: RequestBodyCodec<never>) => update({ bodyCodec }),
     setUrlParam: (key, value) => update({ urlParams: UrlParams.set(state.urlParams, key, value) }),
     setUrlParams: (params) => update({ urlParams: UrlParams.setAll(state.urlParams, params) }),
     appendUrlParam: (key, value) => update({ urlParams: UrlParams.append(state.urlParams, key, value) }),
@@ -879,6 +951,7 @@ const createRequestInternal = <
       baseUrl: definition.baseUrl,
       body: definition.defaultBody,
       hasBody: definition.defaultBody !== undefined,
+      bodyCodec: definition.bodyCodec ?? RequestBody.json,
       headers,
       urlParams,
       responseCodec: definition.responseCodec ?? definition.baseOptions?.responseCodec ?? ResponseBody.json,

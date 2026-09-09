@@ -8,6 +8,7 @@ import {
   extendApi,
   InvalidPathArguments,
   InvalidRetryCount,
+  RequestBody,
   RequestBodyNotAllowed,
   response,
   ResponseBody,
@@ -109,6 +110,25 @@ describe("createRequest", () => {
 
     const untypedGetFile = getFile as (...arguments_: Array<string>) => ReturnType<typeof getFile>;
     expect(() => untypedGetFile("2", "report")).toThrow(InvalidPathArguments);
+
+    const archiveUser = createRequest({
+      method: "POST",
+      path: "https://example.test/v1/users/:userId\\:archive",
+      responses: [response({ key: "archived", status: 200 }, User)],
+    });
+    expectTypeOf(archiveUser).parameters.toEqualTypeOf<[value: string]>();
+
+    await archiveUser("user-1").effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.url).toBe("https://example.test/v1/users/user-1:archive");
+            return Response.json({ id: 1, name: "Ada" });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
   });
 
   it("merges plural URL parameter updates over API and endpoint defaults", async () => {
@@ -570,6 +590,47 @@ describe("createRequest", () => {
     );
 
     expect(result.body.name).toBe("Ada");
+  });
+
+  it("schema-encodes text request bodies with an explicit wire codec", async () => {
+    const XmlCommand = Schema.transform(Schema.String, Schema.Struct({ action: Schema.String }), {
+      strict: true,
+      decode: (xml) => ({ action: xml.slice("<action>".length, -"</action>".length) }),
+      encode: (_encoded, command) => `<action>${command.action}</action>`,
+    });
+    const trigger = createRequest({
+      method: "POST",
+      path: "https://example.test/actions",
+      body: XmlCommand,
+      bodyCodec: RequestBody.text("application/xml"),
+      responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+    });
+    const requests: Array<Request> = [];
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return new Response(null, { status: 204 });
+      }),
+    );
+
+    await trigger().setBody({ action: "archive" }).effect.pipe(Effect.provide(layer), Effect.runPromise);
+    await trigger()
+      .setBody({ action: "restore" })
+      .setRequestBodyCodec(RequestBody.text("text/plain"))
+      .effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(requests[0]?.headers.get("content-type")).toBe("application/xml");
+    expect(await requests[0]?.text()).toBe("<action>archive</action>");
+    expect(requests[1]?.headers.get("content-type")).toBe("text/plain");
+    expect(await requests[1]?.text()).toBe("<action>restore</action>");
+
+    createRequest({
+      method: "POST",
+      path: "https://example.test/invalid",
+      body: Schema.Struct({ action: Schema.String }),
+      // @ts-expect-error The text codec requires a schema whose encoded representation is a string.
+      bodyCodec: RequestBody.text(),
+    });
   });
 
   it("can execute with a schema-encoded static body and override it through the setter", async () => {
