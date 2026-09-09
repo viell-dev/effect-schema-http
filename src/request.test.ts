@@ -1,15 +1,18 @@
-import { FetchHttpClient, HttpClientRequest } from "@effect/platform";
-import { Effect, Either, Layer, Match, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "@effect/platform";
+import { Cause, Effect, Either, Layer, Match, Schedule, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   createApi,
   createRequest,
   DuplicateResponseKey,
   InvalidPathArguments,
+  InvalidRetryCount,
   RequestBodyNotAllowed,
   response,
   ResponseBody,
+  ResponseDecodeError,
   type Endpoint,
+  type ResponseOf,
   UnhandledResponse,
 } from "./main.js";
 
@@ -79,6 +82,86 @@ describe("createRequest", () => {
         ),
         Effect.runPromise,
       );
+  });
+
+  it("supports repeated and removed URL params plus plural and removed headers", async () => {
+    const getUsers = createApi("https://example.test", {
+      headers: { authorization: "Bearer token", "x-remove": "api" },
+      urlParams: { remove: "api" },
+    }).createRequest({
+      method: "GET",
+      path: "/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+
+    await getUsers()
+      .removeUrlParam("remove")
+      .appendUrlParam("tag", "a")
+      .appendUrlParam("tag", "b")
+      .setHeaders({ "x-one": "1", "x-two": "2" })
+      .removeHeader("x-remove")
+      .effect.pipe(
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async (request) => {
+              const url = new URL(request.url);
+              expect(url.searchParams.getAll("tag")).toEqual(["a", "b"]);
+              expect(url.searchParams.has("remove")).toBe(false);
+              expect(request.headers.get("authorization")).toBe("Bearer token");
+              expect(request.headers.get("x-one")).toBe("1");
+              expect(request.headers.has("x-remove")).toBe(false);
+              return Response.json([]);
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
+  });
+
+  it("composes API defaults and permits a plan-level base URL override", async () => {
+    const notFound = response({ key: "not-found", status: 404 }, NotFound);
+    const unauthorized = response({ key: "unauthorized", status: 401 }, Schema.Struct({ message: Schema.String }));
+    const api = createApi("https://example.test", {
+      headers: { authorization: "Bearer base", "x-base": "1" },
+      urlParams: { scope: "base", page: "1" },
+      responses: [notFound],
+    });
+    const adminApi = api.extend({
+      headers: { authorization: "Bearer admin" },
+      urlParams: { scope: "admin" },
+      responses: [unauthorized],
+    });
+    const getUsers = adminApi.createRequest({
+      method: "GET",
+      path: "/users",
+      urlParams: { page: "2" },
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+
+    expect(api.baseUrl).toBe("https://example.test");
+    expect(adminApi.baseUrl).toBe("https://example.test");
+
+    const result = await getUsers()
+      .setBaseUrl("https://mirror.example.test")
+      .effect.pipe(
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async (request) => {
+              const url = new URL(request.url);
+              expect(url.origin).toBe("https://mirror.example.test");
+              expect(Object.fromEntries(url.searchParams)).toEqual({ scope: "admin", page: "2" });
+              expect(request.headers.get("authorization")).toBe("Bearer admin");
+              expect(request.headers.get("x-base")).toBe("1");
+              return Response.json([]);
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
+
+    expect(result.key).toBe("ok");
+    type Result = Awaited<typeof result>;
+    expectTypeOf<Result["key"]>().toEqualTypeOf<"ok" | "unauthorized" | "not-found">();
   });
 
   it("rejects GET and HEAD bodies at the definition and transformed-request boundaries", async () => {
@@ -168,6 +251,27 @@ describe("createRequest", () => {
 
     expectTypeOf<RulesOf<typeof endpoint>>().toEqualTypeOf<
       readonly [typeof firstRule, typeof secondRule, typeof defaultRule]
+    >();
+  });
+
+  it("exposes the complete success, error, and requirement types", () => {
+    const ok = response({ key: "ok", status: 200 }, User);
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [ok],
+    });
+
+    expectTypeOf(getUser().effect).toEqualTypeOf<
+      Effect.Effect<
+        ResponseOf<readonly [typeof ok]>,
+        | UnhandledResponse
+        | RequestBodyNotAllowed
+        | HttpClientError.HttpClientError
+        | Cause.TimeoutException
+        | ResponseDecodeError,
+        HttpClient.HttpClient
+      >
     >();
   });
 
@@ -373,7 +477,7 @@ describe("createRequest", () => {
 
     const result = await getUsers()
       .setCache({ control: "no-cache", fetch: "reload" })
-      .setRetries(2)
+      .setRetry({ times: 2, schedule: Schedule.recurs(2) })
       .effect.pipe(
         Effect.provide(
           fetchLayer(
@@ -394,6 +498,89 @@ describe("createRequest", () => {
 
     expect(attempts).toBe(3);
     expect(result.body).toEqual([{ id: 1, name: "Ada" }]);
+  });
+
+  it("retries mapped transient responses, drains intermediates, and returns the final mapped value", async () => {
+    const responses: Array<Response> = [];
+    const getHealth = createRequest({
+      method: "GET",
+      path: "https://example.test/health",
+      responses: [
+        response({ key: "available", status: 200 }, Schema.Struct({ ready: Schema.Literal(true) })),
+        response({ key: "unavailable", status: 503 }, Schema.Struct({ retryAfter: Schema.Number })),
+      ],
+    });
+
+    const result = await getHealth()
+      .setRetry({ times: 2, schedule: Schedule.recurs(2) })
+      .effect.pipe(
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async () => {
+              const raw = Response.json({ retryAfter: 1 }, { status: 503 });
+              responses.push(raw);
+              return raw;
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
+
+    expect(responses).toHaveLength(3);
+    expect(responses.map((raw) => raw.bodyUsed)).toEqual([true, true, true]);
+    expect(result).toMatchObject({ key: "unavailable", body: { retryAfter: 1 } });
+  });
+
+  it("rejects invalid retry counts and applies plan-level client transforms", async () => {
+    let transformed = false;
+    const getUsers = createRequest({
+      method: "GET",
+      path: "https://example.test/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+
+    expect(() => getUsers().setRetries(-1)).toThrow(InvalidRetryCount);
+    expect(() => getUsers().setRetries(1.5)).toThrow(InvalidRetryCount);
+    expect(() => getUsers().setRetries(Number.NaN)).toThrow(InvalidRetryCount);
+
+    await getUsers()
+      .mapClient((client) => {
+        transformed = true;
+        return client;
+      })
+      .effect.pipe(Effect.provide(fetchLayer(mockFetch(async () => Response.json([])))), Effect.runPromise);
+
+    expect(transformed).toBe(true);
+  });
+
+  it("applies per-attempt timeouts and retries timeout failures", async () => {
+    let attempts = 0;
+    const getUsers = createRequest({
+      method: "GET",
+      path: "https://example.test/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+
+    const result = await getUsers()
+      .setTimeout("1 millis")
+      .setRetry({ times: 1, schedule: Schedule.recurs(1) })
+      .effect.pipe(
+        Effect.either,
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async () => {
+              attempts += 1;
+              await new Promise((resolve) => setTimeout(resolve, 25));
+              return Response.json([]);
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
+
+    expect(attempts).toBe(2);
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result)) expect(Cause.isTimeoutException(result.left)).toBe(true);
   });
 
   it("preserves explicit Cache-Control headers regardless of cache setter order", async () => {
@@ -442,6 +629,30 @@ describe("createRequest", () => {
     if (Either.isLeft(result) && result.left instanceof UnhandledResponse) {
       expect(result.left.response.status).toBe(503);
       expect(await Effect.runPromise(result.left.response.text)).toBe("later");
+    }
+  });
+
+  it("wraps schema failures with response and rule context", async () => {
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ key: "ok", status: 200 }, User)],
+    });
+
+    const result = await getUser().effect.pipe(
+      Effect.either,
+      Effect.provide(fetchLayer(mockFetch(async () => Response.json({ id: "wrong", name: "Ada" })))),
+      Effect.runPromise,
+    );
+
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result)) {
+      expect(result.left).toBeInstanceOf(ResponseDecodeError);
+      if (result.left instanceof ResponseDecodeError) {
+        expect(result.left.key).toBe("ok");
+        expect(result.left.status).toBe(200);
+        expect(result.left.response.status).toBe(200);
+      }
     }
   });
 });

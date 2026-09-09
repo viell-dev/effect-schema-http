@@ -105,6 +105,8 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
 - Header-constrained rules beat status-only rules. Within API and endpoint declarations, the first equally specific
   rule wins. A plan rule with a new key is prepended, so it wins an equally specific tie at that call site.
 - API options flow to endpoints and plans. Endpoint options override API defaults; plan setters override both.
+- `api.extend(options)` creates a sub-API with merged headers, query parameters, policies, transforms, and response
+  rules. APIs expose their base URL, and `.setBaseUrl(...)` can redirect one plan to a mirror or alternate host.
 
 This replacement model keeps the common thin-object case precise: replacing the `200` schema removes the original
 `200` body type, while inherited `404` and endpoint-specific `410` envelopes remain in the union.
@@ -144,12 +146,25 @@ shape.
 
 Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
 typed API surface without making schemas for them part of the first version. Singular and plural query setters replace
-the named values they receive while retaining unrelated API and endpoint defaults.
+the named values they receive while retaining unrelated API and endpoint defaults; append and remove operations support
+repeated parameters and explicit deletion. Headers likewise have singular, plural, and removal setters. `mapRequest`
+and `mapClient` provide ordered plan-level escape hatches after API and endpoint transforms.
 
 ## Retry and cache policy
 
-`retries` defaults to zero. API and endpoint definitions can choose another default, and `.setRetries(n)` changes it at
-one call site. The spike delegates retry classification to `HttpClient.retryTransient`.
+Retries default to zero. API and endpoint definitions can choose another default, and `.setRetries(n)` changes it at
+one call site. `.setRetry({ times, schedule, mode })` accepts an Effect `Schedule` directly; a retry count without an
+explicit schedule uses jittered exponential backoff rather than immediate repeats. Counts must be finite, non-negative
+integers.
+
+The transient classification matches `HttpClient.retryTransient`: timeouts and transport failures, plus 408, 429, 500,
+502, 503, and 504 responses. A mapped transient response is still retried before rule selection, so a mapped 503 with
+`times: 3` is returned after at most four attempts. Intermediate transient responses are drained before another request
+is sent. `mode` can restrict a policy to errors or responses when that distinction matters.
+
+`timeout` options and `.setTimeout(...)` apply to each individual attempt. Effect interruption propagates through the
+HTTP client, while a timeout becomes a transient `TimeoutException` that can participate in the configured retry
+policy.
 
 No cache policy is supplied by default. API and endpoint definitions can specify a `CachePolicy`, and `.setCache(...)`
 can replace or clear it at a call site. Its `control` field writes a standard `Cache-Control` request header for HTTP
@@ -175,5 +190,4 @@ Run them separately with `pnpm test:unit` and `pnpm test:integration`, or togeth
 ## Remaining design questions
 
 1. Which response codecs should follow JSON, text, and no-body: bytes, form data, multipart files, or streaming bodies?
-2. Should retry configuration stay as a simple count plus advanced `transformClient`, or expose schedules and transient
-   response classification directly?
+2. Should custom retry classification become part of `RetryPolicy`, or remain an advanced client transform?

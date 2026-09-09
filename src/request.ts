@@ -9,7 +9,7 @@ import {
   type HttpMethod,
   UrlParams,
 } from "@effect/platform";
-import { Data, Effect, Option, type ParseResult, Schema } from "effect";
+import { Cause, Data, type Duration, Effect, Option, ParseResult, Schedule, Schema } from "effect";
 
 type AnySchema = Schema.Schema.Any;
 
@@ -169,6 +169,10 @@ type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> =
   Rules[number] extends ResponseRule<ResponseMatcher, infer S, AnyResponseBodyCodec> ? Schema.Schema.Context<S> : never;
 
 type BodyContextOf<Body extends AnySchema | undefined> = Body extends AnySchema ? Schema.Schema.Context<Body> : never;
+type RequestEncodingError<Body extends AnySchema | undefined> = Body extends AnySchema ? HttpBody.HttpBodyError : never;
+type ResponseDecodingError<Rules extends ReadonlyArray<AnyResponseRule>> = Rules extends readonly []
+  ? never
+  : ResponseDecodeError;
 
 type InitialBodyReady<Body extends AnySchema | undefined, DefaultBody = undefined> = Body extends AnySchema
   ? [DefaultBody] extends [undefined]
@@ -249,15 +253,41 @@ export class DuplicateResponseKey extends Data.TaggedError("DuplicateResponseKey
   readonly owner: "api" | "request";
 }> {}
 
+export class InvalidRetryCount extends Data.TaggedError("InvalidRetryCount")<{
+  readonly retries: number;
+}> {}
+
+export class ResponseDecodeError extends Data.TaggedError("ResponseDecodeError")<{
+  readonly key: string;
+  readonly response: HttpClientResponse.HttpClientResponse;
+  readonly cause: ParseResult.ParseError;
+}> {
+  get status(): number {
+    return this.response.status;
+  }
+}
+
 export interface CachePolicy {
   readonly control?: string;
   readonly fetch?: RequestCache;
+}
+
+export type RetryInput =
+  HttpClientResponse.HttpClientResponse | HttpClientError.HttpClientError | Cause.TimeoutException;
+export type RetrySchedule = Schedule.Schedule<unknown, RetryInput, never>;
+
+export interface RetryPolicy {
+  readonly times: number;
+  readonly schedule?: RetrySchedule;
+  readonly mode?: "errors-only" | "response-only" | "both";
 }
 
 export interface RequestOptions {
   readonly headers?: Headers.Input;
   readonly urlParams?: UrlParams.Input;
   readonly cache?: CachePolicy;
+  readonly timeout?: Duration.DurationInput;
+  readonly retry?: RetryPolicy;
   readonly retries?: number;
   readonly transformRequest?: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest;
   readonly transformClient?: (client: HttpClient.HttpClient) => HttpClient.HttpClient;
@@ -300,11 +330,21 @@ export interface RequestPlan<
   readonly setBody: BodySetter<Body, Rules>;
   readonly setUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setUrlParams: (params: UrlParams.Input) => RequestPlan<Body, Rules, BodyReady>;
+  readonly appendUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
+  readonly removeUrlParam: (key: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setHeader: (name: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setHeaders: (headers: Headers.Input) => RequestPlan<Body, Rules, BodyReady>;
+  readonly removeHeader: (name: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setCache: (cache: CachePolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setBaseUrl: (baseUrl: string | undefined) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setTimeout: (timeout: Duration.DurationInput | undefined) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setRetry: (retry: RetryPolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setRetries: (retries: number) => RequestPlan<Body, Rules, BodyReady>;
   readonly mapRequest: (
     transform: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest,
+  ) => RequestPlan<Body, Rules, BodyReady>;
+  readonly mapClient: (
+    transform: (client: HttpClient.HttpClient) => HttpClient.HttpClient,
   ) => RequestPlan<Body, Rules, BodyReady>;
   readonly setResponseSchema: <
     const Matcher extends ResponseMatcher,
@@ -320,9 +360,10 @@ export interface RequestPlan<
         ResponseOf<Rules>,
         | UnhandledResponse
         | RequestBodyNotAllowed
-        | HttpBody.HttpBodyError
+        | RequestEncodingError<Body>
         | HttpClientError.HttpClientError
-        | ParseResult.ParseError,
+        | Cause.TimeoutException
+        | ResponseDecodingError<Rules>,
         HttpClient.HttpClient | BodyContextOf<Body> | ResponseContextOf<Rules>
       >
     : never;
@@ -345,16 +386,94 @@ interface InternalDefinition<Body extends AnySchema | undefined> extends Request
 }
 
 interface PlanState {
+  readonly baseUrl: string | undefined;
   readonly body: unknown;
   readonly hasBody: boolean;
   readonly headers: Headers.Headers;
   readonly urlParams: UrlParams.UrlParams;
   readonly cache: CachePolicy | undefined;
-  readonly retries: number;
+  readonly timeout: Duration.DurationInput | undefined;
+  readonly retry: RetryPolicy | undefined;
   readonly requestTransforms: ReadonlyArray<
     (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest
   >;
+  readonly clientTransforms: ReadonlyArray<(client: HttpClient.HttpClient) => HttpClient.HttpClient>;
 }
+
+interface InternalRequestPlan {
+  readonly setBody: (body: unknown) => unknown;
+  readonly setUrlParam: (key: string, value: string) => unknown;
+  readonly setUrlParams: (params: UrlParams.Input) => unknown;
+  readonly appendUrlParam: (key: string, value: string) => unknown;
+  readonly removeUrlParam: (key: string) => unknown;
+  readonly setHeader: (name: string, value: string) => unknown;
+  readonly setHeaders: (headers: Headers.Input) => unknown;
+  readonly removeHeader: (name: string) => unknown;
+  readonly setCache: (cache: CachePolicy | undefined) => unknown;
+  readonly setBaseUrl: (baseUrl: string | undefined) => unknown;
+  readonly setTimeout: (timeout: Duration.DurationInput | undefined) => unknown;
+  readonly setRetry: (retry: RetryPolicy | undefined) => unknown;
+  readonly setRetries: (retries: number) => unknown;
+  readonly mapRequest: (
+    transform: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest,
+  ) => unknown;
+  readonly mapClient: (transform: (client: HttpClient.HttpClient) => HttpClient.HttpClient) => unknown;
+  readonly setResponseSchema: (
+    match: ResponseMatcher,
+    schema: AnySchema,
+    options?: { readonly codec: AnyResponseBodyCodec },
+  ) => unknown;
+  readonly effect: object;
+}
+
+const defaultRetrySchedule: RetrySchedule = Schedule.jittered(Schedule.exponential("100 millis"));
+
+const normalizeRetry = (retry: RetryPolicy | number | undefined): RetryPolicy | undefined => {
+  if (retry === undefined) return undefined;
+  const policy = typeof retry === "number" ? { times: retry } : retry;
+  if (!Number.isFinite(policy.times) || !Number.isInteger(policy.times) || policy.times < 0) {
+    throw new InvalidRetryCount({ retries: policy.times });
+  }
+  return policy.times === 0 ? undefined : policy;
+};
+
+const isTransientResponseStatus = (status: number): boolean =>
+  status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+
+const executeWithRetry = <Error extends HttpClientError.HttpClientError | Cause.TimeoutException>(
+  client: HttpClient.HttpClient.With<Error>,
+  request: HttpClientRequest.HttpClientRequest,
+  retry: RetryPolicy | undefined,
+): Effect.Effect<HttpClientResponse.HttpClientResponse, Error | HttpClientError.ResponseError> => {
+  if (retry === undefined) return client.execute(request);
+
+  const mode = retry.mode ?? "both";
+  const schedule = retry.schedule ?? defaultRetrySchedule;
+  const errorRetryingClient =
+    mode === "response-only"
+      ? client
+      : HttpClient.retryTransient(client, { mode: "errors-only", schedule, times: retry.times });
+  const execute = errorRetryingClient.execute(request);
+  if (mode === "errors-only") return execute;
+
+  return Effect.gen(function* () {
+    const driver = yield* Schedule.driver(schedule);
+    let retries = 0;
+    while (true) {
+      const raw = yield* execute;
+      if (!isTransientResponseStatus(raw.status) || retries >= retry.times) return raw;
+
+      const canRetry = yield* driver.next(raw).pipe(
+        Effect.as(true),
+        Effect.catchAll(() => Effect.succeed(false)),
+      );
+      if (!canRetry) return raw;
+
+      yield* raw.arrayBuffer;
+      retries += 1;
+    }
+  });
+};
 
 const joinUrl = (baseUrl: string | undefined, path: string): string => {
   if (baseUrl === undefined) return path;
@@ -431,7 +550,13 @@ const findResponseRule = (
 };
 
 const decodeResponse = (rule: AnyResponseRule, raw: HttpClientResponse.HttpClientResponse) =>
-  Effect.flatMap(rule.codec.decode(raw), Schema.decodeUnknown(rule.schema));
+  Effect.flatMap(rule.codec.decode(raw), Schema.decodeUnknown(rule.schema)).pipe(
+    Effect.mapError((error) =>
+      ParseResult.isParseError(error)
+        ? new ResponseDecodeError({ key: rule.match.key, response: raw, cause: error })
+        : error,
+    ),
+  );
 
 const makePlan = <
   Body extends AnySchema | undefined,
@@ -446,7 +571,7 @@ const makePlan = <
     makePlan<Body, Rules, BodyReady>(definition, rules, { ...state, ...next });
 
   const effect = Effect.gen(function* () {
-    let request = HttpClientRequest.make(definition.method)(joinUrl(definition.baseUrl, definition.path));
+    let request = HttpClientRequest.make(definition.method)(joinUrl(state.baseUrl, definition.path));
     request = HttpClientRequest.setHeaders(request, state.headers);
     request = HttpClientRequest.setUrlParams(request, state.urlParams);
 
@@ -464,12 +589,13 @@ const makePlan = <
       return yield* new RequestBodyNotAllowed({ request });
     }
 
-    const baseClient = yield* HttpClient.HttpClient;
-    const apiClient = definition.baseOptions?.transformClient?.(baseClient) ?? baseClient;
-    const endpointClient = definition.transformClient?.(apiClient) ?? apiClient;
-    const client =
-      state.retries > 0 ? HttpClient.retryTransient(endpointClient, { times: state.retries }) : endpointClient;
-    let send = client.execute(request);
+    let client = yield* HttpClient.HttpClient;
+    for (const transform of state.clientTransforms) client = transform(client);
+    const timedClient =
+      state.timeout === undefined
+        ? client
+        : HttpClient.transformResponse(client, (responseEffect) => Effect.timeout(responseEffect, state.timeout!));
+    let send = executeWithRetry(timedClient, request, state.retry);
 
     if (state.cache?.fetch !== undefined) {
       const existingRequestInit = yield* Effect.serviceOption(FetchHttpClient.RequestInit);
@@ -485,24 +611,33 @@ const makePlan = <
     if (rule === undefined) return yield* new UnhandledResponse({ response: raw });
 
     const body = yield* decodeResponse(rule, raw);
-    return {
+    const envelope = {
       key: rule.match.key,
       status: raw.status,
       headers: raw.headers,
       body,
       matched: rule.match,
       response: raw,
-    } as ResponseOf<Rules>;
+    } satisfies ResponseEnvelope<ResponseMatcher, unknown>;
+    return envelope as ResponseOf<Rules>;
   });
 
-  return {
+  const plan = {
     setBody: (body: unknown) => makePlan<Body, Rules, true>(definition, rules, { ...state, body, hasBody: true }),
     setUrlParam: (key, value) => update({ urlParams: UrlParams.set(state.urlParams, key, value) }),
     setUrlParams: (params) => update({ urlParams: UrlParams.setAll(state.urlParams, params) }),
+    appendUrlParam: (key, value) => update({ urlParams: UrlParams.append(state.urlParams, key, value) }),
+    removeUrlParam: (key) => update({ urlParams: UrlParams.remove(state.urlParams, key) }),
     setHeader: (name, value) => update({ headers: Headers.set(state.headers, name, value) }),
+    setHeaders: (headers) => update({ headers: Headers.setAll(state.headers, headers) }),
+    removeHeader: (name) => update({ headers: Headers.remove(state.headers, name) }),
     setCache: (cache) => update({ cache }),
-    setRetries: (retries) => update({ retries: Math.max(0, Math.floor(retries)) }),
+    setBaseUrl: (baseUrl) => update({ baseUrl }),
+    setTimeout: (timeout) => update({ timeout }),
+    setRetry: (retry) => update({ retry: normalizeRetry(retry) }),
+    setRetries: (retries) => update({ retry: normalizeRetry(retries) }),
     mapRequest: (transform) => update({ requestTransforms: [...state.requestTransforms, transform] }),
+    mapClient: (transform) => update({ clientTransforms: [...state.clientTransforms, transform] }),
     setResponseSchema: <
       const Matcher extends ResponseMatcher,
       const S extends AnySchema,
@@ -520,7 +655,9 @@ const makePlan = <
       );
     },
     effect,
-  } as RequestPlan<Body, Rules, BodyReady>;
+  } satisfies InternalRequestPlan;
+
+  return plan as unknown as RequestPlan<Body, Rules, BodyReady>;
 };
 
 const createRequestInternal =
@@ -537,19 +674,28 @@ const createRequestInternal =
     const baseHeaders = Headers.fromInput(definition.baseOptions?.headers);
     const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
     const baseParams = UrlParams.fromInput(definition.baseOptions?.urlParams ?? {});
-    const urlParams = UrlParams.appendAll(baseParams, definition.urlParams ?? {});
+    const urlParams = UrlParams.setAll(baseParams, definition.urlParams ?? {});
     const requestTransforms = [definition.baseOptions?.transformRequest, definition.transformRequest].filter(
       (transform): transform is NonNullable<typeof transform> => transform !== undefined,
     );
+    const clientTransforms = [definition.baseOptions?.transformClient, definition.transformClient].filter(
+      (transform): transform is NonNullable<typeof transform> => transform !== undefined,
+    );
+    const retry = normalizeRetry(
+      definition.retry ?? definition.retries ?? definition.baseOptions?.retry ?? definition.baseOptions?.retries,
+    );
 
     return makePlan<Body, Rules, BodyReady>({ ...definition, path: fillPath(definition.path, pathArguments) }, rules, {
+      baseUrl: definition.baseUrl,
       body: definition.defaultBody,
       hasBody: definition.defaultBody !== undefined,
       headers,
       urlParams,
       cache: definition.cache ?? definition.baseOptions?.cache,
-      retries: definition.retries ?? definition.baseOptions?.retries ?? 0,
+      timeout: definition.timeout ?? definition.baseOptions?.timeout,
+      retry,
       requestTransforms,
+      clientTransforms,
     });
   };
 
@@ -570,6 +716,10 @@ export const createRequest = <
 };
 
 export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> {
+  readonly baseUrl: string;
+  readonly extend: <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(
+    options: ApiOptions<Overrides>,
+  ) => Api<MergeResponseRules<Defaults, Overrides>>;
   readonly createRequest: <
     const Method extends HttpMethod.HttpMethod,
     const Path extends string,
@@ -587,6 +737,43 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
 ): Api<Defaults> => {
   validateUniqueResponseKeys(options.responses ?? [], "api");
   return {
+    baseUrl,
+    extend: <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(
+      overrides: ApiOptions<Overrides>,
+    ): Api<MergeResponseRules<Defaults, Overrides>> => {
+      validateUniqueResponseKeys(overrides.responses ?? [], "api");
+      const baseRequestTransform = options.transformRequest;
+      const overrideRequestTransform = overrides.transformRequest;
+      const baseClientTransform = options.transformClient;
+      const overrideClientTransform = overrides.transformClient;
+      const retry =
+        overrides.retry ??
+        (overrides.retries !== undefined
+          ? { times: overrides.retries }
+          : (options.retry ?? (options.retries !== undefined ? { times: options.retries } : undefined)));
+      const responses = mergeResponseRules(options.responses ?? [], overrides.responses ?? []);
+
+      return createApi<MergeResponseRules<Defaults, Overrides>>(baseUrl, {
+        headers: Headers.setAll(Headers.fromInput(options.headers), overrides.headers ?? {}),
+        urlParams: UrlParams.setAll(UrlParams.fromInput(options.urlParams ?? {}), overrides.urlParams ?? {}),
+        cache: overrides.cache ?? options.cache,
+        timeout: overrides.timeout ?? options.timeout,
+        retry,
+        transformRequest:
+          baseRequestTransform === undefined
+            ? overrideRequestTransform
+            : overrideRequestTransform === undefined
+              ? baseRequestTransform
+              : (request) => overrideRequestTransform(baseRequestTransform(request)),
+        transformClient:
+          baseClientTransform === undefined
+            ? overrideClientTransform
+            : overrideClientTransform === undefined
+              ? baseClientTransform
+              : (client) => overrideClientTransform(baseClientTransform(client)),
+        responses: responses as MergeResponseRules<Defaults, Overrides>,
+      });
+    },
     createRequest: <
       const Method extends HttpMethod.HttpMethod,
       const Path extends string,
