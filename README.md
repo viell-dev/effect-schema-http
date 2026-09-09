@@ -41,3 +41,14 @@ const gatedProgram = Effect.gen(function* () {
 ```
 
 See [the design sketch](docs/design.md) for the proposed API, semantics, test strategy, and open questions.
+
+## Tests
+
+Unit and type-focused tests live beside the implementation under `src/`. Tests under `tests/` are integration tests
+that use real ephemeral loopback HTTP servers and the Fetch client.
+
+```sh
+pnpm test:unit
+pnpm test:integration
+pnpm test
+```

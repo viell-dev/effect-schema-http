@@ -258,9 +258,9 @@ Three layers catch different failures:
 2. Unit tests under `src/` inject a fake Fetch implementation to check laziness, schema failures, immutable overrides,
    retry/cache policy, default merging, the unhandled-response path, and request-gate concurrency.
 3. Integration tests under `tests/` run a disposable server on an ephemeral loopback port and use the real Fetch client.
-   They exercise GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, and the extension method PROPFIND; positional path
-   interpolation; actual URL/header/body serialization; and mapped 404, 409, 410, and 501 responses without depending
-   on an external service.
+   They exercise standard and extension methods, path interpolation, schema transformations and brands, JSON and text
+   readers, XML request and response bodies, recursive JSON, transformed empty responses, request gates, and mapped
+   non-2xx responses without depending on an external service.
 
 Run them separately with `pnpm test:unit` and `pnpm test:integration`, or together with `pnpm test`.
 

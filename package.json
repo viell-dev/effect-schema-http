@@ -25,7 +25,7 @@
     "format:check": "prettier --check .",
     "lint": "oxlint && eslint .",
     "test": "vitest run",
-    "test:integration": "vitest run tests/request.integration.test.ts",
+    "test:integration": "vitest run tests",
     "test:unit": "vitest run src",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
