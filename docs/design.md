@@ -367,8 +367,8 @@ to abstract over response-rule tuples.
 The Woodpecker pipeline under `.woodpecker/` runs the same five checks required before local commits. It still has to
 be enabled for the Codeberg repository before it can enforce them remotely.
 
-No licence has been selected. The package therefore remains all-rights-reserved and should not be published as a
-reusable library until the owner chooses a licence and adds both its `package.json` identifier and licence text.
+The project is distributed under the MIT licence. The package metadata and repository `LICENSE` file carry the same
+licence designation.
 
 ## Remaining design questions
 

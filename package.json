@@ -9,6 +9,7 @@
     "typescript"
   ],
   "author": "viell",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://codeberg.org/viell/effect-schema-http.git"
