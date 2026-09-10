@@ -2,8 +2,8 @@
 
 Lazy, schema-driven HTTP request plans for [Effect](https://effect.website/).
 
-> **Beta:** `0.1.0-beta.1` is intended for evaluation and early adoption. The core model is tested, but public APIs may
-> still change before a stable release.
+> **Beta preparation:** `0.1.0-beta.1` is intended for evaluation in another project. Distribution is through Codeberg
+> and local builds; there is no registry package yet. Public APIs may change before a stable release.
 
 Effect Schema HTTP lets an application define an endpoint once and produce immutable request plans at each call site.
 Every request and mapped response body passes through an Effect Schema. Plans stay cold while callers replace query
@@ -22,20 +22,31 @@ parameters, headers, schemas, codecs, retry behavior, caching, or other request 
 - Optional single-entry request gates for memoization and concurrent-call de-duplication.
 - An explicit `HttpClient` requirement: applications choose Fetch, Node, a test client, or a custom provider.
 
-## Installation
+## Trying the beta
 
-Install the package together with its Effect peer dependencies:
-
-```sh
-pnpm add viell-effect-schema-http effect @effect/platform
-```
+Clone a reviewed Codeberg revision, then build and pack it locally using Node.js 22.13+ or 24 and the pnpm version
+declared in `package.json`:
 
 ```sh
-npm install viell-effect-schema-http effect @effect/platform
+git clone https://codeberg.org/viell/effect-schema-http.git
+cd effect-schema-http
+pnpm install --frozen-lockfile
+pnpm check
+pnpm pack
 ```
 
-The package is ESM-only and supports Node.js 20 or newer. Browser and alternative JavaScript runtimes can use it when
-they provide the Web Platform types required by their chosen Effect Platform HTTP client and body codecs.
+In the consuming project, install that tarball and compatible Effect peer dependencies:
+
+```sh
+pnpm add /path/to/effect-schema-http/viell-effect-schema-http-0.1.0-beta.1.tgz 'effect@^3.22.2' '@effect/platform@^0.97.2'
+```
+
+`pnpm pack` builds `dist/` automatically. Record the source commit alongside the tarball: the beta version alone does
+not distinguish local builds. The package is marked private to prevent registry publication during this phase.
+
+The output is ESM-only and declares a Node.js 20 runtime baseline; the development tools require a newer Node.js
+version. Browser and alternative-runtime support has not been verified. See [review findings](docs/report.md) for
+remaining compatibility checks.
 
 ## Quick start
 
@@ -78,8 +89,7 @@ const program = Effect.gen(function* () {
 const name = await Effect.runPromise(program);
 ```
 
-The same program is maintained as a typechecked
-[quick-start example](https://codeberg.org/viell/effect-schema-http/src/branch/main/examples/quickStart.ts).
+The same program is maintained as a typechecked [quick-start example](examples/quickStart.ts).
 
 Calling `getUser(...)` and applying setters does not send anything. Executing the plan's Effect does. The same plan or
 Effect can be executed repeatedly; each evaluation sends an independent request unless a request gate is used.
@@ -124,6 +134,8 @@ const getDocument = api.createRequest({
 
 More header conditions are more specific; with equal header specificity, exact statuses beat status predicates.
 Declaration order breaks any remaining tie. Tags must be unique within each declaration.
+Keep tags literal and declare reusable rule lists with `as const` for precise replacement inference. Ordinary rule
+arrays retain a conservative union of possible responses when composed.
 
 ## Request bodies and call-site overrides
 
@@ -183,11 +195,37 @@ Response codecs read the transport body before its response schema decodes the r
 Custom codecs can be installed at API, endpoint, rule, or plan scope. A text codec followed by a `*FromString` schema
 can parse XML, YAML, a custom JSON dialect, or another textual protocol without special support from this library.
 
+Use `ResponseBody.none` explicitly for `HEAD`, `204`, or other bodyless responses. The default JSON codec rejects
+empty and whitespace-only payloads. A rule-specific codec does not change the request's default `Accept` header;
+set that header explicitly when negotiating another representation.
+
+## Failures, retries, and body ownership
+
+Schema encoding failures become `RequestBodyEncodeError`; response schema failures become `ResponseDecodeError`.
+Transport and response codec failures use Effect Platform HTTP errors. A body-bearing plan needs `.setBody(...)` or a
+defined `defaultBody` before its Effect is available in the type system. Path argument and retry-count validation can
+throw synchronously while configuring a plan.
+
+Unmatched response bodies are drained by default. With `.setUnhandledResponseBody("retain")`, the caller owns the
+body on `UnhandledResponse.response` and must consume it or execute `error.discard`. Such live responses are unsuitable
+for sharing through a request gate.
+
+Retries default to zero. Enabling them also retries mapped transient statuses: `408`, `429`, `500`, `502`, `503`, and
+`504`. `times` counts additional attempts, and `while` only adds retryable cases; it cannot veto built-in cases.
+Retries apply to every method, including `POST`, so enable them only when replay is acceptable for that endpoint.
+Request encoding runs once per plan evaluation; retry attempts reuse the encoded request body.
+
+`setTimeout` bounds transport and final response decoding for each attempt. Encoding, transforms, and retry waits are
+outside that timeout. Retried response disposal currently has a separate timeout window. To bound the whole operation,
+apply `Effect.timeout` to the extracted Effect. Deferred retry concerns are tracked in [the review](docs/report.md).
+
 ## Request gates
 
 `makeRequestGate` adds explicit single-entry memoization around any input-to-Effect function:
 
 ```ts
+import { makeRequestGate } from "viell-effect-schema-http";
+
 type Filters = { readonly page: number; readonly search: string };
 
 const usersGate = makeRequestGate(
@@ -208,8 +246,13 @@ const gatedProgram = Effect.gen(function* () {
 });
 ```
 
-Equivalent concurrent calls share one execution. The gate deliberately remembers only its latest successful input and
-value, not one value per key. Failures do not evict that success.
+Equivalent concurrent `run` calls share one execution when there is no equivalent cached success. `refresh` and
+`reload` always start separate executions; `run` can still return a cached success while a refresh is running. The gate
+remembers only its latest successful input and value, not one value per key. Failures do not evict that success, and
+mapped non-2xx responses also count as successes. Treat inputs, keys, and cached values as immutable.
+
+Interrupting the first caller interrupts the shared execution and its waiters. Interrupting a waiter only stops that
+waiter. Invalidation signals cancellation but does not wait for transport cleanup to finish.
 
 ## Providers and cancellation
 
@@ -235,22 +278,19 @@ combine them on the wire. APIs that require repeated physical header field lines
 | `makeRequestGate`                          | Add single-entry retention and in-flight de-duplication       |
 | `attachHeaderEntries` / `getHeaderEntries` | Integrate providers that preserve repeated header field lines |
 
-The source includes TSDoc for exported types and members. See the
-[design document](https://codeberg.org/viell/effect-schema-http/src/branch/main/docs/design.md) for detailed semantics,
-precedence rules, unusual HTTP cases, usage patterns, provider constraints, test strategy, and open design questions.
+The source includes TSDoc for exported types and members. See the [design document](docs/design.md) for detailed
+semantics, precedence rules, unusual HTTP cases, usage patterns, provider constraints, test strategy, and open design
+questions.
 
 ## Development
 
 ```sh
-corepack enable
 pnpm install --frozen-lockfile
 pnpm check
 ```
 
 Unit and type-focused tests live beside the implementation under `src/`. Server-backed integration tests live under
-`tests/` and bind only ephemeral loopback ports. See
-[CONTRIBUTING.md](https://codeberg.org/viell/effect-schema-http/src/branch/main/CONTRIBUTING.md) for the complete
-workflow.
+`tests/` and bind only ephemeral loopback ports. See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete workflow.
 
 ## Licence
 

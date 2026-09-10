@@ -26,7 +26,7 @@ export class NoPreviousRequest extends Data.TaggedError("NoPreviousRequest") {}
  * @public
  */
 export interface RequestGateOptions<Input, Key> {
-  /** Derives the memoization key for an input. */
+  /** Derives the memoization key when a request Effect runs. Must be pure and include all relevant input fields. */
   readonly key: (input: Input) => Key;
   /** Compares keys. Defaults to {@link Object.is}. */
   readonly equivalent?: (left: Key, right: Key) => boolean;
@@ -42,13 +42,13 @@ export interface RequestGateOptions<Input, Key> {
  * @public
  */
 export interface RequestGate<Input, A, E, R> extends Pipeable.Pipeable {
-  /** Returns the latest equivalent success or executes the request. */
+  /** Returns an equivalent cached success first, otherwise joins an equivalent flight or executes the request. */
   readonly run: (input: Input) => Effect.Effect<A, E, R>;
-  /** Executes the request even when an equivalent success is cached. */
+  /** Starts a separate execution, bypassing both cached successes and equivalent in-flight requests. */
   readonly refresh: (input: Input) => Effect.Effect<A, E, R>;
-  /** Re-executes the input that produced the latest successful value. */
+  /** Starts a separate execution of the latest successful input, or fails with {@link NoPreviousRequest}. */
   readonly reload: Effect.Effect<A, E | NoPreviousRequest, R>;
-  /** Clears the cached success and interrupts every in-flight request owned by the gate. */
+  /** Clears the cached success and signals interruption of current flights; does not await their finalizers. */
   readonly invalidate: Effect.Effect<void>;
   /** Reads the cached success without executing a request. */
   readonly peek: Effect.Effect<Option.Option<A>>;
@@ -102,9 +102,12 @@ const findLatestEquivalent = <Input, Key, A, E>(
  * Creates an isolated, single-entry request gate.
  *
  * @remarks
- * Equivalent concurrent calls share one execution. Invalidation interrupts all current executions. The fiber that
+ * Equivalent concurrent `run` calls share one execution when no equivalent success is cached. `refresh` and `reload`
+ * always start separate executions. Inputs and results are retained by reference and must be treated as immutable.
+ * Invalidation signals interruption of all current executions. The fiber that
  * wins the execute decision owns the shared execution; interrupting that fiber completes its waiters as interrupted.
- * Interrupting a waiter only stops that waiter.
+ * Interrupting a waiter only stops that waiter. Throws from `execute` become defects and still release shared waiters
+ * and remove the in-flight entry, allowing subsequent calls to retry.
  *
  * @typeParam Input - Input accepted by the request.
  * @typeParam Key - Memoization key derived from an input.
@@ -164,7 +167,14 @@ export const makeRequestGate = <Input, Key, A, E, R>(
           if (decision._tag === "Await") return yield* restore(Deferred.await(decision.deferred));
 
           const cancelled = Deferred.await(decision.flight.cancellation).pipe(Effect.zipRight(Effect.interrupt));
-          const result = yield* Effect.exit(restore(Effect.raceFirst(execute(input), cancelled)));
+          const result = yield* Effect.exit(
+            restore(
+              Effect.raceFirst(
+                Effect.suspend(() => execute(input)),
+                cancelled,
+              ),
+            ),
+          );
           yield* Ref.update(stateRef, (state) => ({
             ...state,
             cache:
@@ -210,6 +220,7 @@ export const makeRequestGate = <Input, Key, A, E, R>(
         Effect.forEach(cancellations, (cancellation) => Deferred.succeed(cancellation, undefined), { discard: true }),
       ),
       Effect.asVoid,
+      Effect.uninterruptible,
     );
 
     const gate = {

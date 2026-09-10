@@ -1,4 +1,4 @@
-# Design sketch
+# Design
 
 The library defines an endpoint once, then creates immutable request plans at each call site. Endpoint functions take
 only their required path values; endpoints without placeholders are zero-argument. A plan remains lazy while the caller
@@ -51,6 +51,10 @@ const getUserPost = api.createRequest({
 const request = getUserPost({ userId, postId });
 ```
 
+Whole `.` and `..` segments are a current limitation: URL normalization can change the target path despite parameter
+encoding. Validate that interpolation cannot produce such segments until the policy below is resolved; see
+[the review report](report.md#1-dot-segment-path-values-can-change-the-target-path).
+
 A backslash escapes a literal colon that would otherwise look like a placeholder. This keeps action-style paths usable:
 
 ```ts
@@ -79,7 +83,7 @@ yield * getThinUsers().effect; // sends again with the same composed overrides
 Composition does not add execution or caching semantics: every plan remains immutable and every evaluation of its cold
 Effect sends the request again.
 
-The current spike uses `@effect/platform`'s `HttpClient` service. The Effect keeps the transport as an explicit
+The implementation uses `@effect/platform`'s `HttpClient` service. The Effect keeps the transport as an explicit
 requirement. Applications provide `FetchHttpClient.layer`, a Node client layer, or a test client. Accessing `.effect`
 does not choose a runtime or start a Promise.
 
@@ -166,6 +170,16 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
 This replacement model keeps the common thin-object case precise: replacing the `200` schema removes the original
 `200` body type, while inherited `404` and endpoint-specific `410` envelopes remain in the union.
 
+Precise replacement inference requires tuples with literal response tags. Inline declarations preserve these types;
+reusable lists should use `as const`. Ordinary arrays also work: composition and plan-level replacement retain a
+conservative union of the original and incoming rules because their runtime membership is unknown to TypeScript.
+Duplicate-tag validation still runs at runtime. Widened or union-valued tags inside tuples remain a type-inference
+limitation; see the remaining questions and [review report](report.md).
+
+Plan setters preserve earlier plans structurally, but do not deep-clone caller-owned bodies, response matchers, codecs,
+or policy objects. API and endpoint configuration can also retain references to declaration inputs. Treat all such
+inputs as immutable after passing them to the library. This is especially relevant when reusing an Effect or a gate.
+
 ## Bodies and request fields
 
 The endpoint definition optionally declares a request body schema, but request bodies are never endpoint-function
@@ -191,6 +205,7 @@ const request = doFoo();
 ```
 
 Such a plan is immediately executable, while `.setBody(...)` can still replace the static body at a call site.
+An explicit `defaultBody: undefined` is treated as absent; use `.setBody(undefined)` when the schema accepts it.
 
 GET and HEAD definitions reject body schemas, and execution checks again after raw request transforms. This follows the
 Fetch transport's actual constraint instead of advertising a request shape that its default transport cannot execute.
@@ -220,7 +235,8 @@ objects for its endpoint schemas. Keeping parsing in a schema is equally support
 composed `*FromString` schema is the same pipeline with the parsing boundary moved into Effect Schema.
 
 `ResponseBody.uint8Array` reads a finite binary response, and `ResponseBody.formData` delegates multipart or
-URL-encoded parsing to the provider. `ResponseBody.none` drains the incoming body and then decodes `undefined`. It marks
+URL-encoded parsing to the provider. `ResponseBody.none` drains the incoming stream without accumulating its payload
+and then decodes `undefined`; an absent stream reported as `EmptyBody` is already clean. It marks
 itself as ineligible for default use, keeping body disposal explicit on a response rule whose schema input accepts
 `undefined`. Custom codecs are default-capable without a marker; a codec can set `canBeDefault: false` to require the
 same explicit per-rule use.
@@ -284,13 +300,25 @@ at most four attempts even when transport errors and transient responses alterna
 still retried before rule selection. `while` can classify additional errors or responses as retryable without removing
 the built-in transient cases. `mode` can restrict a policy to errors or responses when that distinction matters.
 
-Intermediate retry responses are drained before waiting so the connection can be reused during the backoff. A valid
+Retries are method-agnostic, so enabling them on a non-idempotent operation can repeat its side effects. Request schema
+encoding, body construction, and plan transforms happen once per Effect evaluation, before the retry loop. The encoded
+request is reused for all attempts; custom one-shot bodies must not be retried. `while` is short-circuited for built-in
+transient cases and cannot be used as an observation hook for every attempt.
+
+Intermediate retry responses are drained as streams without buffering the complete body before waiting, so the
+connection can be reused during the backoff. A valid
 `Retry-After` delta or HTTP date sets a minimum delay over the configured schedule; `respectRetryAfter: false` disables
 that behavior for a server with unsuitable headers.
 
-`timeout` options and `.setTimeout(...)` apply to each individual attempt, including decoding the final response body.
+`timeout` options and `.setTimeout(...)` bound transport execution and decoding of the final response body.
 Effect interruption propagates through the HTTP client, while a timeout becomes a transient `TimeoutException` that
 can participate in the configured retry policy.
+
+The current retry implementation gives disposal of a retryable response its own timeout window. If a schedule ends
+after receiving such a response, final decoding also gets a fresh window. Disposal failures end the operation rather
+than re-entering retry classification. Encoding, request/client transforms, and retry waits are outside these windows.
+Use an outer `Effect.timeout` for a total operation deadline. Consolidating each attempt under one deadline is deferred
+in [the review report](report.md).
 
 No cache policy is supplied by default. API and endpoint definitions can specify a `CachePolicy`, and `.setCache(...)`
 can replace or clear it at a call site. Its `control` field writes a standard `Cache-Control` request header for HTTP
@@ -305,17 +333,17 @@ Request plans remain cold and repeatable. Stateful reuse is an explicit layer ar
 than a hidden property of a plan:
 
 ```ts
-const users =
-  yield *
-  makeRequestGate(
+const program = Effect.gen(function* () {
+  const users = yield* makeRequestGate(
     (filters: Filters) =>
       getUsers().pipe(setUrlParam("page", String(filters.page)), setUrlParam("search", filters.search), toEffect),
     { key: ({ page, search }) => JSON.stringify([page, search]) },
   );
 
-yield * users.run(filters); // reuse when the key matches the latest success
-yield * users.refresh(filters); // bypass reuse for this input
-yield * users.reload; // rerun the input that produced the latest success
+  yield* users.run(filters); // reuse when the key matches the latest success
+  yield* users.refresh(filters); // bypass reuse for this input
+  yield* users.reload; // rerun the input that produced the latest success
+});
 ```
 
 The key function makes equality explicit instead of guessing whether arbitrary objects are structurally equal. An
@@ -323,17 +351,24 @@ optional `equivalent` function supports composite keys that cannot use `Object.i
 
 The gate retains only its latest successful input and value. A failed request does not replace that pair, which means a
 temporary invalid form state cannot evict the last useful table result. Mapped HTTP responses remain successes here,
-regardless of status. Same-key concurrent calls share an in-flight request. Different keys may run concurrently, but an
-older completion cannot overwrite a newer successful completion. The cache is intentionally a single latest entry,
+regardless of status. `run` first checks for an equivalent cached success, then joins the newest equivalent in-flight
+request, or starts an execution. `refresh` and `reload` bypass both cache and flight reuse; concurrent forced requests
+execute separately. A `run` during refresh can return the prior cached success. Different keys may run concurrently,
+but older completions cannot overwrite newer successful completions. The cache is intentionally a single latest entry,
 not a map: alternating `a`, `b`, `a`, `b` executes four times. `invalidate` clears the retained pair, interrupts every
 request currently owned by that gate, completes their shared waiters with the interrupted exit, and prevents stale work
-from repopulating the cache. `peek` reads the retained value without executing anything.
+from repopulating the cache. Clearing state and signaling cancellation are uninterruptible together; invalidation
+does not wait for executing fibers' finalizers or transport cleanup. `peek` reads the retained value without executing
+anything. Here, newer means later-started: an earlier request finishing last cannot replace a later-started success,
+but can be retained if all later requests failed.
 
 Gate state has an explicit Effect lifetime: `makeRequestGate` allocates a new isolated gate. It is suitable for decoded,
 reusable values, not live streaming bodies whose ownership cannot safely be shared. Interruption of the fiber executing
 a shared request completes its waiters with the same interrupted exit; interrupting a fiber that is only waiting stops
 that waiter without cancelling the shared execution. This ownership follows from the first caller executing the Effect
-while later callers await its result.
+while later callers await its result. Synchronous throws while constructing the request Effect are captured as defects;
+they still complete shared waiters and remove the flight so future calls can recover. Key and equivalence callbacks
+should be pure. Inputs, keys, and results are retained by reference, so callers must not mutate them.
 
 Gate cancellation and ordinary request cancellation use Effect interruption rather than a transport-specific
 `AbortController`. `FetchHttpClient` translates interruption to its internal abort signal. Other providers must make
@@ -358,7 +393,7 @@ Run them separately with `pnpm test:unit` and `pnpm test:integration`, or togeth
 
 ## Repository and release shape
 
-Effect and Effect Platform are peer dependencies so consumers and the library share service identities. Published files
+Effect and Effect Platform are peer dependencies so consumers and the library share service identities. Packed files
 include implementation sources for working source maps, exclude colocated unit tests, and expose both the root entry
 point and `package.json`. The package metadata points to the Codeberg repository, and TypeScript checks the source with
 `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` in addition to strict mode. `AnyResponseRule` is public for
@@ -370,8 +405,15 @@ be enabled for the Codeberg repository before it can enforce them remotely.
 The project is distributed under the MIT licence. The package metadata and repository `LICENSE` file carry the same
 licence designation.
 
-The first public prerelease is `0.1.0-beta.1`. The package is ESM-only, declares Node.js 20 as its supported Node
-baseline, and publishes prerelease builds under the npm `beta` tag so they cannot accidentally replace `latest`.
+The version being prepared is `0.1.0-beta.1`. Distribution at this stage is a Codeberg revision and a locally built
+tarball, with no registry publication or release tag implied. `private: true` prevents accidental registry publication;
+the existing `publishConfig` is reserved for a future decision to publish. `pnpm pack` builds the ESM output through
+`prepack`. Consumers should record the source commit because local builds share the same beta version.
+
+The library declares a Node.js 20 runtime baseline. Development requires Node.js 22.13+ or 24 with the locked tool
+versions; the configured CI image uses Node.js 24. Runtime verification on Node.js 20, browsers, and alternative
+runtimes remains outstanding. The README describes local tarball consumption, and [report.md](report.md) records
+the review findings left for a subsequent pass.
 
 ## Remaining design questions
 
@@ -388,3 +430,18 @@ baseline, and publishes prerelease builds under the npm `beta` tag so they canno
 4. **API introspection.** `Api` exposes `baseUrl`, but not its fully merged headers, query parameters, response rules,
    transforms, or policies. Tooling and diagnostics may justify an immutable resolved-configuration snapshot; its
    representation must preserve repeated headers and parameters without exposing mutable declaration inputs.
+5. **Retry lifecycle.** Should one deadline cover sending, disposal, and decoding, and should disposal failures consume
+   retry budget? Should retries reject non-replayable bodies or accept a per-attempt body factory? Keep the current
+   boundaries explicit until these semantics are settled.
+6. **Configuration ownership.** Should declarations snapshot mutable collections, policies, and matchers, or should
+   immutability remain a caller contract? Deep cloning arbitrary schemas, codecs, and domain values is not generally
+   safe. Snapshotting only structural configuration may be a useful compromise.
+7. **Dynamic type boundaries.** How should tuple rules with widened/union tags, dynamically supplied path templates,
+   and possibly undefined default bodies degrade? Conservative inference or explicit rejection is preferable to
+   promising response cases or executability that runtime configuration does not guarantee.
+8. **Supported runtime matrix.** Is Node.js 20 still an intended compatibility target for the first beta, and are
+   browsers or alternative runtimes release requirements? Choose the matrix and validate an installed tarball there
+   before strengthening compatibility claims or publishing to a registry.
+9. **Dot-segment path values.** Should interpolation reject resulting whole `.` and `..` segments? URL parsing
+   normalizes them, so percent-encoding alone cannot preserve their identity as opaque path values. Define the policy
+   for adjacent placeholders and placeholders inside larger segments before tightening validation.

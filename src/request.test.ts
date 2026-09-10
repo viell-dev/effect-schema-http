@@ -1,13 +1,14 @@
 /** Unit tests for lazy request-plan construction, typing, matching, and execution semantics. */
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "@effect/platform";
 import { Cause, Clock, Duration, Effect, Either, Layer, Match, ParseResult, Schedule, Schema } from "effect";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   AbsolutePathWithBaseUrl,
   createApi,
   createRequest,
   DuplicateResponseTag,
   extendApi,
+  getHeaderEntries,
   InvalidPathArguments,
   InvalidPathParameterValue,
   InvalidRetryCount,
@@ -44,6 +45,84 @@ const mockFetch = (handler: (request: Request) => Promise<Response>): typeof fet
     handler(input instanceof Request ? input : new Request(input, init))) as typeof fetch;
 
 describe("createRequest", () => {
+  it("discards no-body and retry responses without buffering the full payload", async () => {
+    const discarded = new Response("discarded", { status: 503 });
+    const final = new Response("also discarded");
+    const intermediateBuffer = vi.spyOn(discarded, "arrayBuffer");
+    const finalBuffer = vi.spyOn(final, "arrayBuffer");
+    let attempts = 0;
+    const plan = createRequest({
+      method: "GET",
+      path: "https://example.test/discard",
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
+    })().setRetry({ times: 1, schedule: Schedule.recurs(1) });
+
+    await plan.effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => (attempts++ === 0 ? discarded : final)))),
+      Effect.runPromise,
+    );
+
+    expect(attempts).toBe(2);
+    expect(discarded.bodyUsed).toBe(true);
+    expect(final.bodyUsed).toBe(true);
+    expect(intermediateBuffer).not.toHaveBeenCalled();
+    expect(finalBuffer).not.toHaveBeenCalled();
+  });
+
+  it("preserves possible responses when composing non-tuple rule arrays", async () => {
+    const ok = response({ _tag: "ok", status: 200 }, User);
+    const gone = response({ _tag: "gone", status: 410 }, Gone);
+    const thin = response({ _tag: "ok", status: 200 }, ThinUser);
+    const rules: Array<typeof ok> = [ok];
+    const api = createApi("https://example.test", {
+      responses: [response({ _tag: "gone", status: 410 }, Gone)],
+    });
+    const endpoint = api.createRequest({ method: "GET", path: "/users/1", responses: rules });
+    const plan = endpoint();
+    const extended = api.extend({ responses: rules }).createRequest({ method: "GET", path: "/users/1" })();
+    type Expected = ResponseOf<readonly [typeof ok, typeof gone]>;
+    expectTypeOf<Effect.Effect.Success<typeof plan.effect>>().toEqualTypeOf<Expected>();
+    expectTypeOf<Effect.Effect.Success<typeof extended.effect>>().toEqualTypeOf<Expected>();
+
+    const replaced = plan.setResponseSchema(thin.match, thin.schema);
+    expectTypeOf<Effect.Effect.Success<typeof replaced.effect>>().toEqualTypeOf<
+      Expected | ResponseOf<readonly [typeof thin]>
+    >();
+
+    const result = await plan.effect.pipe(
+      Effect.provide(fetchLayer(mockFetch(async () => Response.json({ id: 1, name: "Ada" })))),
+      Effect.runPromise,
+    );
+    expect(result._tag).toBe("ok");
+  });
+
+  it("accepts header names that also exist on Object.prototype", async () => {
+    const plan = createRequest({
+      method: "GET",
+      path: "https://example.test/headers",
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
+    })()
+      .setHeader("constructor", "first")
+      .appendHeader("constructor", "second")
+      .setHeader("__proto__", "ordinary-header");
+
+    await plan.effect.pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.makeWith<never, never, HttpClientError.HttpClientError, never>(
+          Effect.flatMap((request) => {
+            expect(request.headers["constructor"]).toBe("first, second");
+            expect(request.headers["__proto__"]).toBe("ordinary-header");
+            expect(getHeaderEntries(request)).toContainEqual(["__proto__", "ordinary-header"]);
+            return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null)));
+          }),
+          Effect.succeed,
+        ),
+      ),
+      Effect.runPromise,
+    );
+  });
+
   it("composes pipeable endpoints and plans without changing their lazy semantics", async () => {
     const requests: Array<Request> = [];
     const createUser = createRequest({

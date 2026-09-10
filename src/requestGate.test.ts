@@ -11,6 +11,92 @@ import {
 } from "./main.js";
 
 describe("RequestGate", () => {
+  it("keeps a shared execution alive when only a waiter is interrupted", async () => {
+    let calls = 0;
+    const result = await Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const gate = yield* makeRequestGate(
+        () =>
+          Effect.gen(function* () {
+            calls += 1;
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+            return "done";
+          }),
+        { key: () => "same" },
+      );
+      const owner = yield* Effect.fork(gate.run(undefined));
+      yield* Deferred.await(started);
+      const waiter = yield* Effect.fork(gate.run(undefined));
+      yield* Effect.yieldNow();
+      const waiterExit = yield* Fiber.interrupt(waiter);
+      yield* Deferred.succeed(release, undefined);
+      const value = yield* Fiber.join(owner);
+      return { waiterExit, value, cached: yield* gate.peek };
+    }).pipe(Effect.runPromise);
+
+    expect(Exit.isFailure(result.waiterExit) && Cause.isInterruptedOnly(result.waiterExit.cause)).toBe(true);
+    expect(result.value).toBe("done");
+    expect(result.cached).toEqual(Option.some("done"));
+    expect(calls).toBe(1);
+  });
+
+  it("starts separate refreshes while run can still return the prior cached success", async () => {
+    let calls = 0;
+    const result = await Effect.gen(function* () {
+      const bothStarted = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const gate = yield* makeRequestGate(
+        () =>
+          Effect.gen(function* () {
+            const call = ++calls;
+            if (call === 3) yield* Deferred.succeed(bothStarted, undefined);
+            if (call > 1) yield* Deferred.await(release);
+            return call;
+          }),
+        { key: () => "same" },
+      );
+      yield* gate.run(undefined);
+      const first = yield* Effect.fork(gate.refresh(undefined));
+      const second = yield* Effect.fork(gate.refresh(undefined));
+      yield* Deferred.await(bothStarted);
+      const duringRefresh = yield* gate.run(undefined);
+      yield* Deferred.succeed(release, undefined);
+      const refreshed = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+      return { duringRefresh, refreshed, cached: yield* gate.peek };
+    }).pipe(Effect.runPromise);
+
+    expect(result.duringRefresh).toBe(1);
+    expect(result.refreshed).toEqual([2, 3]);
+    expect(result.cached).toEqual(Option.some(3));
+    expect(calls).toBe(3);
+  });
+
+  it("stays lazy and cleans up when constructing the request Effect throws", async () => {
+    let calls = 0;
+    const defect = new Error("request construction failed");
+    const result = await Effect.gen(function* () {
+      const gate = yield* makeRequestGate(
+        (input: string) => {
+          calls += 1;
+          if (calls === 1) throw defect;
+          return Effect.succeed(input);
+        },
+        { key: (input) => input },
+      );
+      const request = gate.run("same");
+      expect(calls).toBe(0);
+      const failed = yield* Effect.exit(request);
+      const recovered = yield* request.pipe(Effect.timeout("100 millis"), Effect.exit);
+      return { failed, recovered };
+    }).pipe(Effect.runPromise);
+
+    expect(Exit.isFailure(result.failed) && Array.from(Cause.defects(result.failed.cause)).includes(defect)).toBe(true);
+    expect(result.recovered).toEqual(Exit.succeed("same"));
+    expect(calls).toBe(2);
+  });
+
   it("retains the latest successful input and supports refresh and reload", async () => {
     const calls: Array<{ readonly page: number; readonly search: string }> = [];
     const program = Effect.gen(function* () {

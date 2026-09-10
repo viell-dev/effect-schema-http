@@ -4,10 +4,10 @@ Issues and pull requests are welcome on [Codeberg](https://codeberg.org/viell/ef
 
 ## Development setup
 
-The repository uses Node.js 22 and the pnpm version declared in `package.json`.
+Use Node.js 22.13+ or 24 and the pnpm version declared in `package.json`. The development tools have a higher minimum
+than the library's declared Node.js 20 runtime baseline. CI currently uses Node.js 24.
 
 ```sh
-corepack enable
 pnpm install --frozen-lockfile
 ```
 
@@ -31,11 +31,16 @@ pnpm test:watch
 pnpm format
 ```
 
-Before preparing a release, verify the published file set and package metadata:
+Before preparing a Codeberg beta revision, verify the packed file set and package metadata:
 
 ```sh
 pnpm pack:check
 ```
+
+For testing in another project, run `pnpm pack` and install the resulting local tarball there. This runs the production
+build through `prepack`; source archives alone do not contain `dist/`. Keep the source commit with each local build.
+The repository is marked `private` until registry publication is explicitly planned. No release tag or registry
+publication is required for this evaluation stage. Track remaining release work in [docs/report.md](docs/report.md).
 
 ## Project conventions
 

@@ -139,7 +139,7 @@ export const getHeaderEntries = (message: {
 
 /** Produces Effect Platform's normalized header map from ordered entries. */
 const normalizeHeaderEntries = (entries: HeaderEntries): Headers.Headers => {
-  const grouped: Record<string, Array<string>> = {};
+  const grouped = Object.create(null) as Record<string, Array<string>>;
   for (const [name, value] of entries) (grouped[name] ??= []).push(value);
   return Headers.fromInput(grouped);
 };
@@ -375,11 +375,17 @@ const formDataBodyCodec = {
   decode: (raw: HttpClientResponse.HttpClientResponse) => raw.formData,
 } satisfies ResponseBodyCodec<FormData>;
 
+/** Drains a response without accumulating its payload, treating an absent body as already consumed. */
+const discardResponseBody = (raw: HttpClientResponse.HttpClientResponse) =>
+  Stream.runDrain(raw.stream).pipe(
+    Effect.catchAll((error) => (error.reason === "EmptyBody" ? Effect.void : Effect.fail(error))),
+  );
+
 /** Body-discarding codec used by rules that intentionally expect no value. */
 const noBodyCodec = {
   name: "none" as const,
   canBeDefault: false as const,
-  decode: (raw: HttpClientResponse.HttpClientResponse) => Effect.as(raw.arrayBuffer, undefined),
+  decode: (raw: HttpClientResponse.HttpClientResponse) => Effect.as(discardResponseBody(raw), undefined),
 } satisfies ResponseBodyCodec<undefined, false>;
 
 /** Built-in response-body codecs. */
@@ -426,7 +432,7 @@ export interface ResponseRule<
   readonly codec: Codec;
 }
 
-/** General response-rule type for helpers that accept arbitrary rule tuples. */
+/** General response-rule type for helpers; retain literal tags and tuples for precise replacement inference. */
 export type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema, ResponseBodyCodecOrDefault>;
 
 type CodecOptions<S extends AnySchema, Codec extends ResponseBodyCodecOrDefault> = Codec extends AnyResponseBodyCodec
@@ -483,18 +489,26 @@ type ReplaceMatchingRule<
     : readonly [Head, ...ReplaceMatchingRule<Tail, Rule>]
   : Rules;
 
-type SetResponseRule<Rules extends ReadonlyArray<AnyResponseRule>, Rule extends AnyResponseRule> =
-  TagOf<Rule> extends TagOf<Rules[number]> ? ReplaceMatchingRule<Rules, Rule> : readonly [Rule, ...Rules];
+type SetResponseRule<
+  Rules extends ReadonlyArray<AnyResponseRule>,
+  Rule extends AnyResponseRule,
+> = number extends Rules["length"]
+  ? ReadonlyArray<Rules[number] | Rule>
+  : TagOf<Rule> extends TagOf<Rules[number]>
+    ? ReplaceMatchingRule<Rules, Rule>
+    : readonly [Rule, ...Rules];
 
 type MergeResponseRules<
   Defaults extends ReadonlyArray<AnyResponseRule>,
   Overrides extends ReadonlyArray<AnyResponseRule>,
-> = Overrides extends readonly [
-  infer Head extends AnyResponseRule,
-  ...infer Tail extends ReadonlyArray<AnyResponseRule>,
-]
-  ? readonly [Head, ...MergeResponseRules<RemoveMatchingRule<Defaults, TagOf<Head>>, Tail>]
-  : Defaults;
+> = number extends Defaults["length"] | Overrides["length"]
+  ? ReadonlyArray<Defaults[number] | Overrides[number]>
+  : Overrides extends readonly [
+        infer Head extends AnyResponseRule,
+        ...infer Tail extends ReadonlyArray<AnyResponseRule>,
+      ]
+    ? readonly [Head, ...MergeResponseRules<RemoveMatchingRule<Defaults, TagOf<Head>>, Tail>]
+    : Defaults;
 
 type DuplicateResponseTagOf<
   Rules extends ReadonlyArray<AnyResponseRule>,
@@ -667,19 +681,20 @@ export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
 
   /** Drains the retained response body so the provider can release its resources. */
   get discard(): Effect.Effect<void, HttpClientError.ResponseError> {
-    return Stream.runDrain(this.response.stream).pipe(
-      Effect.catchAll((error) => (error.reason === "EmptyBody" ? Effect.void : Effect.fail(error))),
-    );
+    return discardResponseBody(this.response);
   }
 }
 
-/** Indicates that a provider rejected a request body, notably on `GET` or `HEAD`. */
+/** Indicates that the library rejected a non-empty `GET` or `HEAD` body after request transforms. */
 export class RequestBodyNotAllowed extends Data.TaggedError("RequestBodyNotAllowed")<{
   /** Request rejected because its method does not permit the configured body. */
   readonly request: HttpClientRequest.HttpClientRequest;
 }> {}
 
-/** Indicates that a body-bearing endpoint was converted to an Effect before a body was supplied. */
+/**
+ * Diagnostic type for an incomplete body-bearing plan. If the type check is bypassed, evaluating its Effect fails
+ * with this error before the HTTP client is called.
+ */
 export class RequestBodyRequired extends Data.TaggedError("RequestBodyRequired")<{
   /** Configured HTTP method. */
   readonly method: RequestMethod;
@@ -819,7 +834,13 @@ export type RetryInput =
 /** Effect Schedule used to delay and limit retry attempts. */
 export type RetrySchedule = Schedule.Schedule<unknown, RetryInput, never>;
 
-/** Retry behavior applied around request execution and response selection. */
+/**
+ * Retry behavior applied around request execution and response selection.
+ *
+ * @remarks
+ * Disabled by default. Applies to every method and retries mapped transient responses before schema decoding.
+ * Enable only when replay is acceptable. Attempts reuse the encoded body, which must be replayable.
+ */
 export interface RetryPolicy {
   /** Maximum number of attempts after the initial request. */
   readonly times: number;
@@ -827,7 +848,7 @@ export interface RetryPolicy {
   readonly schedule?: RetrySchedule;
   /** Whether retry decisions apply to failures, responses, or both. */
   readonly mode?: "errors-only" | "response-only" | "both";
-  /** Additional retry predicate; built-in transient cases always remain retryable. */
+  /** Adds retryable cases; cannot veto built-in transient cases and is not called for them. */
   readonly while?: (input: RetryInput) => boolean;
   /** Whether `Retry-After` can extend the schedule delay. Defaults to `true`. */
   readonly respectRetryAfter?: boolean;
@@ -845,7 +866,7 @@ export interface RequestOptions {
   readonly unhandledResponseBody?: UnhandledResponseBodyPolicy;
   /** Request caching configuration. */
   readonly cache?: CachePolicy;
-  /** Per-attempt timeout. */
+  /** Transport and final-decoding timeout; excludes encoding, transforms, and backoff. Disposal has a separate window. */
   readonly timeout?: Duration.DurationInput;
   /** Full retry policy. */
   readonly retry?: RetryPolicy;
@@ -915,7 +936,7 @@ export interface RequestDefinition<
     : Body extends AnySchema
       ? RequestBodyCodec<Schema.Schema.Encoded<Body>>
       : never;
-  /** Body used by every plan unless replaced with `setBody`. */
+  /** Defined body value used by every plan unless replaced with `setBody`; `undefined` means no default. */
   readonly defaultBody?: Uppercase<Method> extends "GET" | "HEAD"
     ? never
     : Body extends AnySchema
@@ -967,7 +988,9 @@ interface HeaderSetter<Output> {
  *
  * @remarks
  * Every setter returns another plan without executing I/O. Read `effect` or use {@link toEffect} only after all
- * call-site overrides have been composed.
+ * call-site overrides have been composed. Reading the Effect is also lazy; each evaluation sends independently.
+ * Immutability is structural: caller-supplied body values, codecs, matchers, and policies are not deep-cloned.
+ * Treat them as immutable for the lifetime of the endpoint and its plans.
  *
  * @typeParam Body - Optional request-body schema.
  * @typeParam Rules - Ordered response rule tuple.
@@ -1008,7 +1031,7 @@ export interface RequestPlan<
   readonly setUnhandledResponseBody: (policy: UnhandledResponseBodyPolicy) => RequestPlan<Body, Rules, BodyReady>;
   /** Replaces or clears the base URL. */
   readonly setBaseUrl: (baseUrl: string | undefined) => RequestPlan<Body, Rules, BodyReady>;
-  /** Replaces or clears the per-attempt timeout. */
+  /** Replaces or clears the timeout described by {@link RequestOptions.timeout}. */
   readonly setTimeout: (timeout: Duration.DurationInput | undefined) => RequestPlan<Body, Rules, BodyReady>;
   /** Replaces or disables the retry policy. */
   readonly setRetry: (retry: RetryPolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
@@ -1022,7 +1045,7 @@ export interface RequestPlan<
   readonly mapClient: (
     transform: (client: HttpClient.HttpClient) => HttpClient.HttpClient,
   ) => RequestPlan<Body, Rules, BodyReady>;
-  /** Replaces the rule with the same `_tag`, or adds a new highest-precedence rule. */
+  /** Replaces a rule with the same `_tag` in place, or prepends a new rule; specificity still determines priority. */
   readonly setResponseSchema: <
     const Matcher extends ResponseMatcher,
     const S extends AnySchema,
@@ -1032,7 +1055,7 @@ export interface RequestPlan<
     schema: S,
     options?: CodecOptions<S, Codec>,
   ) => RequestPlan<Body, SetResponseRule<Rules, ResponseRule<Matcher, S, Codec>>, BodyReady>;
-  /** Lazily builds the executable Effect, or a body-required marker when no body was supplied. */
+  /** Builds a cold Effect; typed as {@link RequestBodyRequired} until a required body is supplied. */
   readonly effect: BodyReady extends true
     ? Effect.Effect<
         ResponseOf<Rules>,
@@ -1473,7 +1496,7 @@ const executeWithRetry = <Success, HandlingError, Requirements, Error extends Ht
       const retryAt = yield* nextRetryAt(outcome.right.response);
       if (retryAt === undefined) return yield* withAttemptTimeout(handleResponse(outcome.right.response), timeout);
 
-      yield* withAttemptTimeout(outcome.right.response.arrayBuffer, timeout);
+      yield* withAttemptTimeout(discardResponseBody(outcome.right.response), timeout);
       yield* waitUntil(retryAt);
       retries += 1;
     }
