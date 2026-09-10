@@ -360,6 +360,21 @@ const textBodyCodec = {
   decode: (raw: HttpClientResponse.HttpClientResponse) => raw.text,
 } satisfies ResponseBodyCodec<string>;
 
+/** Byte response codec for finite binary payloads. */
+const uint8ArrayBodyCodec = {
+  name: "uint8-array" as const,
+  accept: "application/octet-stream",
+  decode: (raw: HttpClientResponse.HttpClientResponse) =>
+    Effect.map(raw.arrayBuffer, (buffer) => new Uint8Array(buffer)),
+} satisfies ResponseBodyCodec<Uint8Array>;
+
+/** Form-data response codec for finite multipart or URL-encoded payloads. */
+const formDataBodyCodec = {
+  name: "form-data" as const,
+  accept: "multipart/form-data",
+  decode: (raw: HttpClientResponse.HttpClientResponse) => raw.formData,
+} satisfies ResponseBodyCodec<FormData>;
+
 /** Body-discarding codec used by rules that intentionally expect no value. */
 const noBodyCodec = {
   name: "none" as const,
@@ -373,6 +388,10 @@ export const ResponseBody = {
   json: jsonBodyCodec,
   /** Returns response text, including an empty string. */
   text: textBodyCodec,
+  /** Returns a finite response body as bytes. */
+  uint8Array: uint8ArrayBodyCodec,
+  /** Parses a finite multipart or URL-encoded response as form data. */
+  formData: formDataBodyCodec,
   /** Drains the response and yields `undefined`; only valid as a rule-specific codec. */
   none: noBodyCodec,
 } as const;

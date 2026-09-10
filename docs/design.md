@@ -219,20 +219,26 @@ Custom codecs are accepted in every default scope, so an API-wide parser can pro
 objects for its endpoint schemas. Keeping parsing in a schema is equally supported: `ResponseBody.text` followed by a
 composed `*FromString` schema is the same pipeline with the parsing boundary moved into Effect Schema.
 
-`ResponseBody.none` drains the incoming body and then decodes `undefined`. It marks itself as ineligible for default
-use, keeping body disposal explicit on a response rule whose schema input accepts `undefined`. Custom codecs are
-default-capable without a marker; a codec can set `canBeDefault: false` to require the same explicit per-rule use.
-Additional byte, form, multipart, or streaming codecs can be added without changing the rule shape.
+`ResponseBody.uint8Array` reads a finite binary response, and `ResponseBody.formData` delegates multipart or
+URL-encoded parsing to the provider. `ResponseBody.none` drains the incoming body and then decodes `undefined`. It marks
+itself as ineligible for default use, keeping body disposal explicit on a response rule whose schema input accepts
+`undefined`. Custom codecs are default-capable without a marker; a codec can set `canBeDefault: false` to require the
+same explicit per-rule use.
 
 Responses that are defined to have no body, including `204`, `205`, `304`, and responses to `HEAD`, should select
 `ResponseBody.none` explicitly. The request's `Accept` header is a negotiation preference, not a substitute for choosing
 the correct response codec.
 
 The effective default codec also supplies the request's content-negotiation hint: JSON sends
-`Accept: application/json`, text sends `Accept: text/*`, and a custom codec uses its optional `accept` value or falls
-back to `application/json`. An explicit request header always wins. A per-rule codec does not change this request
-header because rule selection happens after the response arrives; callers using text to parse JSON or another
-application media type should declare the appropriate `Accept` header themselves.
+`Accept: application/json`, text sends `Accept: text/*`, bytes send `Accept: application/octet-stream`, form data sends
+`Accept: multipart/form-data`, and a custom codec uses its optional `accept` value or falls back to `application/json`.
+An explicit request header always wins. A per-rule codec does not change this request header because rule selection
+happens after the response arrives; callers using text to parse JSON or another application media type should declare
+the appropriate `Accept` header themselves.
+
+Response rules already provide content-type-driven decoding when one status can carry several representations. Each
+rule matches `content-type` with an exact value or predicate and selects its own codec and schema. The library does not
+maintain a separate media-type registry or automatically override an explicit rule codec from the received header.
 
 Query parameters and request headers remain unschematized. Query values are `string | true`: strings produce ordinary
 `key=value` syntax, an empty string produces `key=`, and `true` produces the bare implicit-true form `key`. Explicit
@@ -340,12 +346,13 @@ Three layers catch different failures:
 
 1. Type assertions in unit tests verify body setters, inherited defaults, response replacement, discriminated envelope
    narrowing, and Effect requirements.
-2. Unit tests under `src/` inject a fake Fetch implementation to check laziness, schema failures, immutable overrides,
-   retry/cache policy, default merging, the unhandled-response path, and request-gate concurrency.
+2. Unit tests under `src/` inject a fake Fetch implementation to check laziness, concurrent execution, schema failures,
+   immutable overrides, retry/cache policy, response codecs, default merging, the unhandled-response path, and
+   request-gate concurrency.
 3. Integration tests under `tests/` run a disposable server on an ephemeral loopback port and use the real Fetch client.
    They exercise standard and extension methods, path interpolation, schema transformations and brands, JSON and text
-   readers, XML request and response bodies, recursive JSON, transformed empty responses, request gates, and mapped
-   non-2xx responses without depending on an external service.
+   readers, XML request and response bodies, recursive JSON, transformed empty responses, request gates, ordinary
+   request interruption, and mapped non-2xx responses without depending on an external service.
 
 Run them separately with `pnpm test:unit` and `pnpm test:integration`, or together with `pnpm test`.
 

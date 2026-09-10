@@ -839,6 +839,91 @@ describe("createRequest", () => {
     );
   });
 
+  it("decodes finite binary and form-data responses", async () => {
+    const getBytes = createRequest({
+      method: "GET",
+      path: "https://example.test/file",
+      responses: [response({ _tag: "bytes", status: 200 }, Schema.Uint8ArrayFromSelf)],
+      responseCodec: ResponseBody.uint8Array,
+    });
+    const FormDataFromSelf = Schema.declare((input): input is FormData => input instanceof FormData);
+    const getForm = createRequest({
+      method: "GET",
+      path: "https://example.test/form",
+      responses: [response({ _tag: "form", status: 200 }, FormDataFromSelf)],
+      responseCodec: ResponseBody.formData,
+    });
+    const formData = new FormData();
+    formData.set("name", "Ada");
+
+    const bytes = await getBytes().effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.headers.get("accept")).toBe("application/octet-stream");
+            return new Response(new Uint8Array([1, 2, 3]));
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+    const form = await getForm().effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.headers.get("accept")).toBe("multipart/form-data");
+            return new Response(formData);
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(bytes.body).toEqual(new Uint8Array([1, 2, 3]));
+    expect(form.body.get("name")).toBe("Ada");
+  });
+
+  it("selects both schema and codec through content-type response rules", async () => {
+    const getValue = createRequest({
+      method: "GET",
+      path: "https://example.test/value",
+      responses: [
+        response(
+          {
+            _tag: "json",
+            status: 200,
+            headers: { "content-type": (value) => value?.startsWith("application/json") ?? false },
+          },
+          Schema.Struct({ value: Schema.String }),
+        ),
+        response(
+          {
+            _tag: "text",
+            status: 200,
+            headers: { "content-type": (value) => value?.startsWith("text/plain") ?? false },
+          },
+          Schema.String,
+          { codec: ResponseBody.text },
+        ),
+      ],
+    });
+    let json = true;
+    const layer = fetchLayer(
+      mockFetch(async () =>
+        json
+          ? Response.json({ value: "structured" })
+          : new Response("plain", { headers: { "content-type": "text/plain; charset=utf-8" } }),
+      ),
+    );
+
+    const structured = await getValue().effect.pipe(Effect.provide(layer), Effect.runPromise);
+    json = false;
+    const plain = await getValue().effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(structured).toMatchObject({ _tag: "json", body: { value: "structured" } });
+    expect(plain).toMatchObject({ _tag: "text", body: "plain" });
+  });
+
   it("distinguishes a JSON null value from empty and malformed JSON bodies", async () => {
     const getNull = createRequest({
       method: "GET",
