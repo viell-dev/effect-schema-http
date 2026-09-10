@@ -7,6 +7,7 @@
 import { Schema } from "effect";
 import {
   AdminStatsFromBytes,
+  AdminUsersResponse,
   AtomFeedFromString,
   AttachmentsResponse,
   AttachmentView,
@@ -199,8 +200,17 @@ export const deleteAttachment = api.createRequest({
 
 // -- Admin ----------------------------------------------------------------------------------
 //
-// The oldest features on this backend. `stats` sends bytes that are secretly JSON (see
-// `AdminStatsFromBytes`'s TSDoc for why); `cache/refresh` sends no body at all, ever.
+// `stats` and `cache/refresh` are the oldest features on this backend (see their comments below).
+// `users`, by contrast, is the newest: a name/email-filterable directory, i.e. the "datatable with
+// a filter form" shape `makeRequestGate` is documented for. See `packages/web/src/usersGate.ts` -
+// it is not declared here as a plain endpoint call because every filter keystroke needs the
+// gate's interruption behavior, not just another `toEffect` call.
+
+export const adminListUsers = api.createRequest({
+  method: "GET",
+  path: "/api/admin/users",
+  responses: [response({ _tag: "ok", status: 200 }, AdminUsersResponse)],
+});
 
 export const adminStats = api.createRequest({
   method: "GET",

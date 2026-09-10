@@ -2,6 +2,7 @@ import { DateTime, Match } from "effect";
 import { toEffect } from "viell-effect-schema-http";
 import { h, mount } from "../dom.js";
 import { renderNav } from "../components/nav.js";
+import { renderUsersDirectory } from "../components/usersDirectory.js";
 import { adminRefreshCache, adminStats } from "../api.js";
 import { run } from "../runtime.js";
 import { withAuth } from "../withAuth.js";
@@ -15,7 +16,7 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
     return;
   }
 
-  const main = h("main", { class: "container container-narrow" }, h("p", {}, "Loading…"));
+  const main = h("main", { class: "container" }, h("p", {}, "Loading…"));
   mount(root, renderNav(), main);
 
   const result = await run(withAuth(adminStats()).pipe(toEffect)).catch((error: unknown) => {
@@ -98,6 +99,7 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
           h("dd", {}, new Date(DateTime.toEpochMillis(stats.generatedAt)).toLocaleString()),
         ),
         refreshForm,
+        renderUsersDirectory(),
       );
     }),
     Match.orElse(() => {

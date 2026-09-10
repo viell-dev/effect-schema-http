@@ -312,4 +312,51 @@ describe("admin", () => {
     expect(refreshed.status).toBe(205);
     expect(refreshed.kind).toBe("empty");
   });
+
+  it("filters the user directory by name and email substring, admin-only", async () => {
+    const program = Effect.gen(function* () {
+      const admin = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      yield* routes.register({
+        username: "bob",
+        email: "bob@example.com",
+        password: "builderbob",
+        displayName: "Bob Builder",
+      });
+      yield* routes.register({
+        username: "carol",
+        email: "carol@other.example",
+        password: "carolcarol",
+        displayName: "Carol Danvers",
+      });
+      const adminHeader = `Bearer ${(jsonBody(admin) as { token: string }).token}`;
+
+      const all = yield* routes.adminListUsers(adminHeader, undefined, undefined);
+      const byName = yield* routes.adminListUsers(adminHeader, "bob", undefined);
+      const byEmail = yield* routes.adminListUsers(adminHeader, undefined, "other.example");
+      const asNonAdmin = yield* routes.adminListUsers(undefined, undefined, undefined);
+
+      return { all, byName, byEmail, asNonAdmin };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { all, byName, byEmail, asNonAdmin } = await Effect.runPromise(
+      program as Effect.Effect<{
+        all: RouteResponse;
+        byName: RouteResponse;
+        byEmail: RouteResponse;
+        asNonAdmin: RouteResponse;
+      }>,
+    );
+
+    expect((jsonBody(all) as { users: ReadonlyArray<unknown> }).users).toHaveLength(3);
+    const byNameUsers = (jsonBody(byName) as { users: ReadonlyArray<{ username: string }> }).users;
+    expect(byNameUsers.map((u) => u.username)).toEqual(["bob"]);
+    const byEmailUsers = (jsonBody(byEmail) as { users: ReadonlyArray<{ username: string }> }).users;
+    expect(byEmailUsers.map((u) => u.username)).toEqual(["carol"]);
+    expect(asNonAdmin.status).toBe(401);
+  });
 });

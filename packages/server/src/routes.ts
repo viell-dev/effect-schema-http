@@ -8,6 +8,8 @@ import { DateTime, Effect, Schema } from "effect";
 import {
   Account,
   AdminStatsFromBytes,
+  adminUserViewOfAccount,
+  AdminUsersResponse,
   AtomFeedFromString,
   AttachmentCaption,
   AttachmentId,
@@ -440,6 +442,18 @@ export const deleteAttachment = (
 //
 // The oldest features on this backend: `stats` predates the JSON API (see admin.ts), and
 // `cache/refresh` is a bare RPC-style command with no response payload at all.
+
+export const adminListUsers = (
+  authHeader: string | undefined,
+  nameParam: string | undefined,
+  emailParam: string | undefined,
+) =>
+  Effect.gen(function* () {
+    yield* requireAdmin(authHeader);
+    const store = yield* Store;
+    const accounts = yield* store.searchAccounts(nameParam ?? "", emailParam ?? "");
+    return { users: accounts.map(adminUserViewOfAccount) };
+  }).pipe(respondWith(AdminUsersResponse, 200));
 
 export const adminStats = (authHeader: string | undefined) =>
   Effect.gen(function* () {

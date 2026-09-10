@@ -86,6 +86,21 @@ export class Store extends Effect.Service<Store>()("Store", {
         }),
       );
 
+    const searchAccounts = (nameQuery: string, emailQuery: string) =>
+      Ref.get(ref).pipe(
+        Effect.map((state) => {
+          const name = nameQuery.trim().toLowerCase();
+          const email = emailQuery.trim().toLowerCase();
+          return Array.from(state.accounts.values())
+            .filter(
+              (account) =>
+                name === "" || account.username.toLowerCase().includes(name) || account.displayName.toLowerCase().includes(name),
+            )
+            .filter((account) => email === "" || account.email.toLowerCase().includes(email))
+            .sort((a, b) => DateTime.toEpochMillis(a.createdAt) - DateTime.toEpochMillis(b.createdAt));
+        }),
+      );
+
     const findAccountByUsername = (username: Username) =>
       Ref.get(ref).pipe(
         Effect.map((state) => {
@@ -278,6 +293,7 @@ export class Store extends Effect.Service<Store>()("Store", {
       insertAccount,
       findAccountByEmail,
       findAccountByUsername,
+      searchAccounts,
       getAccount,
       createSession,
       resolveSession,

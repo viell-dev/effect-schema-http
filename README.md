@@ -11,7 +11,9 @@ application that accreted over time and never ended up uniform. The blog CRUD al
 JSON in and JSON out; the attachments/feed/admin features exist specifically to make this backend
 "look" long-lived by mixing in the request/response codecs a pure-JSON API would never need
 (`ResponseBody.text`, `ResponseBody.uint8Array`, `RequestBody.formData`, `ResponseBody.none`,
-and an intentionally non-standard `205` status).
+and an intentionally non-standard `205` status), and the admin user directory exists specifically
+to exercise `makeRequestGate` — a filter-as-you-type datatable, the shape the library's own docs
+use as the gate's motivating example.
 
 This is a local, no-remote git repository. Every commit is a real checkpoint (`git log` tells the
 story better than this document does), and the final third of this README is a candid writeup of
@@ -55,6 +57,7 @@ server discards all data. Adding a real database was out of scope for what this 
 | Per-blog Atom feed | `GET /api/blogs/:username/feed.atom` | `ResponseBody.text` (XML) |
 | Admin stats | `GET /api/admin/stats` | `ResponseBody.uint8Array` (bytes that are secretly JSON) |
 | Admin cache refresh | `POST /api/admin/cache/refresh` | `ResponseBody.none`, status `205` not `204` |
+| Admin user directory | `GET /api/admin/users?name=&email=` | plain JSON, but driven through `makeRequestGate` client-side |
 
 The blog/post/comment CRUD underneath all of this is plain JSON in, JSON out — the default codec
 the library needs no configuration for at all.
@@ -74,16 +77,18 @@ tab. `VITE_API_BASE_URL` overrides the server URL the web app targets (defaults 
 `http://localhost:4000`).
 
 Tests: `pnpm --filter @realworld/domain run test` (14 tests) and
-`pnpm --filter @realworld/server run test` (10 tests) run under Vitest. The web package has no
+`pnpm --filter @realworld/server run test` (11 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
-`playwright-core` against both dev servers, in two passes: (1) register → post → comment signed in
-→ sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
+`playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
+in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
 visitor instead of leaking that it exists; (2) first-registered-user-becomes-admin → upload a real
 PNG attachment and see it render as an inline preview → view the same post through its Atom feed →
 refresh the admin cache and watch the reason field clear itself on the `205` response → confirm a
-second user gets neither the admin nav link nor access to `/admin`. No browser-automation tool was
-preinstalled in this environment, so that was set up ad hoc for this verification pass; it is not
-part of the committed project.
+second user gets neither the admin nav link nor access to `/admin`; (3) an artificially-delayed
+`/api/admin/users` route plus rapid, genuinely distinct keystrokes into the users-directory filter,
+confirming real `net::ERR_ABORTED` network failures for every superseded request (see "Request
+gates" below). No browser-automation tool was preinstalled in this environment, so that was set up
+ad hoc for this verification pass; it is not part of the committed project.
 
 ## Effect Schema tricks exercised
 
@@ -145,11 +150,67 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   definitions for the one extra fact only the authenticated user can see about themselves, not a
   hand-copied duplicate that could drift.
 
+## Request gates: a filter-as-you-type datatable
+
+`makeRequestGate` was the one exported API this project hadn't touched. Its own README example is
+literally a paginated/searchable user table, so the admin panel's "Users" section
+(`packages/web/src/usersGate.ts` + `components/usersDirectory.ts`) is that example, built for real:
+two text inputs (name, email) over `GET /api/admin/users`, firing a new request on every `input`
+event — deliberately no debounce, so the library's own concurrency handling is what has to carry
+the load of several genuinely distinct filter values submitted within milliseconds of each other.
+
+Reading `docs/design.md`'s "Request gates" section closely before writing any code mattered here,
+because the obvious first guess about what a "gate" gives you for free is wrong. The docs say:
+*"Different keys may run concurrently, but older completions cannot overwrite newer successful
+completions."* That is a **correctness** guarantee — a slow, stale response can't clobber a newer
+one in the gate's single retained slot — not a **cancellation** one. Calling plain `gate.run(input)`
+on every keystroke does *not* abort the previous keystroke's in-flight `fetch()`; it just makes sure
+that request's result, if it arrives late, can't overwrite whatever a newer request already
+produced. For a live filter box that still leaves every stale request running to completion on the
+wire, which is exactly what this task asked to avoid.
+
+The actual interruption primitive is `gate.invalidate`: *"clears the retained pair, interrupts
+every request currently owned by that gate."* So `usersDirectory.ts` calls `gate.invalidate` before
+every `gate.run`, and `FetchHttpClient` — per the library's own "Providers and cancellation" section
+— translates that Effect interruption into a real `AbortController.abort()` on the underlying
+`fetch()`. This was verified concretely, not just inferred from the docs: driving the page through
+a real (system-installed) Chromium with an artificial 400ms delay injected on the `/api/admin/users`
+route (needed because the real in-memory server responds sub-millisecond — too fast for keystrokes
+typed even a few milliseconds apart to genuinely overlap) and typing `a`, `l`, `i`, `c` back-to-back
+produced this exact request log:
+
+```
+sent      /api/admin/users?name=a
+sent      /api/admin/users?name=al
+sent      /api/admin/users?name=ali
+failed    /api/admin/users?name=a    net::ERR_ABORTED
+failed    /api/admin/users?name=al   net::ERR_ABORTED
+sent      /api/admin/users?name=alic
+failed    /api/admin/users?name=ali  net::ERR_ABORTED
+finished  /api/admin/users?name=alic
+```
+
+Three real, browser-level aborted network requests, and only the last keystroke's request actually
+completed and rendered — with the table correctly holding only rows matching `alic`. That is the
+concrete evidence behind the "worked well" and "gap" bullets below, not just a reading of the docs.
+
+**The genuine gap this surfaced:** there is no "interrupt the current flight, but keep whatever is
+already cached" operation. `invalidate` is the only interruption tool the gate offers, and it always
+clears the retained success too. That's a fine trade for this page — it keeps its own last-rendered
+rows on screen regardless of what the gate remembers, so nothing is lost — but a caller who wanted
+both the gate's cross-call cache-hit behavior *and* per-keystroke interruption at once has no single
+method for that; they would have to reach for the lower-level "interrupt the specific fiber that
+issued the previous call" pattern the docs mention (`Effect.runFork` + `Fiber.interrupt`) instead of
+the gate's own vocabulary. For a live search box specifically, this also means the gate's headline
+feature — "equivalent concurrent `run` calls share one execution... `run` first checks for an
+equivalent cached success" — is barely exercised: `invalidate` wipes that cache before it would ever
+get a chance to help, since almost every keystroke produces a new, distinct key anyway.
+
 ## Using `viell-effect-schema-http`: what worked well
 
 - **The core API is exactly as pleasant as the README promises.** `createApi(baseUrl, { responses
   })` plus `api.createRequest({ method, path, body, responses })` produces a fully-typed, callable,
-  pipeable endpoint. Every one of the nineteen endpoints in `packages/web/src/api.ts` was declared
+  pipeable endpoint. Every one of the twenty endpoints in `packages/web/src/api.ts` was declared
   this way — across five different response/request codecs — and it stayed easy to read even with
   five shared error rules inherited by every one of them.
 - **Response unions as ordinary success values is a genuinely good design.** Modeling a `404` as a
@@ -198,6 +259,11 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   and `ResponseBody.uint8Array` trivial to wire up once you know the trick** (see the Effect Schema
   section above) — no custom codec, no transform, just a schema whose `Type` already matches the
   codec's `Input`/output.
+- **Effect interruption really does become a real `fetch()` abort, end to end.** `gate.invalidate`
+  → Effect fiber interruption → `FetchHttpClient`'s abort-signal translation → an actual
+  `net::ERR_ABORTED` in Chromium's network log, confirmed by driving a real browser (see the
+  "Request gates" section above). This is exactly what the README's "Providers and cancellation"
+  section promises, and it held up under an artificially-delayed, rapid-fire, real-network test.
 
 ## Using `viell-effect-schema-http`: friction, gaps, and one real bug we hit
 
@@ -241,10 +307,10 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   BodyReady>`, since that triple differs per endpoint. It works well once you know it; nothing in
   the docs points at the pattern.
 - **We did not exercise, and so cannot vouch for or against:** retries (`setRetry`/`setRetries`),
-  request gates (`makeRequestGate`), `RequestBody.text`/`.urlParams` specifically (we hit
-  `.formData` but not these two), header-precedence tie-breaking beyond the single matcher above, or
-  `UnhandledResponse.discard`/`"retain"` body ownership. Nothing in this project needed a retry, a
-  second HTTP provider, or an endpoint whose response shape genuinely varies by header at runtime.
+  `RequestBody.text`/`.urlParams` specifically (we hit `.formData` for requests but not these two),
+  header-precedence tie-breaking beyond the single matcher above, or `UnhandledResponse.discard`/
+  `"retain"` body ownership. Nothing in this project needed a retry, a second HTTP provider, or an
+  endpoint whose response shape genuinely varies by header at runtime.
   The library's own
   [`docs/report.md`](../repo/docs/report.md) already flags several of these areas (retry/timeout
   interaction, mutable-input aliasing, dot-segment path values) as deferred findings from its

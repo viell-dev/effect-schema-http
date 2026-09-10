@@ -8,4 +8,5 @@ export * from "./auth.js";
 export * from "./attachment.js";
 export * from "./feed.js";
 export * from "./admin.js";
+export * from "./adminUsers.js";
 export * from "./api.js";

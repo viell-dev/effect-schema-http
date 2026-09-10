@@ -159,6 +159,13 @@ const routeTable: ReadonlyArray<Route> = [
   },
   {
     method: "GET",
+    pattern: /^\/api\/admin\/users$/,
+    bodyMode: "none",
+    handle: (_p, query, auth) =>
+      run(routes.adminListUsers(auth, query.get("name") ?? undefined, query.get("email") ?? undefined)),
+  },
+  {
+    method: "GET",
     pattern: /^\/api\/admin\/stats$/,
     bodyMode: "none",
     handle: (_p, _q, auth) => run(routes.adminStats(auth)),

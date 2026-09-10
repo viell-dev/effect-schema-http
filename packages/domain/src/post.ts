@@ -10,7 +10,7 @@
  */
 import { Schema } from "effect";
 import { PostId, UserId } from "./ids.js";
-import { Slug, Username } from "./primitives.js";
+import { NonNegativeInt, Slug, Username } from "./primitives.js";
 
 export const PostVisibility = Schema.Literal("public", "draft", "private");
 export type PostVisibility = typeof PostVisibility.Type;
@@ -40,7 +40,7 @@ export const PostView = Schema.Struct({
   title: PostTitle,
   body: PostBody,
   visibility: PostVisibility,
-  commentCount: Schema.NonNegative,
+  commentCount: NonNegativeInt,
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
 }).annotations({
