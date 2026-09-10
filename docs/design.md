@@ -197,10 +197,15 @@ HTTP client is called.
 Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default and
 uses the transport's JSON reader. `ResponseBody.text` reads the body as a string before schema decoding, so a schema can
 parse JSON itself or decode XML, YAML, or a domain-specific text format. The default reader can be set at API, endpoint,
-or plan scope; an explicit response-rule codec takes precedence. `ResponseBody.none` drains the incoming body and then
-decodes `undefined`. The no-body codec only accepts schemas whose encoded/input type includes `undefined`, preventing
-declarations that are guaranteed to fail while still allowing `undefined` to transform into a domain value. Additional
-byte, form, multipart, or streaming codecs can be added without changing the rule shape.
+or plan scope; an explicit response-rule codec takes precedence. Custom codecs are accepted in every default scope, so
+an API-wide parser can produce ordinary or branded intermediate objects for its endpoint schemas. Keeping parsing in a
+schema is equally supported: `ResponseBody.text` followed by a composed `*FromString` schema is the same pipeline with
+the parsing boundary moved into Effect Schema.
+
+`ResponseBody.none` drains the incoming body and then decodes `undefined`. It marks itself as ineligible for default
+use, keeping body disposal explicit on a response rule whose schema input accepts `undefined`. Custom codecs are
+default-capable without a marker; a codec can set `canBeDefault: false` to require the same explicit per-rule use.
+Additional byte, form, multipart, or streaming codecs can be added without changing the rule shape.
 
 Query parameters and request headers remain unschematized. Query values are `string | true`: strings produce ordinary
 `key=value` syntax, an empty string produces `key=`, and `true` produces the bare implicit-true form `key`. Explicit

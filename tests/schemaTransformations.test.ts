@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { FetchHttpClient } from "@effect/platform";
+import { FetchHttpClient, HttpClientError } from "@effect/platform";
 import { Effect, Either, ParseResult, Schema } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import {
@@ -10,6 +10,7 @@ import {
   response,
   ResponseBody,
   ResponseDecodeError,
+  type ResponseBodyCodec,
 } from "../src/main.js";
 
 const NonNegativeIntegerBrand = Symbol.for("schema-http/tests/NonNegativeInteger");
@@ -28,6 +29,23 @@ const Version = Schema.Struct({
   build: NonNegativeInteger,
 });
 const VersionFromString = Schema.parseJson(Version);
+
+const CustomJsonResponse = {
+  name: "custom-json",
+  decode: (rawResponse) =>
+    Effect.flatMap(rawResponse.text, (text) =>
+      Effect.try({
+        try: () => JSON.parse(text) as unknown,
+        catch: (cause) =>
+          new HttpClientError.ResponseError({
+            request: rawResponse.request,
+            response: rawResponse,
+            reason: "Decode",
+            cause,
+          }),
+      }),
+    ),
+} satisfies ResponseBodyCodec<unknown>;
 
 const RequestXmlString = Schema.String.pipe(Schema.filter((value) => /^<command>[a-z-]+<\/command>$/.test(value)));
 const XmlAcknowledgement = Schema.transformOrFail(Schema.String, Schema.Struct({ accepted: Schema.Boolean }), {
@@ -158,6 +176,41 @@ describe("schema transformations over HTTP", () => {
     expectTypeOf(json.body.major).toEqualTypeOf<NonNegativeInteger>();
     expectTypeOf(text.body.major).toEqualTypeOf<NonNegativeInteger>();
     expect("response" in json).toBe(false);
+  });
+
+  it("uses custom response codecs as API, endpoint, and plan defaults", async () => {
+    const apiDefault = createApi(baseUrl, { responseCodec: CustomJsonResponse }).createRequest({
+      method: "GET",
+      path: "/",
+      responses: [response({ _tag: "version", status: 200 }, Version)],
+    });
+    const endpointDefault = createApi(baseUrl).createRequest({
+      method: "GET",
+      path: "/version-text",
+      responseCodec: CustomJsonResponse,
+      responses: [response({ _tag: "version", status: 200 }, Version)],
+    });
+    const planDefault = createApi(baseUrl).createRequest({
+      method: "GET",
+      path: "/",
+      responses: [response({ _tag: "version", status: 200 }, Version)],
+    });
+    const rejectNoBodyDefault = () =>
+      createApi(baseUrl, {
+        // @ts-expect-error -- discarding a body must be selected by a response rule whose schema accepts undefined.
+        responseCodec: ResponseBody.none,
+      });
+    void rejectNoBodyDefault;
+
+    const fromApi = await apiDefault().effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const fromEndpoint = await endpointDefault().effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const fromPlan = await planDefault()
+      .setResponseCodec(CustomJsonResponse)
+      .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+
+    expect(fromApi.body).toEqual({ name: "Example API", major: 1, minor: 4, build: 0 });
+    expect(fromEndpoint.body).toEqual(fromApi.body);
+    expect(fromPlan.body).toEqual(fromApi.body);
   });
 
   it("reports response transformation failures with matcher and response context", async () => {

@@ -96,8 +96,9 @@ export interface ResponseMatcher<
   readonly headers?: MatchHeaders;
 }
 
-export interface ResponseBodyCodec<Input = unknown> {
+export interface ResponseBodyCodec<Input = unknown, CanBeDefault extends boolean = true> {
   readonly name: string;
+  readonly canBeDefault?: CanBeDefault;
   readonly decode: (
     response: HttpClientResponse.HttpClientResponse,
   ) => Effect.Effect<Input, HttpClientError.ResponseError>;
@@ -115,8 +116,9 @@ const textBodyCodec = {
 
 const noBodyCodec = {
   name: "none" as const,
+  canBeDefault: false as const,
   decode: (raw: HttpClientResponse.HttpClientResponse) => Effect.as(raw.arrayBuffer, undefined),
-} satisfies ResponseBodyCodec<undefined>;
+} satisfies ResponseBodyCodec<undefined, false>;
 
 export const ResponseBody = {
   json: jsonBodyCodec,
@@ -124,8 +126,8 @@ export const ResponseBody = {
   none: noBodyCodec,
 } as const;
 
-type AnyResponseBodyCodec = ResponseBodyCodec;
-export type DefaultResponseBodyCodec = typeof ResponseBody.json | typeof ResponseBody.text;
+type AnyResponseBodyCodec = ResponseBodyCodec<unknown, boolean>;
+export type DefaultResponseBodyCodec = ResponseBodyCodec<unknown, true>;
 type ResponseBodyCodecOrDefault = AnyResponseBodyCodec | undefined;
 
 export interface ResponseRule<

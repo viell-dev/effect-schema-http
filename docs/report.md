@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
-`sketch-request-builder`; the current suite has 55 tests across six files.
+`sketch-request-builder`; the current suite has 56 tests across six files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -456,17 +456,27 @@ Valid `Retry-After` delta-seconds and HTTP-date values now impose a minimum over
 `respectRetryAfter: false` is the escape hatch for broken or unsuitable server policy. A discarded response is drained
 before that delay begins, so a long server-requested wait does not hold its connection body open.
 
-### 4.4 Default response readers are restricted to `json | text`, but per-rule codecs are open
+### 4.4 ~~Default response readers are restricted to `json | text`, but per-rule codecs are open~~ — fixed
 
-`RequestOptions.responseCodec` is typed `DefaultResponseBodyCodec = typeof ResponseBody.json | typeof ResponseBody.text`,
-while `response(..., { codec })` accepts any `ResponseBodyCodec`. So a user who writes a custom codec (the interface is
-exported, so this is clearly intended) can use it per rule but cannot make it the default at API, endpoint, or plan
-scope. Probed: passing a custom codec as `responseCodec` is a type error.
+At review time, `RequestOptions.responseCodec` was typed
+`DefaultResponseBodyCodec = typeof ResponseBody.json | typeof ResponseBody.text`, while `response(..., { codec })`
+accepted any `ResponseBodyCodec`. So a user who wrote a custom codec (the interface was exported, so this was clearly
+intended) could use it per rule but could not make it the default at API, endpoint, or plan scope. Probed: passing a
+custom codec as `responseCodec` was a type error.
 
 Excluding `ResponseBody.none` from the default slot is sensible — a default that discards every body would be a
 footgun. But the restriction is currently expressed as an allowlist of two concrete values rather than as "any codec
 except `none`", which also excludes every future built-in. `Exclude<AnyResponseBodyCodec, { name: "none" }>` or a
 codec-level `canBeDefault` marker would express the intent without freezing the set.
+
+`DefaultResponseBodyCodec` now accepts any `ResponseBodyCodec` whose `canBeDefault` capability is not `false`. Custom
+codecs are default-capable without extra boilerplate and are covered at API, endpoint, and plan scope by a real-server
+integration test. `ResponseBody.none` opts out, preserving the guarantee that body disposal is selected explicitly on
+a rule whose schema accepts `undefined`; custom codecs may opt out for the same reason.
+
+This is an extensibility improvement rather than new parsing power. `ResponseBody.text` followed by a composed
+`*FromString` schema and a custom default codec followed by an object schema describe the same processing stages. They
+place the generic parser on opposite sides of the response-codec/schema boundary, and both are now supported.
 
 ### 4.5 No `Accept` header is ever sent
 
