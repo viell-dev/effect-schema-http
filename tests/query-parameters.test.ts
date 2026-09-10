@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";
 import { Effect, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createApi, response } from "../src/main.js";
+import { createApi, removeUrlParam, response, setUrlParam } from "../src/main.js";
 
 const ReflectedQuery = Schema.Struct({ query: Schema.String });
 
@@ -58,5 +58,27 @@ describe("query parameter wire syntax", () => {
     expect(parts).toContain("planTrue=true");
     expect(parts).toContain("planFalse=false");
     expect(parts.filter((part) => part.startsWith("repeated"))).toEqual(["repeated", "repeated="]);
+  });
+
+  it("replaces and removes selected values without disturbing order", async () => {
+    const inspectQuery = createApi(baseUrl).createRequest({
+      method: "GET",
+      path: "/inspect?foo=a&foo=b&foo=b&foo=c&flag&flag=",
+      responses: [response({ key: "ok", status: 200 }, ReflectedQuery)],
+    });
+
+    const replaced = await inspectQuery()
+      .pipe(setUrlParam("foo", "b", "x"), setUrlParam("foo", "missing", "unused"))
+      .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const removed = await inspectQuery()
+      .pipe(removeUrlParam("foo", "b"))
+      .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const removedBare = await inspectQuery()
+      .removeUrlParam("flag", true)
+      .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+
+    expect(replaced.body.query).toBe("foo=a&foo=x&foo=x&foo=c&flag&flag=");
+    expect(removed.body.query).toBe("foo=a&foo=c&flag&flag=");
+    expect(removedBare.body.query).toBe("foo=a&foo=b&foo=b&foo=c&flag=");
   });
 });

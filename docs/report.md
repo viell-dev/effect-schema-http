@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes in §3 track subsequent fixes on
-`sketch-request-builder`; the current suite has 51 tests across six files.
+`sketch-request-builder`; the current suite has 52 tests across six files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime

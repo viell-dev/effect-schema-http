@@ -466,6 +466,16 @@ type RequestBodyCodecSetter<
   ? (codec: RequestBodyCodec<Schema.Schema.Encoded<Body>>) => RequestPlan<Body, Rules, BodyReady>
   : never;
 
+interface UrlParamSetter<Output> {
+  (key: string, value: QueryParamValue): Output;
+  (key: string, currentValue: QueryParamValue, replacementValue: QueryParamValue): Output;
+}
+
+interface UrlParamRemover<Output> {
+  (key: string): Output;
+  (key: string, value: QueryParamValue): Output;
+}
+
 export interface RequestPlan<
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
@@ -474,10 +484,10 @@ export interface RequestPlan<
   extends Pipeable.Pipeable {
   readonly setBody: BodySetter<Body, Rules>;
   readonly setRequestBodyCodec: RequestBodyCodecSetter<Body, Rules, BodyReady>;
-  readonly setUrlParam: (key: string, value: QueryParamValue) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setUrlParam: UrlParamSetter<RequestPlan<Body, Rules, BodyReady>>;
   readonly setUrlParams: (params: QueryParamsInput) => RequestPlan<Body, Rules, BodyReady>;
   readonly appendUrlParam: (key: string, value: QueryParamValue) => RequestPlan<Body, Rules, BodyReady>;
-  readonly removeUrlParam: (key: string) => RequestPlan<Body, Rules, BodyReady>;
+  readonly removeUrlParam: UrlParamRemover<RequestPlan<Body, Rules, BodyReady>>;
   readonly setHeader: (name: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setHeaders: (headers: Headers.Input) => RequestPlan<Body, Rules, BodyReady>;
   readonly removeHeader: (name: string) => RequestPlan<Body, Rules, BodyReady>;
@@ -537,12 +547,30 @@ export const setRequestBodyCodec =
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.setRequestBodyCodec(codec as RequestBodyCodec<Schema.Schema.Encoded<Body>>);
 
-export const setUrlParam =
-  (key: string, value: QueryParamValue) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
-    plan.setUrlParam(key, value);
+type PlanTransform = <
+  Body extends AnySchema | undefined,
+  Rules extends ReadonlyArray<AnyResponseRule>,
+  BodyReady extends boolean,
+>(
+  plan: RequestPlan<Body, Rules, BodyReady>,
+) => RequestPlan<Body, Rules, BodyReady>;
+
+export function setUrlParam(key: string, value: QueryParamValue): PlanTransform;
+export function setUrlParam(
+  key: string,
+  currentValue: QueryParamValue,
+  replacementValue: QueryParamValue,
+): PlanTransform;
+export function setUrlParam(
+  key: string,
+  currentValue: QueryParamValue,
+  replacementValue?: QueryParamValue,
+): PlanTransform {
+  return (plan) =>
+    replacementValue === undefined
+      ? plan.setUrlParam(key, currentValue)
+      : plan.setUrlParam(key, currentValue, replacementValue);
+}
 
 export const setUrlParams =
   (params: QueryParamsInput) =>
@@ -558,12 +586,11 @@ export const appendUrlParam =
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.appendUrlParam(key, value);
 
-export const removeUrlParam =
-  (key: string) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
-    plan.removeUrlParam(key);
+export function removeUrlParam(key: string): PlanTransform;
+export function removeUrlParam(key: string, value: QueryParamValue): PlanTransform;
+export function removeUrlParam(key: string, value?: QueryParamValue): PlanTransform {
+  return (plan) => (value === undefined ? plan.removeUrlParam(key) : plan.removeUrlParam(key, value));
+}
 
 export const setHeader =
   (name: string, value: string) =>
@@ -717,10 +744,10 @@ interface PlanState {
 interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly setBody: (body: unknown) => unknown;
   readonly setRequestBodyCodec: (codec: RequestBodyCodec<never>) => unknown;
-  readonly setUrlParam: (key: string, value: QueryParamValue) => unknown;
+  readonly setUrlParam: UrlParamSetter<unknown>;
   readonly setUrlParams: (params: QueryParamsInput) => unknown;
   readonly appendUrlParam: (key: string, value: QueryParamValue) => unknown;
-  readonly removeUrlParam: (key: string) => unknown;
+  readonly removeUrlParam: UrlParamRemover<unknown>;
   readonly setHeader: (name: string, value: string) => unknown;
   readonly setHeaders: (headers: Headers.Input) => unknown;
   readonly removeHeader: (name: string) => unknown;
@@ -853,6 +880,14 @@ const setQueryParam = (params: QueryParams, key: string, value: QueryParamValue)
   [key, value],
 ];
 
+const replaceQueryParamValue = (
+  params: QueryParams,
+  key: string,
+  currentValue: QueryParamValue,
+  replacementValue: QueryParamValue,
+): QueryParams =>
+  params.map((entry) => (entry[0] === key && entry[1] === currentValue ? ([key, replacementValue] as const) : entry));
+
 const setQueryParams = (params: QueryParams, input: QueryParamsInput): QueryParams => {
   const incoming = queryParamsFromInput(input);
   const keys = new Set(incoming.map(([key]) => key));
@@ -866,6 +901,9 @@ const appendQueryParam = (params: QueryParams, key: string, value: QueryParamVal
 
 const removeQueryParam = (params: QueryParams, key: string): QueryParams =>
   params.filter(([candidate]) => candidate !== key);
+
+const removeQueryParamValue = (params: QueryParams, key: string, value: QueryParamValue): QueryParams =>
+  params.filter(([candidate, candidateValue]) => candidate !== key || candidateValue !== value);
 
 const encodeQueryParam = ([key, value]: readonly [string, QueryParamValue]): string => {
   const encoded = new URLSearchParams([[key, value === true ? "" : value]]).toString();
@@ -1076,10 +1114,22 @@ const makePlan = <
     pipe: pipeSelf,
     setBody: (body: unknown) => makePlan<Body, Rules, true>(definition, rules, { ...state, body, hasBody: true }),
     setRequestBodyCodec: (bodyCodec: RequestBodyCodec<never>) => update({ bodyCodec }),
-    setUrlParam: (key, value) => update({ urlParams: setQueryParam(state.urlParams, key, value) }),
+    setUrlParam: (key: string, currentValue: QueryParamValue, replacementValue?: QueryParamValue) =>
+      update({
+        urlParams:
+          replacementValue === undefined
+            ? setQueryParam(state.urlParams, key, currentValue)
+            : replaceQueryParamValue(state.urlParams, key, currentValue, replacementValue),
+      }),
     setUrlParams: (params) => update({ urlParams: setQueryParams(state.urlParams, params) }),
     appendUrlParam: (key, value) => update({ urlParams: appendQueryParam(state.urlParams, key, value) }),
-    removeUrlParam: (key) => update({ urlParams: removeQueryParam(state.urlParams, key) }),
+    removeUrlParam: (key: string, value?: QueryParamValue) =>
+      update({
+        urlParams:
+          value === undefined
+            ? removeQueryParam(state.urlParams, key)
+            : removeQueryParamValue(state.urlParams, key, value),
+      }),
     setHeader: (name, value) => update({ headers: Headers.set(state.headers, name, value) }),
     setHeaders: (headers) => update({ headers: Headers.setAll(state.headers, headers) }),
     removeHeader: (name) => update({ headers: Headers.remove(state.headers, name) }),

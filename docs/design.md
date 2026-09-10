@@ -201,9 +201,12 @@ Query parameters and request headers remain unschematized. Query values are `str
 booleans remain explicit strings (`"true"` or `"false"`), while omission uses `removeUrlParam`. The library owns query
 serialization because WHATWG `URLSearchParams` normalizes `key` into `key=` and cannot preserve that distinction.
 Singular and plural query setters replace the named values they receive while retaining unrelated API and endpoint
-defaults; append and remove operations support repeated parameters and explicit deletion. Headers likewise have
-singular, plural, and removal setters. `mapRequest` and `mapClient` provide ordered plan-level escape hatches after API
-and endpoint transforms.
+defaults; append operations support repeated parameters. The singular setters also operate on selected values:
+`setUrlParam(key, current, replacement)` replaces every exact match in place, while `removeUrlParam(key, value)` removes
+every exact match. They do nothing when the selected value is absent. Their two- and one-argument forms respectively
+replace or remove every value for a key. This finer-grained behavior is intentionally absent from plural operations,
+where it would make merging ambiguous. Headers likewise have singular, plural, and removal setters. `mapRequest` and
+`mapClient` provide ordered plan-level escape hatches after API and endpoint transforms.
 
 ## Retry and cache policy
 
