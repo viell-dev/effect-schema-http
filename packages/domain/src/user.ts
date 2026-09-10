@@ -8,7 +8,7 @@
  */
 import { Schema } from "effect";
 import { UserId } from "./ids.js";
-import { Bio, DisplayName, Email, PasswordHash, Username } from "./primitives.js";
+import { AdminRole, Bio, DisplayName, Email, PasswordHash, Username } from "./primitives.js";
 
 export class Account extends Schema.Class<Account>("Account")({
   id: UserId,
@@ -17,6 +17,7 @@ export class Account extends Schema.Class<Account>("Account")({
   displayName: DisplayName,
   bio: Bio,
   passwordHash: PasswordHash,
+  role: AdminRole,
   createdAt: Schema.DateTimeUtc,
 }) {}
 
@@ -35,4 +36,17 @@ export const profileOfAccount = (account: Account): Profile => ({
   displayName: account.displayName,
   bio: account.bio,
   createdAt: account.createdAt,
+});
+
+/**
+ * Extends `Profile`'s own fields (`Schema.Struct` exposes `.fields`, so this is a real reuse of
+ * the existing schema, not a hand-copied duplicate) with the one extra fact only the authenticated
+ * user themselves is allowed to see about their own account: their role.
+ */
+export const CurrentUser = Schema.Struct({ ...Profile.fields, role: AdminRole });
+export type CurrentUser = typeof CurrentUser.Type;
+
+export const currentUserOfAccount = (account: Account): CurrentUser => ({
+  ...profileOfAccount(account),
+  role: account.role,
 });

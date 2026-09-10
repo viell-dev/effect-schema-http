@@ -28,3 +28,6 @@ export type CommentId = typeof CommentId.Type;
 
 export const SessionToken = brandedUuid("SessionToken");
 export type SessionToken = typeof SessionToken.Type;
+
+export const AttachmentId = brandedUuid("AttachmentId");
+export type AttachmentId = typeof AttachmentId.Type;

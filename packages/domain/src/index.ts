@@ -5,4 +5,7 @@ export * from "./user.js";
 export * from "./post.js";
 export * from "./comment.js";
 export * from "./auth.js";
+export * from "./attachment.js";
+export * from "./feed.js";
+export * from "./admin.js";
 export * from "./api.js";

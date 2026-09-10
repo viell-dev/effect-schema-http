@@ -8,6 +8,7 @@ import { PostBody, PostTitle, PostView, PostVisibility } from "./post.js";
 import { Bio, DisplayName, Email, NonZeroPositiveInt, Password, Username } from "./primitives.js";
 import { CommentBody, CommentView } from "./comment.js";
 import { Profile } from "./user.js";
+import { AttachmentView } from "./attachment.js";
 
 export const RegisterInput = Schema.Struct({
   username: Username,
@@ -66,3 +67,8 @@ export const CommentsResponse = Schema.Struct({
   comments: Schema.Array(CommentView),
 });
 export type CommentsResponse = typeof CommentsResponse.Type;
+
+export const AttachmentsResponse = Schema.Struct({
+  attachments: Schema.Array(AttachmentView),
+});
+export type AttachmentsResponse = typeof AttachmentsResponse.Type;

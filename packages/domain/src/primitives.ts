@@ -128,3 +128,52 @@ export type DisplayName = typeof DisplayName.Type;
 /** Short author biography, up to 280 chars. */
 export const Bio = Schema.String.pipe(Schema.maxLength(280), Schema.brand("Bio"));
 export type Bio = typeof Bio.Type;
+
+/** A short caption on an uploaded attachment. */
+export const AttachmentCaption = Schema.String.pipe(Schema.maxLength(140), Schema.brand("AttachmentCaption"));
+export type AttachmentCaption = typeof AttachmentCaption.Type;
+
+const FILENAME_PATTERN = /^[^/\\]{1,255}$/;
+
+/** An uploaded file's original name, stripped of any path component. Rejects `.`/`..` outright
+ * rather than merely disallowing separators, since a bare dot-segment is a valid "filename" by
+ * this pattern otherwise — see the `repo` library's own deferred finding on dot-segment path
+ * values (`docs/report.md` #1) for why that specific shape deserves a dedicated check. */
+export const Filename = Schema.String.pipe(
+  Schema.pattern(FILENAME_PATTERN, { message: () => "must be a bare filename with no path separators" }),
+  Schema.filter((value) => value !== "." && value !== "..", {
+    message: () => "must not be a bare dot-segment",
+  }),
+  Schema.brand("Filename"),
+  Schema.annotations({
+    identifier: "Filename",
+    arbitrary: () => (fc) =>
+      fc
+        .tuple(fc.stringOf(fc.constantFrom(...USERNAME_ALPHABET.split("")), { minLength: 1, maxLength: 12 }), fc.constantFrom("png", "jpg", "pdf", "txt"))
+        .map(([name, ext]) => `${name}.${ext}` as never),
+  }),
+);
+export type Filename = typeof Filename.Type;
+
+const MIME_TYPE_PATTERN = /^[\w.+-]+\/[\w.+-]+$/;
+
+/** A `type/subtype` MIME token, e.g. `image/png`. Deliberately does not validate against the
+ * IANA registry — this only needs to reject garbage well enough to store and echo back safely. */
+export const MimeType = Schema.String.pipe(
+  Schema.pattern(MIME_TYPE_PATTERN, { message: () => "must look like type/subtype" }),
+  Schema.brand("MimeType"),
+  Schema.annotations({
+    identifier: "MimeType",
+    arbitrary: () => (fc) => fc.constantFrom("image/png", "image/jpeg", "application/pdf", "text/plain").map((value) => value as never),
+  }),
+);
+export type MimeType = typeof MimeType.Type;
+
+/**
+ * Every account's privilege level. The very first account ever registered on a fresh server
+ * becomes `"admin"`; everyone after that is `"member"` — a common bootstrap shortcut in small,
+ * long-lived systems that never grew a proper invitation/promotion flow. See
+ * `packages/server/src/store.ts`'s `insertAccount`.
+ */
+export const AdminRole = Schema.Literal("member", "admin");
+export type AdminRole = typeof AdminRole.Type;
