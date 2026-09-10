@@ -1,11 +1,17 @@
 # realworld-schema-http
 
 A small "realworld"-style multi-user blog — per-user blogs, login, public/draft/private posts,
-comments from registered or anonymous authors — built specifically to exercise
-[`viell-effect-schema-http`](../repo) (a lazy, schema-driven HTTP client for
-[Effect](https://effect.website/)) and advanced [Effect Schema](https://effect.website/docs/schema/introduction/)
-features under realistic conditions. The library and Effect Schema are the actual subject of this
-project; the blog is only a vehicle for using both the way a real application would.
+comments from registered or anonymous authors, file attachments, a legacy Atom feed, and an admin
+panel — built specifically to exercise [`viell-effect-schema-http`](../repo) (a lazy, schema-driven
+HTTP client for [Effect](https://effect.website/)) and advanced
+[Effect Schema](https://effect.website/docs/schema/introduction/) features under realistic
+conditions. The library and Effect Schema are the actual subject of this project; the blog is only
+a vehicle for using both the way a real application would — including the parts of a real
+application that accreted over time and never ended up uniform. The blog CRUD alone only needed
+JSON in and JSON out; the attachments/feed/admin features exist specifically to make this backend
+"look" long-lived by mixing in the request/response codecs a pure-JSON API would never need
+(`ResponseBody.text`, `ResponseBody.uint8Array`, `RequestBody.formData`, `ResponseBody.none`,
+and an intentionally non-standard `205` status).
 
 This is a local, no-remote git repository. Every commit is a real checkpoint (`git log` tells the
 story better than this document does), and the final third of this README is a candid writeup of
@@ -40,6 +46,19 @@ user input) from ever being interpreted as markup.
 **Persistence is in-memory** (`packages/server/src/store.ts`, a single `Ref<State>`). Restarting the
 server discards all data. Adding a real database was out of scope for what this project is testing.
 
+**The "long-lived backend" features and which codec each one exercises:**
+
+| Feature | Endpoint(s) | Codec |
+| --- | --- | --- |
+| Post attachments (upload) | `POST /api/posts/:slug/attachments` | `RequestBody.formData` |
+| Post attachments (download) | `GET /api/posts/:slug/attachments/:id` | `ResponseBody.uint8Array` (raw file bytes) |
+| Per-blog Atom feed | `GET /api/blogs/:username/feed.atom` | `ResponseBody.text` (XML) |
+| Admin stats | `GET /api/admin/stats` | `ResponseBody.uint8Array` (bytes that are secretly JSON) |
+| Admin cache refresh | `POST /api/admin/cache/refresh` | `ResponseBody.none`, status `205` not `204` |
+
+The blog/post/comment CRUD underneath all of this is plain JSON in, JSON out — the default codec
+the library needs no configuration for at all.
+
 ## Running it
 
 Requires Node.js 22+ and pnpm 10 (see `package.json#packageManager`).
@@ -54,13 +73,17 @@ Open the Vite URL, register an account, write a post, comment on it while signed
 tab. `VITE_API_BASE_URL` overrides the server URL the web app targets (defaults to
 `http://localhost:4000`).
 
-Tests: `pnpm --filter @realworld/domain run test` (9 tests) and
-`pnpm --filter @realworld/server run test` (6 tests) run under Vitest. The web package has no
+Tests: `pnpm --filter @realworld/domain run test` (14 tests) and
+`pnpm --filter @realworld/server run test` (10 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
-`playwright-core` against both dev servers (register → post → comment signed in → sign out →
-comment anonymously → create a private post → confirm it 404s for a signed-out visitor instead of
-leaking that it exists). No browser-automation tool was preinstalled in this environment, so that
-was set up ad hoc for this verification pass; it is not part of the committed project.
+`playwright-core` against both dev servers, in two passes: (1) register → post → comment signed in
+→ sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
+visitor instead of leaking that it exists; (2) first-registered-user-becomes-admin → upload a real
+PNG attachment and see it render as an inline preview → view the same post through its Atom feed →
+refresh the admin cache and watch the reason field clear itself on the `205` response → confirm a
+second user gets neither the admin nav link nor access to `/admin`. No browser-automation tool was
+preinstalled in this environment, so that was set up ad hoc for this verification pass; it is not
+part of the committed project.
 
 ## Effect Schema tricks exercised
 
@@ -102,14 +125,33 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   `Schema.decodeUnknown`/`Schema.decodeUnknownEither` plus `ParseResult.ArrayFormatter` for a
   readable issue list — one for a JSON request body, one for form input. Same schemas, same
   validation semantics, both ends.
+- **Bidirectional `Schema.transformOrFail`** for two different non-JSON wire formats, each defined
+  once and used in both directions: `AtomFeedFromString` (`feed.ts`) pairs `Schema.String` with a
+  plain struct — the server calls `Schema.encode` on it to *produce* the feed's XML, the client's
+  `response()` rule calls `Schema.decode` (via `ResponseBody.text`) to *parse* the same shape back,
+  and it deliberately parses only the exact narrow shape its own `encode` emits, not general XML.
+  `AdminStatsFromBytes` (`admin.ts`) does the same one layer further down: `Schema.Uint8ArrayFromSelf`
+  paired with a struct, because this "legacy" endpoint's bytes are secretly UTF-8 JSON. Both are
+  round-tripped in `feed.test.ts`/`admin.test.ts`, including a case that fails to decode malformed
+  input.
+- **Identity schemas as the join between a domain type and a codec's `Input` type**:
+  `Schema.instanceOf(FormData)` (Type = Encoded = `FormData`) satisfies `RequestBody.formData`'s
+  `Input: FormData` with no transform at all — the caller's real `FormData` goes straight to
+  `.setBody`. `Schema.Uint8ArrayFromSelf` does the same for `ResponseBody.uint8Array` when nothing
+  needs to further parse the bytes (an attachment download, as opposed to `AdminStatsFromBytes`,
+  which does parse them). See `packages/web/src/api.ts`'s `uploadAttachment`/`getAttachmentBytes`.
+- **Extending a schema by reusing its `.fields`**: `CurrentUser` (`user.ts`) is
+  `Schema.Struct({ ...Profile.fields, role: AdminRole })` — a real reuse of `Profile`'s field
+  definitions for the one extra fact only the authenticated user can see about themselves, not a
+  hand-copied duplicate that could drift.
 
 ## Using `viell-effect-schema-http`: what worked well
 
 - **The core API is exactly as pleasant as the README promises.** `createApi(baseUrl, { responses
   })` plus `api.createRequest({ method, path, body, responses })` produces a fully-typed, callable,
-  pipeable endpoint. Every one of the eleven endpoints in `packages/web/src/api.ts` was declared
-  this way, and it stayed easy to read even with five shared error rules inherited by every one of
-  them.
+  pipeable endpoint. Every one of the nineteen endpoints in `packages/web/src/api.ts` was declared
+  this way — across five different response/request codecs — and it stayed easy to read even with
+  five shared error rules inherited by every one of them.
 - **Response unions as ordinary success values is a genuinely good design.** Modeling a `404` as a
   decoded, typed member of the *success* channel (not a thrown error) means `Match.tag` handles
   "the post doesn't exist" and "here is the post" in the same exhaustive `Match.value(...).pipe(...)`
@@ -141,6 +183,21 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   opened. For a beta library, that is a strong signal.
 - **The documented beta-distribution flow (`pnpm pack` + a `file:` dependency on the tarball) worked
   on the first try**, in two different consumer packages, with no registry or network surprises.
+- **A header matcher for content-type-based response selection worked exactly as documented on the
+  first attempt.** `getBlogFeed`'s response rule matches `content-type: (value) =>
+  value?.startsWith("application/atom+xml") ?? false` — copied almost verbatim from the README's
+  own "Response rules" example — and correctly selected the `AtomFeedFromString`/`ResponseBody.text`
+  rule. (This particular endpoint only ever returns one shape, so the header condition is not
+  load-bearing here; it is included to exercise and confirm the pattern the README documents for
+  when an endpoint's content-type genuinely varies by response.)
+- **Non-standard status codes need zero special support.** Answering `205 Reset Content` instead of
+  `204 No Content` for the admin cache-refresh RPC (`response({ _tag: "reset", status: 205 },
+  Schema.Void, { codec: ResponseBody.none })`) worked identically to every other status — `status`
+  is just a `number`, and the library never assumes a fixed enum of "known" HTTP codes.
+- **`Schema.instanceOf`/`Schema.Uint8ArrayFromSelf` as identity schemas make `RequestBody.formData`
+  and `ResponseBody.uint8Array` trivial to wire up once you know the trick** (see the Effect Schema
+  section above) — no custom codec, no transform, just a schema whose `Type` already matches the
+  codec's `Input`/output.
 
 ## Using `viell-effect-schema-http`: friction, gaps, and one real bug we hit
 
@@ -158,13 +215,25 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   side:** the demo server now reflects `Access-Control-Request-Headers` instead of hard-coding an
   allow-list (see `packages/server/src/main.ts`); a real backend would need to explicitly allow
   `traceparent` (and `tracestate`) or disable tracing propagation on the client.
-- **No worked example for a bodyless (`204`/`HEAD`) response.** The README correctly says to use
-  `ResponseBody.none` explicitly, but doesn't show what schema to pair it with. Reverse-engineering
-  the `CodecOptions` conditional type in `dist/request.d.ts` (`codec.name extends "none"` requires
-  `undefined extends Schema.Schema.Encoded<S>`) was needed to work out that `Schema.Void` satisfies
-  it (`response({ _tag: "noContent", status: 204 }, Schema.Void, { codec: ResponseBody.none })`,
-  used for both `DELETE` endpoints in `packages/web/src/api.ts`). A one-line example in the README's
-  "Body codecs" section would save that detour.
+- **No worked example for what schema to pair with any of the three non-default codecs.** The
+  README's "Body codecs" table names `ResponseBody.text`/`.uint8Array`/`.formData`/`.none` and
+  `RequestBody.text`/`.uint8Array`/`.urlParams`/`.formData`, but every worked example in the README
+  uses the JSON default. Each pairing had to be worked out independently, by the same
+  reverse-engineering approach each time (reading the codec's `Input`/decode-output type in
+  `dist/request.d.ts` and finding — or writing, for `AtomFeedFromString`/`AdminStatsFromBytes` — a
+  schema whose `Type`/`Encoded` matches it):
+  - `ResponseBody.none` (`codec.name extends "none"` requires `undefined extends
+    Schema.Schema.Encoded<S>`) → `Schema.Void` satisfies it.
+  - `RequestBody.formData` (`Input: FormData`) → `Schema.instanceOf(FormData)`.
+  - `ResponseBody.uint8Array` (decode output `Uint8Array`) → `Schema.Uint8ArrayFromSelf` for a
+    passthrough, or a custom `Schema.transformOrFail` (`AdminStatsFromBytes`) when the bytes need
+    further parsing.
+  - `ResponseBody.text` (decode output `string`) → any string-based schema; a
+    `Schema.transformOrFail` (`AtomFeedFromString`) for a non-JSON textual format, exactly as the
+    README's prose suggests without an example.
+
+  One worked example per codec in the README — even just the schema signature, not a full endpoint
+  — would have turned four separate rounds of type-reading into zero.
 - **No worked example of a *reusable* cross-endpoint setter.** Every README example chains setters
   inline at one call site. Writing `withAuth` (used above as a "worked well" point) required
   independently figuring out that the trick is to type the helper structurally
@@ -172,9 +241,11 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   BodyReady>`, since that triple differs per endpoint. It works well once you know it; nothing in
   the docs points at the pattern.
 - **We did not exercise, and so cannot vouch for or against:** retries (`setRetry`/`setRetries`),
-  request gates (`makeRequestGate`), custom body/response codecs beyond the JSON default, header
-  precedence edge cases, or `UnhandledResponse.discard`/`"retain"` body ownership. A CRUD blog with
-  zero retries and one HTTP provider simply never touched these paths. The library's own
+  request gates (`makeRequestGate`), `RequestBody.text`/`.urlParams` specifically (we hit
+  `.formData` but not these two), header-precedence tie-breaking beyond the single matcher above, or
+  `UnhandledResponse.discard`/`"retain"` body ownership. Nothing in this project needed a retry, a
+  second HTTP provider, or an endpoint whose response shape genuinely varies by header at runtime.
+  The library's own
   [`docs/report.md`](../repo/docs/report.md) already flags several of these areas (retry/timeout
   interaction, mutable-input aliasing, dot-segment path values) as deferred findings from its
   pre-beta review — we have nothing to add or contradict there, since our path parameters
@@ -190,13 +261,14 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
 
 [`docs/report.md`](../repo/docs/report.md) (the library's pre-beta review) explicitly lists
 *"Browser, alternative-runtime, and official non-Fetch client coverage is absent"* as an open item.
-This project's manual verification pass — a real, system-installed Chromium driven through
+This project's manual verification passes — a real, system-installed Chromium driven through
 `playwright-core` against a live Vite dev server and Node backend, covering registration, login,
-post CRUD across all three visibility levels, and comments from both registered and anonymous
-authors — is exactly that missing coverage, for at least one realistic app shape. It is also
-precisely how the `traceparent`/CORS gap above was found: it never surfaces in a same-origin
-`curl` smoke test or in Node-to-Node integration tests, only in an actual cross-origin browser
-request.
+post CRUD across all three visibility levels, comments from both registered and anonymous authors,
+a real multipart file upload rendered back as an inline image preview, the Atom feed, and
+admin-only access control — are exactly that missing coverage, for at least one realistic app
+shape using most of the library's codec surface. It is also precisely how the `traceparent`/CORS
+gap above was found: it never surfaces in a same-origin `curl` smoke test or in Node-to-Node
+integration tests, only in an actual cross-origin browser request.
 
 ## Effect Schema, separately from the HTTP library
 
