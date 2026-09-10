@@ -1,4 +1,4 @@
-import { Deferred, Effect, Either, Fiber, Option } from "effect";
+import { Cause, Deferred, Effect, Either, Exit, Fiber, Option } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   invalidateRequestGate,
@@ -99,7 +99,7 @@ describe("RequestGate", () => {
     expect(calls).toBe(1);
   });
 
-  it("prevents stale completions and invalidated flights from repopulating the cache", async () => {
+  it("prevents stale completions and interrupts invalidated flights", async () => {
     const program = Effect.gen(function* () {
       const aStarted = yield* Deferred.make<void>();
       const bStarted = yield* Deferred.make<void>();
@@ -126,30 +126,41 @@ describe("RequestGate", () => {
       const afterStale = yield* gate.peek;
 
       const invalidatedStarted = yield* Deferred.make<void>();
-      const invalidatedRelease = yield* Deferred.make<void>();
+      let interrupted = false;
       const invalidatedGate = yield* makeRequestGate(
         () =>
           Effect.gen(function* () {
             yield* Deferred.succeed(invalidatedStarted, undefined);
-            yield* Deferred.await(invalidatedRelease);
+            yield* Effect.never;
             return "late";
-          }),
+          }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                interrupted = true;
+              }),
+            ),
+          ),
         { key: () => "only" },
       );
       const late = yield* Effect.fork(invalidatedGate.run(undefined));
       yield* Deferred.await(invalidatedStarted);
+      const waiter = yield* Effect.fork(invalidatedGate.run(undefined));
+      yield* Effect.yieldNow();
       yield* invalidatedGate.pipe(invalidateRequestGate);
-      yield* Deferred.succeed(invalidatedRelease, undefined);
-      yield* Fiber.join(late);
+      const lateExit = yield* Fiber.await(late);
+      const waiterExit = yield* Fiber.await(waiter);
       const afterInvalidation = yield* invalidatedGate.peek;
 
-      return { afterStale, afterInvalidation };
+      return { afterStale, afterInvalidation, interrupted, lateExit, waiterExit };
     });
 
     const result = await Effect.runPromise(program);
 
     expect(Option.getOrUndefined(result.afterStale)).toBe("b");
     expect(Option.isNone(result.afterInvalidation)).toBe(true);
+    expect(result.interrupted).toBe(true);
+    expect(Exit.isFailure(result.lateExit) && Cause.isInterruptedOnly(result.lateExit.cause)).toBe(true);
+    expect(Exit.isFailure(result.waiterExit) && Cause.isInterruptedOnly(result.waiterExit.cause)).toBe(true);
   });
 
   it("can retain an older success when every newer request failed", async () => {

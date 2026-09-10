@@ -32,6 +32,7 @@ interface InFlight<Input, Key, A, E> {
   readonly key: Key;
   readonly generation: number;
   readonly deferred: Deferred.Deferred<A, E>;
+  readonly cancellation: Deferred.Deferred<void>;
 }
 
 interface GateState<Input, Key, A, E> {
@@ -76,6 +77,7 @@ export const makeRequestGate = <Input, Key, A, E, R>(
         Effect.gen(function* () {
           const key = options.key(input);
           const candidate = yield* Deferred.make<A, E>();
+          const cancellation = yield* Deferred.make<void>();
           const decision = yield* Ref.modify(
             stateRef,
             (state): readonly [Decision<Input, Key, A, E>, GateState<Input, Key, A, E>] => {
@@ -89,7 +91,7 @@ export const makeRequestGate = <Input, Key, A, E, R>(
               }
 
               const generation = state.generation + 1;
-              const flight = { input, key, generation, deferred: candidate };
+              const flight = { input, key, generation, deferred: candidate, cancellation };
               return [
                 { _tag: "Execute", flight },
                 {
@@ -104,7 +106,8 @@ export const makeRequestGate = <Input, Key, A, E, R>(
           if (decision._tag === "Cached") return decision.value;
           if (decision._tag === "Await") return yield* restore(Deferred.await(decision.deferred));
 
-          const result = yield* Effect.exit(restore(execute(input)));
+          const cancelled = Deferred.await(decision.flight.cancellation).pipe(Effect.zipRight(Effect.interrupt));
+          const result = yield* Effect.exit(restore(Effect.raceFirst(execute(input), cancelled)));
           yield* Ref.update(stateRef, (state) => ({
             ...state,
             cache:
@@ -133,17 +136,31 @@ export const makeRequestGate = <Input, Key, A, E, R>(
       ),
     );
 
+    const invalidate = Ref.modify(
+      stateRef,
+      (state) =>
+        [
+          state.inFlight.map(({ cancellation }) => cancellation),
+          {
+            ...state,
+            cache: Option.none(),
+            inFlight: [],
+            invalidatedThrough: state.generation,
+          },
+        ] as const,
+    ).pipe(
+      Effect.flatMap((cancellations) =>
+        Effect.forEach(cancellations, (cancellation) => Deferred.succeed(cancellation, undefined), { discard: true }),
+      ),
+      Effect.asVoid,
+    );
+
     const gate = {
       pipe: pipeSelf,
       run: (input: Input) => request(input, false),
       refresh: (input: Input) => request(input, true),
       reload,
-      invalidate: Ref.update(stateRef, (state) => ({
-        ...state,
-        cache: Option.none(),
-        inFlight: [],
-        invalidatedThrough: state.generation,
-      })),
+      invalidate,
       peek: Ref.get(stateRef).pipe(Effect.map((state) => Option.map(state.cache, ({ value }) => value))),
     } satisfies RequestGate<Input, A, E, R>;
 

@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
-`sketch-request-builder`; the current suite has 63 tests across seven files.
+`sketch-request-builder`; the current suite has 64 tests across seven files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -543,19 +543,24 @@ provides the one-call cleanup path. Automatic cleanup ignores a drain failure so
 `UnhandledResponse`, while an explicitly run `discard` Effect reports such failures. Tests pin both default draining
 and retained-body recovery.
 
-### 4.10 Gate semantics that are correct but sharp
+### 4.10 ~~Gate semantics that are correct but sharp~~ — resolved
 
-- **`invalidate` drops in-flight de-duplication.** It clears `inFlight` wholesale, so a `run` issued after `invalidate`
-  while a request is still executing starts a _second_ execution (probed: two calls). Defensible — invalidation should
-  not hand back a result computed from pre-invalidation state — but it is not in the doc, and it means `invalidate`
-  can double the load on a hot key.
+- **`invalidate` dropped in-flight de-duplication.** At review time it cleared `inFlight` while leaving the underlying
+  request running, so a subsequent `run` started a second execution. It now interrupts every in-flight Effect before
+  returning. Standard `HttpClient` implementations propagate that interruption to their provider-specific cancellation
+  mechanism; a real Fetch integration test verifies that the outstanding HTTP exchange is closed. A subsequent `run`
+  still starts fresh work, which is the intended invalidation behavior.
 - **Single-entry retention.** Alternating between two keys re-executes every time (probed: four calls for
-  `a, b, a, b`). Documented, but the README example (`key: (userId) => userId`) is precisely the shape where a user
-  will assume per-key memoisation.
+  `a, b, a, b`). This remains intentional and is now stated directly in the gate documentation: the gate remembers the
+  latest success, not one success per key.
 - **Interruption of the executing fiber completes all waiters as interrupted.** Documented, and the correct default —
-  but it means a UI that cancels one component's request cancels it for every component that joined the same key.
+  but it means a UI that cancels the executing component's request cancels it for every component that joined the same
+  key. The docs now distinguish that owner from a waiting caller, whose own interruption merely stops its wait.
 
-None require changes; all three deserve a sentence in the doc, because each is the kind of thing found the hard way.
+Cancellation remains provider-agnostic through Effect interruption. Fetch already turns interruption into an
+`AbortSignal`; custom providers are responsible for making their transport Effect interruptible. Non-gate requests use
+the same mechanism through fiber interruption or `Effect.runPromise(effect, { signal })`, so no request-plan-specific
+abort setter was added.
 
 ---
 

@@ -1,7 +1,7 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";
-import { Effect, Either, Schema } from "effect";
+import { Cause, Effect, Either, Exit, Fiber, Schema } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApi, makeRequestGate, response } from "../src/main.js";
 
@@ -29,6 +29,10 @@ describe("request gates over HTTP", () => {
   let server: Server;
   let baseUrl: string;
   let requests = 0;
+  let abortStarted: Promise<void>;
+  let abortObserved: Promise<void>;
+  let markAbortStarted: (() => void) | undefined;
+  let markAbortObserved: (() => void) | undefined;
 
   beforeAll(async () => {
     server = createServer((request, outgoing) => {
@@ -43,6 +47,11 @@ describe("request gates over HTTP", () => {
         }
         if (search === "missing") {
           sendJson(outgoing, 404, { search, request: requests });
+          return;
+        }
+        if (search === "abort") {
+          markAbortStarted?.();
+          outgoing.once("close", () => markAbortObserved?.());
           return;
         }
         if (search === "slow") await new Promise((resolve) => setTimeout(resolve, 25));
@@ -63,6 +72,12 @@ describe("request gates over HTTP", () => {
 
   beforeEach(() => {
     requests = 0;
+    abortStarted = new Promise((resolve) => {
+      markAbortStarted = resolve;
+    });
+    abortObserved = new Promise((resolve) => {
+      markAbortObserved = resolve;
+    });
   });
 
   afterAll(async () => {
@@ -126,5 +141,24 @@ describe("request gates over HTTP", () => {
     expect(result.missing).toMatchObject({ _tag: "not-found", body: { search: "missing", request: 2 } });
     expect(result.missingAgain).toBe(result.missing);
     expect(requests).toBe(2);
+  });
+
+  it("aborts an in-flight Fetch request when the gate is invalidated", async () => {
+    const program = Effect.gen(function* () {
+      const gate = yield* makeUsersGate;
+      const executing = yield* Effect.fork(gate.run({ page: 1, search: "abort" }));
+      yield* Effect.promise(() => abortStarted);
+      const waiter = yield* Effect.fork(gate.run({ page: 1, search: "abort" }));
+      yield* Effect.yieldNow();
+      yield* gate.invalidate;
+      return yield* Effect.all([Fiber.await(executing), Fiber.await(waiter)]);
+    }).pipe(Effect.provide(FetchHttpClient.layer));
+
+    const [executing, waiter] = await Effect.runPromise(program);
+    await abortObserved;
+
+    expect(Exit.isFailure(executing) && Cause.isInterruptedOnly(executing.cause)).toBe(true);
+    expect(Exit.isFailure(waiter) && Cause.isInterruptedOnly(waiter.cause)).toBe(true);
+    expect(requests).toBe(1);
   });
 });

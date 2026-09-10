@@ -318,12 +318,21 @@ optional `equivalent` function supports composite keys that cannot use `Object.i
 The gate retains only its latest successful input and value. A failed request does not replace that pair, which means a
 temporary invalid form state cannot evict the last useful table result. Mapped HTTP responses remain successes here,
 regardless of status. Same-key concurrent calls share an in-flight request. Different keys may run concurrently, but an
-older completion cannot overwrite a newer successful completion. `invalidate` clears the retained pair and prevents
-requests that were already in flight from repopulating it; `peek` reads the retained value without executing anything.
+older completion cannot overwrite a newer successful completion. The cache is intentionally a single latest entry,
+not a map: alternating `a`, `b`, `a`, `b` executes four times. `invalidate` clears the retained pair, interrupts every
+request currently owned by that gate, completes their shared waiters with the interrupted exit, and prevents stale work
+from repopulating the cache. `peek` reads the retained value without executing anything.
 
 Gate state has an explicit Effect lifetime: `makeRequestGate` allocates a new isolated gate. It is suitable for decoded,
 reusable values, not live streaming bodies whose ownership cannot safely be shared. Interruption of the fiber executing
-a shared request completes its waiters with the same interrupted exit.
+a shared request completes its waiters with the same interrupted exit; interrupting a fiber that is only waiting stops
+that waiter without cancelling the shared execution. This ownership follows from the first caller executing the Effect
+while later callers await its result.
+
+Gate cancellation and ordinary request cancellation use Effect interruption rather than a transport-specific
+`AbortController`. `FetchHttpClient` translates interruption to its internal abort signal. Other providers must make
+their transport Effects interruptible. At a Promise boundary, callers can pass an external signal directly through
+`Effect.runPromise(effect, { signal })`; inside Effect code, interrupting the request fiber is the native mechanism.
 
 ## Test shape
 
