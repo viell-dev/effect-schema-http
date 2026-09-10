@@ -207,6 +207,12 @@ use, keeping body disposal explicit on a response rule whose schema input accept
 default-capable without a marker; a codec can set `canBeDefault: false` to require the same explicit per-rule use.
 Additional byte, form, multipart, or streaming codecs can be added without changing the rule shape.
 
+The effective default codec also supplies the request's content-negotiation hint: JSON sends
+`Accept: application/json`, text sends `Accept: text/*`, and a custom codec uses its optional `accept` value or falls
+back to `application/json`. An explicit request header always wins. A per-rule codec does not change this request
+header because rule selection happens after the response arrives; callers using text to parse JSON or another
+application media type should declare the appropriate `Accept` header themselves.
+
 Query parameters and request headers remain unschematized. Query values are `string | true`: strings produce ordinary
 `key=value` syntax, an empty string produces `key=`, and `true` produces the bare implicit-true form `key`. Explicit
 booleans remain explicit strings (`"true"` or `"false"`), while omission uses `removeUrlParam`. The library owns query

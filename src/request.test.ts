@@ -24,6 +24,7 @@ import {
   setUrlParam as withUrlParam,
   type Endpoint,
   type ResponseOf,
+  type ResponseBodyCodec,
   toEffect,
   UnhandledResponse,
 } from "./main.js";
@@ -742,18 +743,39 @@ describe("createRequest", () => {
     });
 
     const textParsed = await getTextParsedUser().effect.pipe(
-      Effect.provide(fetchLayer(mockFetch(async () => new Response('{"id":1,"name":"Ada"}')))),
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.headers.get("accept")).toBe("text/*");
+            return new Response('{"id":1,"name":"Ada"}');
+          }),
+        ),
+      ),
       Effect.runPromise,
     );
     const json = await getJsonUser().effect.pipe(
-      Effect.provide(fetchLayer(mockFetch(async () => Response.json({ id: 2, name: "Grace" })))),
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.headers.get("accept")).toBe("application/json");
+            return Response.json({ id: 2, name: "Grace" });
+          }),
+        ),
+      ),
       Effect.runPromise,
     );
     const planOverride = await getJsonUser()
       .setResponseCodec(ResponseBody.text)
       .setResponseSchema({ _tag: "ok", status: 200 }, Schema.parseJson(User))
       .effect.pipe(
-        Effect.provide(fetchLayer(mockFetch(async () => new Response('{"id":3,"name":"Lin"}')))),
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async (request) => {
+              expect(request.headers.get("accept")).toBe("text/*");
+              return new Response('{"id":3,"name":"Lin"}');
+            }),
+          ),
+        ),
         Effect.runPromise,
       );
     const empty = await getNoBody().effect.pipe(
@@ -765,6 +787,43 @@ describe("createRequest", () => {
     expect(json.body).toEqual({ id: 2, name: "Grace" });
     expect(planOverride.body).toEqual({ id: 3, name: "Lin" });
     expect(empty.body).toBeUndefined();
+  });
+
+  it("derives Accept from custom response codecs while preserving explicit headers", async () => {
+    const customJson = {
+      name: "custom-json",
+      decode: (rawResponse: HttpClientResponse.HttpClientResponse) => rawResponse.json,
+    } satisfies ResponseBodyCodec<unknown>;
+    const customVendorJson = {
+      name: "custom-vendor-json",
+      accept: "application/vnd.example+json",
+      decode: (rawResponse: HttpClientResponse.HttpClientResponse) => rawResponse.json,
+    } satisfies ResponseBodyCodec<unknown>;
+    const getJson = createRequest({
+      method: "GET",
+      path: "https://example.test/json-user",
+      responseCodec: customJson,
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+    const getVendorJson = createRequest({
+      method: "GET",
+      path: "https://example.test/vendor-json-user",
+      responseCodec: customVendorJson,
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+    const run = (expectedAccept: string) =>
+      fetchLayer(
+        mockFetch(async (request) => {
+          expect(request.headers.get("accept")).toBe(expectedAccept);
+          return Response.json({ id: 1, name: "Ada" });
+        }),
+      );
+
+    await getJson().effect.pipe(Effect.provide(run("application/json")), Effect.runPromise);
+    await getVendorJson().effect.pipe(Effect.provide(run("application/vnd.example+json")), Effect.runPromise);
+    await getVendorJson()
+      .setHeader("accept", "application/json")
+      .effect.pipe(Effect.provide(run("application/json")), Effect.runPromise);
   });
 
   it("keeps mapped 4xx responses in the success channel", async () => {

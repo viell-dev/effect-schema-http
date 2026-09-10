@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
-`sketch-request-builder`; the current suite has 56 tests across six files.
+`sketch-request-builder`; the current suite has 57 tests across six files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -478,12 +478,19 @@ This is an extensibility improvement rather than new parsing power. `ResponseBod
 `*FromString` schema and a custom default codec followed by an object schema describe the same processing stages. They
 place the generic parser on opposite sides of the response-codec/schema boundary, and both are now supported.
 
-### 4.5 No `Accept` header is ever sent
+### 4.5 ~~No `Accept` header is ever sent~~ — fixed
 
-Probed: a JSON-schema-driven GET sends no `Accept` header at all. For a library whose default response codec is JSON,
-that leaves content negotiation entirely to the server's default — and servers that negotiate will often return HTML or
-XML. Deriving `Accept` from the effective response codec (`json` ⇒ `application/json`, `text` ⇒ `text/*`), overridable
-by an explicit header exactly like `Cache-Control` already is, would be a small, high-value default.
+At review time, a JSON-schema-driven GET sent no `Accept` header at all. For a library whose default response codec was
+JSON, that left content negotiation entirely to the server's default — and servers that negotiate will often return
+HTML or XML. Deriving `Accept` from the effective response codec (`json` ⇒ `application/json`, `text` ⇒ `text/*`),
+overridable by an explicit header exactly like `Cache-Control` already was, would be a small, high-value default.
+
+The effective default response codec now supplies that hint. JSON sends `application/json`, text sends `text/*`, and a
+custom codec can declare `accept`; an unannotated custom codec falls back to `application/json`, covering the common
+custom-JSON-parser case. API, endpoint, plan, and final `mapRequest` headers retain precedence over the inferred value.
+A per-rule codec deliberately does not affect the outbound header because response-rule selection happens after
+content negotiation. Text-backed schemas that parse JSON or another application media type should therefore set an
+explicit `Accept` header, as should unusual APIs whose custom codec does not declare its media type.
 
 ### 4.6 Empty bodies under the JSON codec decode as `null`, not as a failure
 

@@ -99,6 +99,7 @@ export interface ResponseMatcher<
 export interface ResponseBodyCodec<Input = unknown, CanBeDefault extends boolean = true> {
   readonly name: string;
   readonly canBeDefault?: CanBeDefault;
+  readonly accept?: string;
   readonly decode: (
     response: HttpClientResponse.HttpClientResponse,
   ) => Effect.Effect<Input, HttpClientError.ResponseError>;
@@ -106,11 +107,13 @@ export interface ResponseBodyCodec<Input = unknown, CanBeDefault extends boolean
 
 const jsonBodyCodec = {
   name: "json" as const,
+  accept: "application/json",
   decode: (raw: HttpClientResponse.HttpClientResponse) => raw.json,
 } satisfies ResponseBodyCodec<unknown>;
 
 const textBodyCodec = {
   name: "text" as const,
+  accept: "text/*",
   decode: (raw: HttpClientResponse.HttpClientResponse) => raw.text,
 } satisfies ResponseBodyCodec<string>;
 
@@ -1165,6 +1168,10 @@ const makePlan = <
             setUrlQuery(joinUrl(state.baseUrl, definition.path), state.urlParams),
           );
           request = HttpClientRequest.setHeaders(request, state.headers);
+
+          if (!Headers.has(request.headers, "accept")) {
+            request = HttpClientRequest.setHeader(request, "accept", state.responseCodec.accept ?? "application/json");
+          }
 
           if (state.cache?.control !== undefined && !Headers.has(request.headers, "cache-control")) {
             request = HttpClientRequest.setHeader(request, "cache-control", state.cache.control);
