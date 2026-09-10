@@ -108,6 +108,38 @@ describe("createRequest", () => {
     expect(plan.effect).not.toBe(plan.effect);
   });
 
+  it("executes a shared cold Effect independently for concurrent callers", async () => {
+    let requests = 0;
+    let releaseRequests: (() => void) | undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseRequests = resolve;
+    });
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+    const effect = getUser().effect;
+
+    const results = await Effect.all([effect, effect], { concurrency: "unbounded" }).pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async () => {
+            requests += 1;
+            if (requests === 2) releaseRequests?.();
+            await bothStarted;
+            return Response.json({ id: requests, name: "Ada" });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(requests).toBe(2);
+    expect(results).toHaveLength(2);
+    expect(results[0]).not.toBe(results[1]);
+  });
+
   it("infers, validates, and encodes placeholders anywhere in a path", async () => {
     const getFile = createRequest({
       method: "GET",
