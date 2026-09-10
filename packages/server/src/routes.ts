@@ -18,8 +18,8 @@ import {
   CreatePostInput,
   FeedResponse,
   LoginInput,
-  NonZeroPositiveInt,
   NotFoundError,
+  PageQuery,
   Post,
   PostId,
   PostView,
@@ -117,15 +117,15 @@ export const getBlog = (usernameParam: string, authHeader: string | undefined) =
     return { profile: profileOfAccount(account), posts: views };
   }).pipe(respondWith(BlogResponse, 200));
 
-const clampedPageParam = (value: string | undefined, fallback: number, max: number): number => {
-  const parsed = value ? Number.parseInt(value, 10) : fallback;
-  return Math.min(max, Math.max(1, Number.isFinite(parsed) ? parsed : fallback));
-};
-
 export const listFeed = (pageParam: string | undefined, limitParam: string | undefined) =>
   Effect.gen(function* () {
-    const page = clampedPageParam(pageParam, 1, 1_000_000);
-    const limit = clampedPageParam(limitParam, 20, 100);
+    // `PageQuery` supplies its own defaults (via `Schema.optionalWith`) and validates positivity;
+    // an absent query key defers to the default, so undefined values are omitted rather than passed through.
+    const rawQuery: Record<string, unknown> = {};
+    if (pageParam !== undefined) rawQuery.page = Number(pageParam);
+    if (limitParam !== undefined) rawQuery.limit = Number(limitParam);
+    const { page, limit } = yield* decodeBody(PageQuery, rawQuery);
+
     const store = yield* Store;
     const posts = yield* store.listPosts();
     const publicPosts = posts
@@ -133,7 +133,7 @@ export const listFeed = (pageParam: string | undefined, limitParam: string | und
       .sort((a, b) => DateTime.toEpochMillis(b.createdAt) - DateTime.toEpochMillis(a.createdAt));
     const pageOfPosts = publicPosts.slice((page - 1) * limit, (page - 1) * limit + limit);
     const views = yield* Effect.forEach(pageOfPosts, postToView);
-    return { posts: views, page: NonZeroPositiveInt.make(page), limit: NonZeroPositiveInt.make(limit) };
+    return { posts: views, page, limit };
   }).pipe(respondWith(FeedResponse, 200));
 
 // -- Posts ------------------------------------------------------------------------------------

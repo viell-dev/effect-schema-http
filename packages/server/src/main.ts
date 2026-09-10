@@ -99,16 +99,25 @@ const routeTable: ReadonlyArray<Route> = [
   },
 ];
 
-const CORS_HEADERS = {
+const baseCorsHeaders = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "access-control-allow-headers": "content-type, authorization",
 };
 
 const server = http.createServer((req, res) => {
   const start = Date.now();
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+
+  // Effect Platform's `FetchHttpClient` propagates tracing context via a `traceparent` request
+  // header by default, which triggers a CORS preflight most fixed allow-lists don't expect.
+  // Reflecting `Access-Control-Request-Headers` (a common permissive dev-server pattern) instead
+  // of hard-coding a list avoids that surprise; see README "Gotchas discovered building this".
+  const requestedHeaders = req.headers["access-control-request-headers"];
+  const CORS_HEADERS = {
+    ...baseCorsHeaders,
+    "access-control-allow-headers": requestedHeaders ?? "content-type, authorization",
+  };
 
   if (method === "OPTIONS") {
     res.writeHead(204, CORS_HEADERS);
