@@ -315,16 +315,19 @@ describe("createRequest", () => {
     getUsers().setUrlParam("disabled", false);
   });
 
-  it("composes API defaults and permits a plan-level base URL override", async () => {
+  it("composes API defaults, replaces an extended base URL, and permits a plan-level override", async () => {
     const notFound = response({ _tag: "not-found", status: 404 }, NotFound);
     const unauthorized = response({ _tag: "unauthorized", status: 401 }, Schema.Struct({ message: Schema.String }));
-    const api = createApi("https://example.test", {
-      headers: { authorization: "Bearer base", "x-base": "1" },
-      urlParams: { scope: "base", page: "1" },
+    const api = createApi("https://example.test/v1", {
+      headers: { authorization: "Bearer base", "x-base": "1", "x-remove": "base" },
+      urlParams: { scope: "base", page: "1", remove: "base" },
       responses: [notFound],
     });
     const adminApi = api.pipe(
       extendApi({
+        baseUrl: "https://admin.example.test/v2",
+        removeHeaders: ["authorization", "x-remove"],
+        removeUrlParams: ["scope", "remove"],
         headers: { authorization: "Bearer admin" },
         urlParams: { scope: "admin" },
         responses: [unauthorized],
@@ -337,30 +340,67 @@ describe("createRequest", () => {
       responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
 
-    expect(api.baseUrl).toBe("https://example.test");
-    expect(adminApi.baseUrl).toBe("https://example.test");
+    expect(api.baseUrl).toBe("https://example.test/v1");
+    expect(adminApi.baseUrl).toBe("https://admin.example.test/v2");
 
-    const result = await getUsers()
-      .setBaseUrl("https://mirror.example.test")
-      .effect.pipe(
-        Effect.provide(
-          fetchLayer(
-            mockFetch(async (request) => {
-              const url = new URL(request.url);
-              expect(url.origin).toBe("https://mirror.example.test");
-              expect(Object.fromEntries(url.searchParams)).toEqual({ scope: "admin", page: "2" });
-              expect(request.headers.get("authorization")).toBe("Bearer admin");
-              expect(request.headers.get("x-base")).toBe("1");
-              return Response.json([]);
-            }),
-          ),
+    let requestNumber = 0;
+    const [result] = await Effect.all([
+      getUsers().effect,
+      getUsers().setBaseUrl("https://mirror.example.test").effect,
+    ]).pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            const url = new URL(request.url);
+            expect(url.origin).toBe(requestNumber === 0 ? "https://admin.example.test" : "https://mirror.example.test");
+            expect(url.pathname).toBe(requestNumber === 0 ? "/v2/users" : "/users");
+            expect(Object.fromEntries(url.searchParams)).toEqual({ scope: "admin", page: "2" });
+            expect(request.headers.get("authorization")).toBe("Bearer admin");
+            expect(request.headers.get("x-base")).toBe("1");
+            expect(request.headers.has("x-remove")).toBe(false);
+            expect(url.searchParams.has("remove")).toBe(false);
+            requestNumber += 1;
+            return Response.json([]);
+          }),
         ),
-        Effect.runPromise,
-      );
+      ),
+      Effect.runPromise,
+    );
 
     expect(result._tag).toBe("ok");
     type Result = Awaited<typeof result>;
     expectTypeOf<Result["_tag"]>().toEqualTypeOf<"ok" | "unauthorized" | "not-found">();
+  });
+
+  it("removes inherited headers and URL params from an endpoint definition", async () => {
+    const getPublicUsers = createApi("https://example.test", {
+      headers: { authorization: "Bearer token", "x-keep": "api" },
+      urlParams: { apiKey: "secret", locale: "sv" },
+    }).createRequest({
+      method: "GET",
+      path: "/users",
+      removeHeaders: ["authorization"],
+      removeUrlParams: ["apiKey"],
+      headers: { "x-endpoint": "public" },
+      urlParams: { locale: "en" },
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
+    });
+
+    await getPublicUsers().effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            const url = new URL(request.url);
+            expect(Object.fromEntries(url.searchParams)).toEqual({ locale: "en" });
+            expect(request.headers.has("authorization")).toBe(false);
+            expect(request.headers.get("x-keep")).toBe("api");
+            expect(request.headers.get("x-endpoint")).toBe("public");
+            return Response.json([]);
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
   });
 
   it("rejects GET and HEAD bodies at the definition and transformed-request boundaries", async () => {

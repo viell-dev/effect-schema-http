@@ -496,6 +496,14 @@ export interface ApiOptions<Defaults extends ReadonlyArray<AnyResponseRule> = re
   readonly responses?: Defaults & UniqueResponseRules<Defaults>;
 }
 
+export interface ApiExtensionOptions<
+  Defaults extends ReadonlyArray<AnyResponseRule> = readonly [],
+> extends ApiOptions<Defaults> {
+  readonly baseUrl?: string;
+  readonly removeHeaders?: ReadonlyArray<string>;
+  readonly removeUrlParams?: ReadonlyArray<string>;
+}
+
 export interface RequestDefinition<
   Method extends RequestMethod,
   Path extends string,
@@ -505,6 +513,8 @@ export interface RequestDefinition<
 > extends RequestOptions {
   readonly method: Method;
   readonly path: Path;
+  readonly removeHeaders?: ReadonlyArray<string>;
+  readonly removeUrlParams?: ReadonlyArray<string>;
   readonly body?: Uppercase<Method> extends "GET" | "HEAD" ? never : Body;
   readonly bodyCodec?: Uppercase<Method> extends "GET" | "HEAD"
     ? never
@@ -783,6 +793,8 @@ export const mapEndpoint: {
 interface InternalDefinition<Body extends AnySchema | undefined> extends RequestOptions {
   readonly method: RequestMethod;
   readonly path: string;
+  readonly removeHeaders?: ReadonlyArray<string>;
+  readonly removeUrlParams?: ReadonlyArray<string>;
   readonly body?: Body;
   readonly bodyCodec?: RequestBodyCodec<never>;
   readonly defaultBody?: unknown;
@@ -1015,6 +1027,9 @@ const appendQueryParam = (params: QueryParams, key: string, value: QueryParamVal
 
 const removeQueryParam = (params: QueryParams, key: string): QueryParams =>
   params.filter(([candidate]) => candidate !== key);
+
+const removeQueryParams = (params: QueryParams, keys: ReadonlyArray<string> | undefined): QueryParams =>
+  keys === undefined ? params : params.filter(([candidate]) => !keys.includes(candidate));
 
 const removeQueryParamValue = (params: QueryParams, key: string, value: QueryParamValue): QueryParams =>
   params.filter(([candidate, candidateValue]) => candidate !== key || candidateValue !== value);
@@ -1320,9 +1335,15 @@ const createRequestInternal = <
 ): Endpoint<Path, Body, Rules, BodyReady> => {
   const endpoint = (...pathArguments: PathArguments<Path>) => {
     const filled = splitPathUrlParams(fillPath(definition.path, pathArguments));
-    const baseHeaders = Headers.fromInput(definition.baseOptions?.headers);
+    const baseHeaders = Headers.remove(
+      Headers.fromInput(definition.baseOptions?.headers),
+      definition.removeHeaders ?? [],
+    );
     const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
-    const baseParams = queryParamsFromInput(definition.baseOptions?.urlParams ?? {});
+    const baseParams = removeQueryParams(
+      queryParamsFromInput(definition.baseOptions?.urlParams ?? {}),
+      definition.removeUrlParams,
+    );
     const pathParams = setQueryParams(baseParams, filled.urlParams);
     const urlParams = setQueryParams(pathParams, definition.urlParams ?? {});
     const requestTransforms = [definition.baseOptions?.transformRequest, definition.transformRequest].filter(
@@ -1372,7 +1393,7 @@ export const createRequest = <
 export interface Api<Defaults extends ReadonlyArray<AnyResponseRule>> extends Pipeable.Pipeable {
   readonly baseUrl: string;
   readonly extend: <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(
-    options: ApiOptions<Overrides>,
+    options: ApiExtensionOptions<Overrides>,
   ) => Api<MergeResponseRules<Defaults, Overrides>>;
   readonly createRequest: <
     const Method extends RequestMethod,
@@ -1394,7 +1415,7 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
     pipe: pipeSelf,
     baseUrl,
     extend: <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(
-      overrides: ApiOptions<Overrides>,
+      overrides: ApiExtensionOptions<Overrides>,
     ): Api<MergeResponseRules<Defaults, Overrides>> => {
       validateUniqueResponseTags(overrides.responses ?? [], "api");
       const baseRequestTransform = options.transformRequest;
@@ -1408,9 +1429,15 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
           : (options.retry ?? (options.retries !== undefined ? { times: options.retries } : undefined)));
       const responses = mergeResponseRules(options.responses ?? [], overrides.responses ?? []);
 
-      return createApi<MergeResponseRules<Defaults, Overrides>>(baseUrl, {
-        headers: Headers.setAll(Headers.fromInput(options.headers), overrides.headers ?? {}),
-        urlParams: setQueryParams(queryParamsFromInput(options.urlParams ?? {}), overrides.urlParams ?? {}),
+      return createApi<MergeResponseRules<Defaults, Overrides>>(overrides.baseUrl ?? baseUrl, {
+        headers: Headers.setAll(
+          Headers.remove(Headers.fromInput(options.headers), overrides.removeHeaders ?? []),
+          overrides.headers ?? {},
+        ),
+        urlParams: setQueryParams(
+          removeQueryParams(queryParamsFromInput(options.urlParams ?? {}), overrides.removeUrlParams),
+          overrides.urlParams ?? {},
+        ),
         responseCodec: overrides.responseCodec ?? options.responseCodec,
         cache: overrides.cache ?? options.cache,
         timeout: overrides.timeout ?? options.timeout,
@@ -1452,6 +1479,6 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
 };
 
 export const extendApi =
-  <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(options: ApiOptions<Overrides>) =>
+  <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(options: ApiExtensionOptions<Overrides>) =>
   <Defaults extends ReadonlyArray<AnyResponseRule>>(api: Api<Defaults>): Api<MergeResponseRules<Defaults, Overrides>> =>
     api.extend(options);

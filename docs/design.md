@@ -144,8 +144,14 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
   so it wins an equally specific tie at that call site.
 - API options flow to endpoints and plans. Endpoint options override API defaults; plan setters override both.
 - `api.extend(options)` and pipeable `extendApi(options)` create a sub-API with merged headers, query parameters,
-  policies, transforms, and response rules. APIs expose their base URL, and `setBaseUrl(...)` can redirect one plan to a
-  mirror or alternate host.
+  policies, transforms, and response rules. Its optional `baseUrl` replaces the complete inherited base URL; it is not
+  a path-relative rewrite. APIs expose their base URL, and `setBaseUrl(...)` can redirect one plan to a mirror or
+  alternate host.
+- API extensions and endpoint definitions accept plural `removeHeaders` and `removeUrlParams` lists for deleting
+  inherited declarative defaults. Removal happens before declarations at the same scope, so an extension or endpoint
+  can intentionally re-add a removed name. A query-parameter removal deletes every repeated value for that name.
+  Plan combinators remain singular `removeHeader(name)` and `removeUrlParam(name[, value])` operations. These
+  declarative removals do not undo values introduced later by a request transform.
 
 This replacement model keeps the common thin-object case precise: replacing the `200` schema removes the original
 `200` body type, while inherited `404` and endpoint-specific `410` envelopes remain in the union.

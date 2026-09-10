@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
-`sketch-request-builder`; the current suite has 58 tests across six files.
+`sketch-request-builder`; the current suite has 59 tests across six files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -504,16 +504,21 @@ JavaScript `null`, while zero-length and whitespace-only bodies fail with an `Ht
 reason is `EmptyBody`; malformed non-empty JSON uses reason `Decode`. Rules for `204`, `205`, `304`, and `HEAD`
 responses should use `ResponseBody.none` explicitly. Tests pin all three JSON cases.
 
-### 4.7 `api.extend` cannot change the base URL
+### 4.7 ~~`api.extend` cannot change the base URL~~ — fixed
 
-`extend` re-uses the parent's `baseUrl` unconditionally. Version-prefixed sub-APIs (`/v1` → `/v2`), regional hosts, and
-staging mirrors are exactly what a sub-API is for, and the only current escape is a per-plan `setBaseUrl`, which has to
-be repeated at every call site. Adding an optional `baseUrl` to `ApiOptions` (or an `extend(baseUrl?, options)` overload)
-costs nothing and closes an obvious gap.
+At review time, `extend` re-used the parent's `baseUrl` unconditionally. Version-prefixed sub-APIs (`/v1` → `/v2`),
+regional hosts, and staging mirrors therefore required a per-plan `setBaseUrl` at every call site.
 
-Relatedly, endpoint definitions can only _add_ headers and query parameters to API defaults; there is no way to remove
-an inherited one at endpoint scope (only per-plan, via `removeHeader`/`removeUrlParam`). An endpoint that must not send
-the API's `authorization` header has no declarative option.
+API extensions now accept an optional `baseUrl` that replaces the complete inherited value. Path-only rewriting is
+deliberately left to callers that need it, using the exposed parent `api.baseUrl` to construct the replacement.
+
+Relatedly, endpoint definitions could only _add_ headers and query parameters to API defaults; there was no way to
+remove an inherited one at endpoint scope (only per-plan, via `removeHeader`/`removeUrlParam`). API extensions and
+endpoint definitions now accept plural `removeHeaders` and `removeUrlParams` lists. They remove inherited declarative
+defaults before same-scope values are applied, permitting an intentional re-add. Removing a query parameter removes
+all of its repeated values. The existing plan-level operations remain singular because they perform one mutation at a
+time. Tests cover full base-URL replacement, preservation and removal of inherited values, same-scope re-addition, and
+per-plan base-URL replacement.
 
 ### 4.8 A fresh `Effect` is constructed for every intermediate plan
 

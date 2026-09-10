@@ -36,6 +36,7 @@ export {
   setUrlParams,
   toEffect,
   type Api,
+  type ApiExtensionOptions,
   type ApiOptions,
   type CachePolicy,
   type DefaultResponseBodyCodec,
