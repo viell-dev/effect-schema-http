@@ -363,9 +363,9 @@ could never reach an Effect error channel, so their tagged-ness bought nothing �
 The implementation now takes the first of the two coherent positions identified by the review:
 
 - These are **defects** (programmer errors surfaced by degraded or untyped calls). `InvalidPathArguments`,
-  `InvalidRetryCount`, and the subsequently renamed `DuplicateResponseTag` are now ordinary `Error` subclasses. The
-  design document explicitly states that they are synchronous configuration defects rather than members of an Effect
-  error channel.
+  `InvalidPathParameterValue`, `InvalidRetryCount`, and the subsequently renamed `DuplicateResponseTag` are now
+  ordinary `Error` subclasses. The design document explicitly states that they are synchronous configuration defects
+  rather than members of an Effect error channel.
 
 ---
 
@@ -373,10 +373,10 @@ The implementation now takes the first of the two coherent positions identified 
 
 These are not defects; they are places where the design has taken a position that deserves an explicit decision.
 
-### 4.1 Path arguments are unnamed, untyped strings
+### 4.1 ~~Path arguments are unnamed, untyped strings~~ — fixed
 
-`PathArguments<Path>` produces `readonly [value: string, value: string]` — every element labelled `value`, every element
-typed `string`. So:
+At review time, `PathArguments<Path>` produced `readonly [value: string, value: string]` — every element labelled
+`value`, every element typed `string`. So:
 
 ```ts
 const getUserPost = createRequest({ path: "/users/:userId/posts/:postId", ... });
@@ -396,7 +396,15 @@ Options, roughly in increasing order of disruption:
   a mapped type with real keys, offered alongside the positional form.
 - Accept per-parameter schemas in the definition, which also gives encoding control beyond `encodeURIComponent`.
 
-The second is the one that actually solves it, and it composes with `mapEndpoint` unchanged.
+The implementation now takes only the object form and exports both `PathParameters<Path>` and `PathArguments<Path>`.
+The earlier example is now `getUserPost({ userId, postId })`, so transposition is not possible and editor signature
+help exposes the placeholder names. A repeated placeholder name maps to one property and is substituted at every
+occurrence.
+
+Runtime validation mirrors the type: the object must have exactly the declared own keys, preventing missing,
+unexpected, inherited, positional, non-string, and empty values from producing malformed URLs at degraded or untyped
+call sites. Parameter values continue through `encodeURIComponent`; `/` is deliberately accepted as opaque data and
+sent as `%2F`, not treated as a path separator.
 
 ### 4.2 Exact status matchers do not beat predicate matchers
 
@@ -520,8 +528,6 @@ gaps are:
 1. **Concurrency of one plan.** Nothing asserts that a single plan evaluated concurrently sends independent requests —
    the core "cold and repeatable" claim is only tested sequentially.
 2. **Interruption of a plan's effect** mid-flight, and what happens to the response body.
-3. **Type-level negative tests for path arity.** `@ts-expect-error` on `getUserPost(a)` and `getUserPost(a, b, c)` would
-   pin the `PathArguments` contract; only the runtime arity check is tested.
 
 ---
 
@@ -533,13 +539,12 @@ gaps are:
 - **No `repository`, `homepage`, or `bugs`** in `package.json`, and `keywords` is empty. `description` is present.
 - **No CI configuration.** `AGENTS.md` lists the five commands that must pass before committing; nothing enforces them.
 - **No `exports` entry for `./package.json`**, which some tooling probes.
-- **`tsconfig.json` omits `noUncheckedIndexedAccess`** even though the code is written as if it were on
-  (`pathArguments[argumentIndex++]!`, `inFlight[index]` with an `undefined` guard, `requests[0]?.url` in tests). Turning
-  it on would make those defensive patterns load-bearing rather than decorative. `exactOptionalPropertyTypes` is
-  similarly absent and would matter for the `setCache(undefined)` / `setTimeout(undefined)` clearing semantics.
-- **Export surface.** `PathArguments` is not exported, so users cannot compute an endpoint's argument tuple; the
-  `AnyResponseRule`-shaped type used throughout the public generics is not exported either, which makes user-written
-  helper types over rule arrays awkward. Both are cheap to add.
+- **`tsconfig.json` omits `noUncheckedIndexedAccess`** even though parts of the code are written as if it were on
+  (`inFlight[index]` with an `undefined` guard and `requests[0]?.url` in tests). Turning it on would make those
+  defensive patterns load-bearing rather than decorative. `exactOptionalPropertyTypes` is similarly absent and would
+  matter for the `setCache(undefined)` / `setTimeout(undefined)` clearing semantics.
+- **Export surface.** `PathArguments` and `PathParameters` are now exported. The `AnyResponseRule`-shaped type used
+  throughout the public generics is not exported, which makes user-written helper types over rule arrays awkward.
 - **`main` + `types` alongside `exports`** is fine for compatibility; no action needed.
 
 ---
@@ -560,8 +565,8 @@ Restating the doc's two, and adding the ones this review raises.
 
 **Raised here:**
 
-3. **Are validation failures defects or failures?** Answered in §3.11: path arity, duplicate tags, and invalid retry
-   counts are synchronous configuration defects represented by ordinary `Error` subclasses.
+3. **Are validation failures defects or failures?** Answered in §3.11: malformed path arguments, duplicate tags, and
+   invalid retry counts are synchronous configuration defects represented by ordinary `Error` subclasses.
 4. **Should the body typestate be enforced at runtime, not only in types?** Answered in §3.4: yes; degraded callers
    receive `RequestBodyRequired` before transport execution.
 5. **Should the envelope expose response metadata beyond headers?** `matched` explains the rule; nothing exposes the

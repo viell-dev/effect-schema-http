@@ -23,14 +23,14 @@ const getUser = api.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, User)],
 });
 
-const program = getUser("user-1").pipe(
+const program = getUser({ userId: "user-1" }).pipe(
   setUrlParam("expand", "profile"),
   toEffect,
   Effect.provide(FetchHttpClient.layer),
 );
 
 const gatedProgram = Effect.gen(function* () {
-  const users = yield* makeRequestGate((userId: string) => getUser(userId).effect, {
+  const users = yield* makeRequestGate((userId: string) => getUser({ userId }).effect, {
     key: (userId) => userId,
   });
 

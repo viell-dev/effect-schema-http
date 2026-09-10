@@ -8,6 +8,7 @@ import {
   DuplicateResponseTag,
   extendApi,
   InvalidPathArguments,
+  InvalidPathParameterValue,
   InvalidRetryCount,
   RequestBody,
   RequestBodyEncodeError,
@@ -85,8 +86,8 @@ describe("createRequest", () => {
       ),
     );
 
-    expectTypeOf(getThinUsers).parameters.toEqualTypeOf<[value: string]>();
-    const thinPlan = getThinUsers("team-1");
+    expectTypeOf(getThinUsers).parameters.toEqualTypeOf<[parameters: { readonly teamId: string }]>();
+    const thinPlan = getThinUsers({ teamId: "team-1" });
     type ThinResult = Effect.Effect.Success<typeof thinPlan.effect>;
     expectTypeOf<ThinResult["body"]>().toEqualTypeOf<ReadonlyArray<typeof ThinUser.Type>>();
   });
@@ -98,33 +99,61 @@ describe("createRequest", () => {
       responses: [response({ _tag: "post", status: 200 }, Schema.Struct({ id: Schema.String }))] as const,
     });
 
-    expectTypeOf(getFile).parameters.toEqualTypeOf<[value: string, value: string, value: string]>();
+    expectTypeOf(getFile).parameters.toEqualTypeOf<
+      [
+        parameters: {
+          readonly version: string;
+          readonly name: string;
+          readonly ext: string;
+        },
+      ]
+    >();
+    const rejectInvalidPathTypes = () => {
+      // @ts-expect-error -- path arguments are one named object, not positional values.
+      getFile("2", "report", "json");
+      // @ts-expect-error -- every placeholder is required.
+      getFile({ version: "2", name: "report" });
+      // @ts-expect-error -- undeclared path parameters are rejected.
+      getFile({ version: "2", name: "report", ext: "json", extra: "value" });
+    };
+    void rejectInvalidPathTypes;
 
-    const result = await getFile("2", "report name", "json").effect.pipe(
+    const result = await getFile({ version: "2", name: "reports/annual", ext: "json" }).effect.pipe(
       Effect.provide(
         fetchLayer(
           mockFetch(async (request) => {
-            expect(request.url).toBe("https://example.test/v2/files/report%20name.json");
-            return Response.json({ id: "report name" });
+            expect(request.url).toBe("https://example.test/v2/files/reports%2Fannual.json");
+            return Response.json({ id: "reports/annual" });
           }),
         ),
       ),
       Effect.runPromise,
     );
 
-    expect(result.body.id).toBe("report name");
+    expect(result.body.id).toBe("reports/annual");
 
-    const untypedGetFile = getFile as (...arguments_: Array<string>) => ReturnType<typeof getFile>;
-    expect(() => untypedGetFile("2", "report")).toThrow(InvalidPathArguments);
+    const untypedGetFile = getFile as (...arguments_: Array<unknown>) => ReturnType<typeof getFile>;
+    expect(() => untypedGetFile("2", "report", "json")).toThrow(InvalidPathArguments);
+    expect(() => untypedGetFile({ version: "2", name: "report" })).toThrow(InvalidPathArguments);
+    expect(() => untypedGetFile({ version: "2", name: "report", ext: "json", extra: "value" })).toThrow(
+      InvalidPathArguments,
+    );
+    expect(() => untypedGetFile({ version: "2", name: "", ext: "json" })).toThrow(InvalidPathParameterValue);
+
+    const inheritedParameters = Object.assign(Object.create({ version: "2" }) as object, {
+      name: "report",
+      ext: "json",
+    });
+    expect(() => untypedGetFile(inheritedParameters)).toThrow(InvalidPathArguments);
 
     const archiveUser = createRequest({
       method: "POST",
       path: "https://example.test/v1/users/:userId\\:archive",
       responses: [response({ _tag: "archived", status: 200 }, User)],
     });
-    expectTypeOf(archiveUser).parameters.toEqualTypeOf<[value: string]>();
+    expectTypeOf(archiveUser).parameters.toEqualTypeOf<[parameters: { readonly userId: string }]>();
 
-    await archiveUser("user-1").effect.pipe(
+    await archiveUser({ userId: "user-1" }).effect.pipe(
       Effect.provide(
         fetchLayer(
           mockFetch(async (request) => {
@@ -142,6 +171,24 @@ describe("createRequest", () => {
       responses: [response({ _tag: "ok", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
     });
     expectTypeOf(literalVersion).parameters.toEqualTypeOf<[]>();
+
+    const repeatedParameter = createRequest({
+      method: "GET",
+      path: "https://example.test/:resource/mirrors/:resource",
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
+    });
+    expectTypeOf(repeatedParameter).parameters.toEqualTypeOf<[parameters: { readonly resource: string }]>();
+    await repeatedParameter({ resource: "users" }).effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            expect(request.url).toBe("https://example.test/users/mirrors/users");
+            return new Response(undefined, { status: 200 });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
   });
 
   it("merges plural URL parameter updates over API and endpoint defaults", async () => {

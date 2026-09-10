@@ -292,17 +292,25 @@ type TakePathParameter<Input extends string> = Input extends `${infer Character}
     : readonly [name: "", rest: Input]
   : readonly [name: "", rest: ""];
 
-type PathArguments<Path extends string> = Path extends `\\:${infer Rest}`
-  ? PathArguments<Rest>
+type PathParameterNames<Path extends string> = Path extends `\\:${infer Rest}`
+  ? PathParameterNames<Rest>
   : Path extends `${infer Character}${infer Rest}`
     ? Character extends ":"
       ? TakePathParameter<Rest> extends readonly [infer Name extends string, infer Remaining extends string]
         ? Name extends ""
-          ? PathArguments<Rest>
-          : readonly [value: string, ...PathArguments<Remaining>]
+          ? PathParameterNames<Rest>
+          : Name | PathParameterNames<Remaining>
         : never
-      : PathArguments<Rest>
-    : readonly [];
+      : PathParameterNames<Rest>
+    : never;
+
+export type PathParameters<Path extends string> = {
+  readonly [Name in PathParameterNames<Path>]: string;
+};
+
+export type PathArguments<Path extends string> = [PathParameterNames<Path>] extends [never]
+  ? readonly []
+  : readonly [parameters: PathParameters<Path>];
 
 export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
   readonly response: HttpClientResponse.HttpClientResponse;
@@ -331,10 +339,29 @@ export class InvalidPathArguments extends Error {
 
   constructor(
     readonly path: string,
-    readonly expected: number,
-    readonly received: number,
+    readonly expected: ReadonlyArray<string>,
+    readonly received: ReadonlyArray<string>,
+    readonly argumentCount: number,
   ) {
-    super(`Path ${JSON.stringify(path)} requires ${expected} arguments, received ${received}`);
+    super(
+      expected.length === 0
+        ? `Path ${JSON.stringify(path)} does not accept arguments; received ${argumentCount}`
+        : `Path ${JSON.stringify(path)} requires one parameter object with exactly ${JSON.stringify(expected)}; received ${argumentCount} arguments with keys ${JSON.stringify(received)}`,
+    );
+  }
+}
+
+export class InvalidPathParameterValue extends Error {
+  readonly name = "InvalidPathParameterValue";
+
+  constructor(
+    readonly path: string,
+    readonly parameter: string,
+    readonly reason: "empty" | "not-string",
+  ) {
+    super(
+      `Path parameter ${JSON.stringify(parameter)} for ${JSON.stringify(path)} must be a non-empty string; received ${reason === "empty" ? "an empty string" : "a non-string value"}`,
+    );
   }
 }
 
@@ -692,22 +719,22 @@ export const toEffect = <
   plan: RequestPlan<Body, Rules, BodyReady>,
 ): RequestPlan<Body, Rules, BodyReady>["effect"] => plan.effect;
 
-type PipeableEndpoint<Arguments extends ReadonlyArray<string>, Value> = ((...arguments_: Arguments) => Value) &
+type PipeableEndpoint<Arguments extends ReadonlyArray<unknown>, Value> = ((...arguments_: Arguments) => Value) &
   Pipeable.Pipeable;
 
 export const mapEndpoint: {
   <Input, Output>(
     transform: (value: Input) => Output,
-  ): <Arguments extends ReadonlyArray<string>>(
+  ): <Arguments extends ReadonlyArray<unknown>>(
     endpoint: PipeableEndpoint<Arguments, Input>,
   ) => PipeableEndpoint<Arguments, Output>;
-  <Arguments extends ReadonlyArray<string>, Input, Output>(
+  <Arguments extends ReadonlyArray<unknown>, Input, Output>(
     endpoint: PipeableEndpoint<Arguments, Input>,
     transform: (value: Input) => Output,
   ): PipeableEndpoint<Arguments, Output>;
 } = dual(
   2,
-  <Arguments extends ReadonlyArray<string>, Input, Output>(
+  <Arguments extends ReadonlyArray<unknown>, Input, Output>(
     endpoint: PipeableEndpoint<Arguments, Input>,
     transform: (value: Input) => Output,
   ): PipeableEndpoint<Arguments, Output> =>
@@ -942,16 +969,37 @@ const splitPathUrlParams = (path: string): { readonly path: string; readonly url
   };
 };
 
-const fillPath = (path: string, pathArguments: ReadonlyArray<string>): string => {
+const fillPath = (path: string, pathArguments: ReadonlyArray<unknown>): string => {
   const parameterPattern = /(?<!\\):([A-Za-z_][A-Za-z0-9_]*)/g;
-  const expected = Array.from(path.matchAll(parameterPattern)).length;
-  if (pathArguments.length !== expected) {
-    throw new InvalidPathArguments(path, expected, pathArguments.length);
+  const expected = Array.from(new Set(Array.from(path.matchAll(parameterPattern), ([, name]) => name!)));
+
+  if (expected.length === 0) {
+    if (pathArguments.length !== 0) throw new InvalidPathArguments(path, expected, [], pathArguments.length);
+    return path.replaceAll("\\:", ":");
   }
 
-  let argumentIndex = 0;
+  const candidate = pathArguments[0];
+  const isParameterObject =
+    pathArguments.length === 1 && typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
+  const parameters = isParameterObject ? (candidate as Readonly<Record<string, unknown>>) : undefined;
+  const received = parameters === undefined ? [] : Object.keys(parameters);
+  if (
+    parameters === undefined ||
+    received.length !== expected.length ||
+    expected.some((name) => !Object.hasOwn(parameters, name)) ||
+    received.some((name) => !expected.includes(name))
+  ) {
+    throw new InvalidPathArguments(path, expected, received, pathArguments.length);
+  }
+
+  for (const name of expected) {
+    const value = parameters[name];
+    if (typeof value !== "string") throw new InvalidPathParameterValue(path, name, "not-string");
+    if (value.length === 0) throw new InvalidPathParameterValue(path, name, "empty");
+  }
+
   return path
-    .replace(parameterPattern, () => encodeURIComponent(pathArguments[argumentIndex++]!))
+    .replace(parameterPattern, (_, name: string) => encodeURIComponent(parameters[name] as string))
     .replaceAll("\\:", ":");
 };
 

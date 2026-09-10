@@ -217,21 +217,26 @@ describe("request integration", () => {
       responses: [response({ _tag: "ok", status: 200 }, BlogPost)] as const,
     });
 
-    expectTypeOf(getUser).parameters.toEqualTypeOf<[value: string]>();
-    expectTypeOf(getUserBlogPost).parameters.toEqualTypeOf<[value: string, value: string]>();
+    expectTypeOf(getUser).parameters.toEqualTypeOf<[parameters: { readonly userId: string }]>();
+    expectTypeOf(getUserBlogPost).parameters.toEqualTypeOf<
+      [parameters: { readonly userId: string; readonly postId: string }]
+    >();
 
     const created = await createUser()
       .setBody({ name: "Ada", email: "ada@example.test" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(created).toMatchObject({ _tag: "created", status: 201, body: { id: userId, name: "Ada" } });
 
-    const fetched = await getUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const fetched = await getUser({ userId }).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(fetched).toMatchObject({ _tag: "ok", body: { id: userId, name: "Ada" } });
 
-    const inspected = await inspectUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const inspected = await inspectUser({ userId }).effect.pipe(
+      Effect.provide(FetchHttpClient.layer),
+      Effect.runPromise,
+    );
     expect(inspected).toMatchObject({ _tag: "properties", status: 207, body: { id: userId } });
 
-    const replaced = await replaceUser(userId)
+    const replaced = await replaceUser({ userId })
       .setBody({ name: "Grace", email: "grace@example.test" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     if (replaced._tag !== "ok") {
@@ -239,7 +244,7 @@ describe("request integration", () => {
     }
     expect(replaced.body.name).toBe("Grace");
 
-    const conflict = await updateUser(userId)
+    const conflict = await updateUser({ userId })
       .setBody({ name: "Taken" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(conflict._tag).toBe("conflict");
@@ -252,16 +257,16 @@ describe("request integration", () => {
     );
     expect(conflictMessage).toBe("Taken conflicts with Grace");
 
-    const forced = await updateUser(userId)
+    const forced = await updateUser({ userId })
       .setUrlParam("force", "true")
       .setBody({ name: "Taken" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(forced).toMatchObject({ _tag: "ok", body: { name: "Taken" } });
 
-    const head = await headUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const head = await headUser({ userId }).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(head).toMatchObject({ _tag: "exists", headers: { "x-user-name": "Taken" } });
 
-    const post = await getUserBlogPost(userId, postId).effect.pipe(
+    const post = await getUserBlogPost({ userId, postId }).effect.pipe(
       Effect.provide(FetchHttpClient.layer),
       Effect.runPromise,
     );
@@ -270,7 +275,7 @@ describe("request integration", () => {
     const options = await usersOptions().effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(options).toMatchObject({ _tag: "options", status: 204 });
 
-    const deleted = await deleteUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
+    const deleted = await deleteUser({ userId }).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
     expect(deleted).toMatchObject({ _tag: "deleted", status: 204 });
 
     expect(methods).toEqual(["POST", "GET", "PROPFIND", "PUT", "PATCH", "PATCH", "HEAD", "GET", "OPTIONS", "DELETE"]);
@@ -293,15 +298,26 @@ describe("request integration", () => {
       path: "/features/:feature",
     });
 
-    const missing = await getUser("missing").effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    const gone = await getUser("gone").effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    const unsupported = await getFeature("new-dashboard").effect.pipe(
+    const missing = await getUser({ userId: "missing" }).effect.pipe(
+      Effect.provide(FetchHttpClient.layer),
+      Effect.runPromise,
+    );
+    const gone = await getUser({ userId: "gone" }).effect.pipe(
+      Effect.provide(FetchHttpClient.layer),
+      Effect.runPromise,
+    );
+    const slashId = await getUser({ userId: "missing/nested" }).effect.pipe(
+      Effect.provide(FetchHttpClient.layer),
+      Effect.runPromise,
+    );
+    const unsupported = await getFeature({ feature: "new-dashboard" }).effect.pipe(
       Effect.provide(FetchHttpClient.layer),
       Effect.runPromise,
     );
 
     expect(missing).toMatchObject({ _tag: "not-found", status: 404, body: { resource: "user" } });
     expect(gone).toMatchObject({ _tag: "gone", status: 410 });
+    expect(slashId).toMatchObject({ _tag: "not-found", status: 404, body: { id: "missing/nested" } });
     expect(unsupported).toMatchObject({ _tag: "not-implemented", status: 501 });
   });
 });

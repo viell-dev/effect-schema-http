@@ -31,10 +31,14 @@ const users = getUsers().pipe(
 );
 ```
 
-Colon-prefixed placeholders become positional endpoint arguments and are URL-encoded. Placeholder names start with an
-ASCII letter or underscore and may then contain ASCII letters, digits, or underscores. Placeholders can occupy a full
-segment or appear inside one, such as `/files/:name.:ext` or `/v:version/users`. A runtime arity check rejects degraded
-or untyped calls instead of sending unresolved placeholders:
+Colon-prefixed placeholders become the required properties of one endpoint argument object. Placeholder names start
+with an ASCII letter or underscore and may then contain ASCII letters, digits, or underscores. Placeholders can occupy
+a full segment or appear inside one, such as `/files/:name.:ext` or `/v:version/users`. Repeating a placeholder name in
+one path reuses its single object property. Endpoints without placeholders remain zero-argument functions.
+
+Each value must be a non-empty string and is encoded with `encodeURIComponent`. In particular, `/` in an opaque value
+is allowed and sent as `%2F`; it does not create another path segment. A runtime check rejects missing or unexpected
+properties, positional arguments, non-string values, and empty strings at degraded or untyped call sites:
 
 ```ts
 const getUserPost = api.createRequest({
@@ -43,13 +47,13 @@ const getUserPost = api.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, BlogPost)],
 });
 
-const request = getUserPost(userId, postId);
+const request = getUserPost({ userId, postId });
 ```
 
 A backslash escapes a literal colon that would otherwise look like a placeholder. This keeps action-style paths usable:
 
 ```ts
-path: "/users/:userId\\:archive"; // getUser(userId) sends /users/<encoded-id>:archive
+path: "/users/:userId\\:archive"; // getUser({ userId }) sends /users/<encoded-id>:archive
 ```
 
 An API base URL is a literal prefix rather than a WHATWG URL-resolution base: `https://example.test/v1` plus `/users`
@@ -216,9 +220,9 @@ one call site. `.setRetry({ times, schedule, mode })` accepts an Effect `Schedul
 explicit schedule uses jittered exponential backoff rather than immediate repeats. Counts must be finite, non-negative
 integers.
 
-Invalid retry counts, duplicate response tags, and path-argument arity mismatches are synchronous configuration defects
-represented by ordinary `Error` subclasses. They do not enter an Effect error channel, and validation never executes
-the HTTP request.
+Invalid retry counts, duplicate response tags, malformed path-argument objects, and invalid path-parameter values are
+synchronous configuration defects represented by ordinary `Error` subclasses. They do not enter an Effect error
+channel, and validation never executes the HTTP request.
 
 The transient classification matches `HttpClient.retryTransient`: timeouts and transport failures, plus 408, 429, 500,
 502, 503, and 504 responses. One retry counter and schedule driver are shared across both kinds, so `times: 3` permits
