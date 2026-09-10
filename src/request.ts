@@ -9,7 +9,19 @@ import {
   type HttpMethod,
   UrlParams,
 } from "@effect/platform";
-import { Cause, Data, type Duration, Effect, Option, ParseResult, Schedule, Schema } from "effect";
+import {
+  Cause,
+  Clock,
+  Data,
+  Duration,
+  Effect,
+  Option,
+  ParseResult,
+  Schedule,
+  ScheduleDecision,
+  ScheduleIntervals,
+  Schema,
+} from "effect";
 import { dual } from "effect/Function";
 import type * as Pipeable from "effect/Pipeable";
 
@@ -423,6 +435,8 @@ export interface RetryPolicy {
   readonly times: number;
   readonly schedule?: RetrySchedule;
   readonly mode?: "errors-only" | "response-only" | "both";
+  readonly while?: (input: RetryInput) => boolean;
+  readonly respectRetryAfter?: boolean;
 }
 
 export interface RequestOptions {
@@ -810,17 +824,51 @@ const normalizeRetry = (retry: RetryPolicy | number | undefined): RetryPolicy | 
 const isTransientResponseStatus = (status: number): boolean =>
   status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 
-const isTransientRetryError = (error: unknown): boolean =>
-  Cause.isTimeoutException(error) ||
-  (HttpClientError.isHttpClientError(error) &&
-    ((error._tag === "RequestError" && error.reason === "Transport") ||
-      (error._tag === "ResponseError" && isTransientResponseStatus(error.response.status))));
+const isHttpClientResponse = (input: unknown): input is HttpClientResponse.HttpClientResponse =>
+  typeof input === "object" && input !== null && HttpClientResponse.TypeId in input;
+
+const isRetryInput = (input: unknown): input is RetryInput =>
+  isHttpClientResponse(input) || Cause.isTimeoutException(input) || HttpClientError.isHttpClientError(input);
+
+const isTransientRetryInput = (input: RetryInput): boolean =>
+  isHttpClientResponse(input)
+    ? isTransientResponseStatus(input.status)
+    : Cause.isTimeoutException(input) ||
+      (HttpClientError.isHttpClientError(input) &&
+        ((input._tag === "RequestError" && input.reason === "Transport") ||
+          (input._tag === "ResponseError" && isTransientResponseStatus(input.response.status))));
+
+const isRetryable = (input: RetryInput, additional: RetryPolicy["while"]): boolean =>
+  isTransientRetryInput(input) || additional?.(input) === true;
+
+const responseFromRetryInput = (input: RetryInput): HttpClientResponse.HttpClientResponse | undefined =>
+  isHttpClientResponse(input)
+    ? input
+    : HttpClientError.isHttpClientError(input) && input._tag === "ResponseError"
+      ? input.response
+      : undefined;
+
+const retryAfterTimestamp = (input: RetryInput, now: number): number | undefined => {
+  const value = responseFromRetryInput(input)?.headers["retry-after"]?.trim();
+  if (value === undefined || value === "") return undefined;
+
+  if (/^\d+$/.test(value)) {
+    const milliseconds = Number(value) * 1_000;
+    return Number.isFinite(milliseconds) ? now + milliseconds : undefined;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.max(now, timestamp) : undefined;
+};
 
 const withAttemptTimeout = <Success, Error, Requirements>(
   effect: Effect.Effect<Success, Error, Requirements>,
   timeout: Duration.DurationInput | undefined,
 ): Effect.Effect<Success, Error | Cause.TimeoutException, Requirements> =>
   timeout === undefined ? effect : Effect.timeout(effect, timeout);
+
+const waitUntil = (timestamp: number) =>
+  Effect.flatMap(Clock.currentTimeMillis, (now) => Effect.sleep(Duration.millis(Math.max(0, timestamp - now))));
 
 const executeWithRetry = <Success, HandlingError, Requirements, Error extends HttpClientError.HttpClientError>(
   client: HttpClient.HttpClient.With<Error>,
@@ -836,16 +884,29 @@ const executeWithRetry = <Success, HandlingError, Requirements, Error extends Ht
   const mode = retry?.mode ?? "both";
   const times = retry?.times ?? 0;
   const schedule = retry?.schedule ?? defaultRetrySchedule;
+  const respectRetryAfter = retry?.respectRetryAfter ?? true;
 
   return Effect.gen(function* () {
-    const driver = yield* Schedule.driver(schedule);
+    let scheduleState = schedule.initial;
     let retries = 0;
+
+    const nextRetryAt = (input: RetryInput) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const [nextState, , decision] = yield* schedule.step(now, input, scheduleState);
+        scheduleState = nextState;
+        if (ScheduleDecision.isDone(decision)) return undefined;
+
+        const scheduled = ScheduleIntervals.start(decision.intervals);
+        const retryAfter = respectRetryAfter ? retryAfterTimestamp(input, now) : undefined;
+        return retryAfter === undefined ? scheduled : Math.max(scheduled, retryAfter);
+      });
 
     while (true) {
       const attempt = withAttemptTimeout(
         Effect.gen(function* () {
           const raw = yield* client.execute(request);
-          if (mode !== "errors-only" && retries < times && isTransientResponseStatus(raw.status)) {
+          if (mode !== "errors-only" && retries < times && isRetryable(raw, retry?.while)) {
             return { _tag: "RetryResponse" as const, response: raw };
           }
           return { _tag: "Done" as const, value: yield* handleResponse(raw) };
@@ -855,29 +916,30 @@ const executeWithRetry = <Success, HandlingError, Requirements, Error extends Ht
       const outcome = yield* Effect.either(attempt);
 
       if (outcome._tag === "Left") {
-        if (mode === "response-only" || retries >= times || !isTransientRetryError(outcome.left)) {
+        if (
+          mode === "response-only" ||
+          retries >= times ||
+          !isRetryInput(outcome.left) ||
+          !isRetryable(outcome.left, retry?.while)
+        ) {
           return yield* Effect.fail(outcome.left);
         }
 
-        const canRetry = yield* driver.next(outcome.left as RetryInput).pipe(
-          Effect.as(true),
-          Effect.catchAll(() => Effect.succeed(false)),
-        );
-        if (!canRetry) return yield* Effect.fail(outcome.left);
+        const retryAt = yield* nextRetryAt(outcome.left);
+        if (retryAt === undefined) return yield* Effect.fail(outcome.left);
 
+        yield* waitUntil(retryAt);
         retries += 1;
         continue;
       }
 
       if (outcome.right._tag === "Done") return outcome.right.value;
 
-      const canRetry = yield* driver.next(outcome.right.response).pipe(
-        Effect.as(true),
-        Effect.catchAll(() => Effect.succeed(false)),
-      );
-      if (!canRetry) return yield* withAttemptTimeout(handleResponse(outcome.right.response), timeout);
+      const retryAt = yield* nextRetryAt(outcome.right.response);
+      if (retryAt === undefined) return yield* withAttemptTimeout(handleResponse(outcome.right.response), timeout);
 
       yield* withAttemptTimeout(outcome.right.response.arrayBuffer, timeout);
+      yield* waitUntil(retryAt);
       retries += 1;
     }
   });
@@ -1015,7 +1077,8 @@ const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers
   );
 };
 
-const specificity = (rule: AnyResponseRule): number => Object.keys(rule.match.headers ?? {}).length;
+const specificity = (rule: AnyResponseRule): number =>
+  Object.keys(rule.match.headers ?? {}).length * 2 + (typeof rule.match.status === "number" ? 1 : 0);
 
 const setResponseRule = (
   rules: ReadonlyArray<AnyResponseRule>,

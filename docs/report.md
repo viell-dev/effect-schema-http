@@ -2,8 +2,8 @@
 
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
-in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes in §3 track subsequent fixes on
-`sketch-request-builder`; the current suite has 52 tests across six files.
+in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
+`sketch-request-builder`; the current suite has 55 tests across six files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -307,7 +307,7 @@ Worth noting for fairness: `HttpClient.retryTransient` with `mode: "both"` nests
 with the same `times` and has the same multiplication property, so this is inherited from upstream rather than invented
 here. But this library both re-implements the loop _and_ documents a specific bound, so it owns the discrepancy.
 
-Retry handling now uses one loop, one counter, and one schedule driver for errors and responses. `times` is therefore a
+Retry handling now uses one loop, one counter, and one schedule state for errors and responses. `times` is therefore a
 single shared retry budget, and intermediate transient responses are still drained before the next attempt.
 
 ### 3.9 ~~Per-attempt timeouts do not cover response body reading~~ — fixed
@@ -406,9 +406,9 @@ unexpected, inherited, positional, non-string, and empty values from producing m
 call sites. Parameter values continue through `encodeURIComponent`; `/` is deliberately accepted as opaque data and
 sent as `%2F`, not treated as a path separator.
 
-### 4.2 Exact status matchers do not beat predicate matchers
+### 4.2 ~~Exact status matchers do not beat predicate matchers~~ — fixed
 
-`specificity` counts only header matchers (`src/request.ts:753`), so within one declaration:
+At review time, `specificity` counted only header matchers, so within one declaration:
 
 ```ts
 responses: [
@@ -426,15 +426,19 @@ footgun is mostly _within_ a single declaration list.
 Ranking exact status above predicate status (a second specificity dimension, e.g. `headers.length * 2 + (exact ? 1 :
 0)`) would make the common case do what people expect, and would make `matched` more informative rather than less.
 
-### 4.3 The response-retry loop re-implements a platform feature
+The implementation now uses that two-dimensional score. More matched headers remain the primary dimension; among
+rules with the same header count, an exact status beats a status predicate. Declaration order still breaks complete
+ties. Tests pin both dimensions so broad rules can safely appear before their common exact-status exceptions.
 
-`HttpClient.retryTransient` already supports `mode: "both"` and `mode: "response-only"`, and — relevant to the doc's
-open question #2 — takes a `while: Predicate<E>` for custom classification. The library re-implements the response half
-(justifiably, to drain intermediate bodies) but as a result:
+### 4.3 ~~The response-retry loop re-implements a platform feature~~ — resolved
+
+At review time, `HttpClient.retryTransient` already supported `mode: "both"` and `mode: "response-only"`, and took a
+`while: Predicate<E>` for custom classification. The library re-implemented the response half (justifiably, to drain
+intermediate bodies) but as a result:
 
 - duplicates `isTransientResponseStatus`, which must now be kept in sync with upstream's `isTransientResponse`;
 - has no equivalent of `while`, so custom classification has no seam short of `mapClient`;
-- has the budget/backoff issues in §3.8.
+- initially had the budget/backoff issues fixed in §3.8.
 
 The narrowest good answer to open question #2 is: expose `RetryPolicy.while?: (input: RetryInput) => boolean`, feed it
 to `retryTransient`'s `while` for the error dimension and to the loop's condition for the response dimension. That keeps
@@ -442,6 +446,15 @@ classification declarative and in one place, and does not require a plugin story
 
 Also missing from the retry story: `Retry-After` is never honoured, even though `429` and `503` are both classified as
 transient and both routinely carry it. That is the single highest-value addition to `RetryPolicy`.
+
+The custom loop remains intentional: unlike two independent platform retry/repeat layers, it shares one attempt budget
+across errors and responses and can drain every discarded response. `RetryPolicy.while` now adds custom error or raw
+response cases to the built-in transient classification, subject to `mode`, and the built-in status set has a parity
+test against the current Effect HTTP-client behavior.
+
+Valid `Retry-After` delta-seconds and HTTP-date values now impose a minimum over the schedule delay by default.
+`respectRetryAfter: false` is the escape hatch for broken or unsuitable server policy. A discarded response is drained
+before that delay begins, so a long server-requested wait does not hold its connection body open.
 
 ### 4.4 Default response readers are restricted to `json | text`, but per-rule codecs are open
 
@@ -559,9 +572,8 @@ Restating the doc's two, and adding the ones this review raises.
    symmetric with `RequestBody.uint8Array`. Streaming is the one that changes the model rather than extending it: a
    streaming body cannot be replayed, cannot be shared through a request gate, and needs a `Scope` in `R` — so it should
    probably be a separate plan terminal (`.stream` alongside `.effect`) rather than a codec.
-2. _Should custom retry classification be part of `RetryPolicy`?_ Yes — see §4.3. `HttpClient.retryTransient` already
-   takes a `while` predicate, so the seam exists; not exposing it means `mapClient` is the only route, and `mapClient`
-   cannot see the library's own response-retry loop.
+2. ~~_Should custom retry classification be part of `RetryPolicy`?_~~ Answered in §4.3: `RetryPolicy.while` extends the
+   built-in classification for both errors and raw responses, including those handled by the library's own loop.
 
 **Raised here:**
 

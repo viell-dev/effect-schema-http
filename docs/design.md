@@ -139,8 +139,9 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
 - Status and header matchers accept exact values or predicates. Exact strings remain convenient, while predicates
   support status ranges and values such as `application/json; charset=utf-8` without introducing schema failures during
   rule selection.
-- Header-constrained rules beat status-only rules. Within API and endpoint declarations, the first equally specific
-  rule wins. A plan rule with a new tag is prepended, so it wins an equally specific tie at that call site.
+- Rules with more matched headers rank first. Among rules with the same number of matched headers, an exact status
+  ranks above a status predicate. Declaration order breaks any remaining tie. A plan rule with a new tag is prepended,
+  so it wins an equally specific tie at that call site.
 - API options flow to endpoints and plans. Endpoint options override API defaults; plan setters override both.
 - `api.extend(options)` and pipeable `extendApi(options)` create a sub-API with merged headers, query parameters,
   policies, transforms, and response rules. APIs expose their base URL, and `setBaseUrl(...)` can redirect one plan to a
@@ -216,19 +217,23 @@ where it would make merging ambiguous. Headers likewise have singular, plural, a
 ## Retry and cache policy
 
 Retries default to zero. API and endpoint definitions can choose another default, and `.setRetries(n)` changes it at
-one call site. `.setRetry({ times, schedule, mode })` accepts an Effect `Schedule` directly; a retry count without an
-explicit schedule uses jittered exponential backoff rather than immediate repeats. Counts must be finite, non-negative
-integers.
+one call site. `.setRetry({ times, schedule, mode, while, respectRetryAfter })` accepts an Effect `Schedule` directly;
+a retry count without an explicit schedule uses jittered exponential backoff rather than immediate repeats. Counts
+must be finite, non-negative integers.
 
 Invalid retry counts, duplicate response tags, malformed path-argument objects, and invalid path-parameter values are
 synchronous configuration defects represented by ordinary `Error` subclasses. They do not enter an Effect error
 channel, and validation never executes the HTTP request.
 
 The transient classification matches `HttpClient.retryTransient`: timeouts and transport failures, plus 408, 429, 500,
-502, 503, and 504 responses. One retry counter and schedule driver are shared across both kinds, so `times: 3` permits
+502, 503, and 504 responses. One retry counter and schedule state are shared across both kinds, so `times: 3` permits
 at most four attempts even when transport errors and transient responses alternate. A mapped transient response is
-still retried before rule selection. Intermediate transient responses are drained before another request is sent.
-`mode` can restrict a policy to errors or responses when that distinction matters.
+still retried before rule selection. `while` can classify additional errors or responses as retryable without removing
+the built-in transient cases. `mode` can restrict a policy to errors or responses when that distinction matters.
+
+Intermediate retry responses are drained before waiting so the connection can be reused during the backoff. A valid
+`Retry-After` delta or HTTP date sets a minimum delay over the configured schedule; `respectRetryAfter: false` disables
+that behavior for a server with unsuitable headers.
 
 `timeout` options and `.setTimeout(...)` apply to each individual attempt, including decoding the final response body.
 Effect interruption propagates through the HTTP client, while a timeout becomes a transient `TimeoutException` that
@@ -288,7 +293,6 @@ Three layers catch different failures:
 
 Run them separately with `pnpm test:unit` and `pnpm test:integration`, or together with `pnpm test`.
 
-## Remaining design questions
+## Remaining design question
 
 1. Which response codecs should follow JSON, text, and no-body: bytes, form data, multipart files, or streaming bodies?
-2. Should custom retry classification become part of `RetryPolicy`, or remain an advanced client transform?

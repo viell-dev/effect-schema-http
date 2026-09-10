@@ -1,5 +1,5 @@
-import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "@effect/platform";
-import { Cause, Effect, Either, Layer, Match, ParseResult, Schedule, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "@effect/platform";
+import { Cause, Clock, Duration, Effect, Either, Layer, Match, ParseResult, Schedule, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   AbsolutePathWithBaseUrl,
@@ -591,6 +591,38 @@ describe("createRequest", () => {
     expect("key" in result).toBe(false);
   });
 
+  it("ranks matched headers first and exact statuses second when response rules overlap", async () => {
+    let shaped = false;
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [
+        response(
+          {
+            _tag: "shaped-success",
+            status: (status) => status >= 200 && status < 300,
+            headers: { "x-response-shape": "detailed" },
+          },
+          User,
+        ),
+        response({ _tag: "success", status: (status) => status >= 200 && status < 300 }, User),
+        response({ _tag: "ok", status: 200 }, User),
+      ],
+    });
+    const layer = fetchLayer(
+      mockFetch(async () =>
+        Response.json({ id: 1, name: "Ada" }, { headers: shaped ? { "x-response-shape": "detailed" } : undefined }),
+      ),
+    );
+
+    const plain = await getUser().effect.pipe(Effect.provide(layer), Effect.runPromise);
+    shaped = true;
+    const detailed = await getUser().effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(plain._tag).toBe("ok");
+    expect(detailed._tag).toBe("shaped-success");
+  });
+
   it("reflects exact matched header names in their canonical lowercase form", async () => {
     const getUser = createRequest({
       method: "GET",
@@ -995,6 +1027,37 @@ describe("createRequest", () => {
     expect(result).toMatchObject({ _tag: "unavailable", body: { retryAfter: 1 } });
   });
 
+  it("keeps the built-in transient response statuses aligned with Effect's HTTP client", async () => {
+    for (const status of [408, 429, 500, 502, 503, 504]) {
+      let attempts = 0;
+      const getStatus = createRequest({
+        method: "GET",
+        path: "https://example.test/status",
+        responses: [
+          response({ _tag: `status-${status}`, status }, Schema.Void, {
+            codec: ResponseBody.none,
+          }),
+        ],
+      });
+
+      await getStatus()
+        .setRetry({ times: 1, schedule: Schedule.recurs(1) })
+        .effect.pipe(
+          Effect.provide(
+            fetchLayer(
+              mockFetch(async () => {
+                attempts += 1;
+                return new Response(undefined, { status });
+              }),
+            ),
+          ),
+          Effect.runPromise,
+        );
+
+      expect(attempts).toBe(2);
+    }
+  });
+
   it("shares one retry budget across alternating transport and response failures", async () => {
     let attempts = 0;
     const getHealth = createRequest({
@@ -1021,6 +1084,73 @@ describe("createRequest", () => {
 
     expect(attempts).toBe(3);
     expect(Either.isLeft(result)).toBe(true);
+  });
+
+  it("extends retry classification and treats Retry-After as a configurable minimum delay", async () => {
+    const run = async (respectRetryAfter: boolean, retryAfter = "2") => {
+      let attempts = 0;
+      let now = 0;
+      const sleeps: Array<number> = [];
+      const bodyUsedAtSleep: Array<boolean> = [];
+      const responses: Array<Response> = [];
+      const clock: Clock.Clock = {
+        [Clock.ClockTypeId]: Clock.ClockTypeId,
+        unsafeCurrentTimeMillis: () => now,
+        currentTimeMillis: Effect.sync(() => now),
+        unsafeCurrentTimeNanos: () => BigInt(now) * 1_000_000n,
+        currentTimeNanos: Effect.sync(() => BigInt(now) * 1_000_000n),
+        sleep: (duration) =>
+          Effect.sync(() => {
+            const milliseconds = Duration.toMillis(duration);
+            sleeps.push(milliseconds);
+            bodyUsedAtSleep.push(responses[0]?.bodyUsed ?? false);
+            now += milliseconds;
+          }),
+      };
+      const updateUser = createRequest({
+        method: "PATCH",
+        path: "https://example.test/users/1",
+        responses: [response({ _tag: "ok", status: 200 }, User), response({ _tag: "conflict", status: 409 }, User)],
+      });
+
+      const result = await updateUser()
+        .setRetry({
+          times: 1,
+          schedule: Schedule.spaced("100 millis"),
+          while: (input) => HttpClientResponse.TypeId in input && input.status === 409,
+          respectRetryAfter,
+        })
+        .effect.pipe(
+          Effect.provide(
+            fetchLayer(
+              mockFetch(async () => {
+                attempts += 1;
+                const rawResponse = Response.json(
+                  { id: 1, name: "Ada" },
+                  attempts === 1 ? { status: 409, headers: { "retry-after": retryAfter } } : { status: 200 },
+                );
+                responses.push(rawResponse);
+                return rawResponse;
+              }),
+            ),
+          ),
+          Effect.withClock(clock),
+          Effect.runPromise,
+        );
+
+      return { attempts, bodyUsedAtSleep, result, sleeps };
+    };
+
+    const respected = await run(true);
+    const dated = await run(true, new Date(2_000).toUTCString());
+    const ignored = await run(false);
+
+    expect(respected).toMatchObject({ attempts: 2, bodyUsedAtSleep: [true], sleeps: [2_000] });
+    expect(dated).toMatchObject({ attempts: 2, bodyUsedAtSleep: [true], sleeps: [2_000] });
+    expect(ignored).toMatchObject({ attempts: 2, bodyUsedAtSleep: [true], sleeps: [100] });
+    expect(respected.result._tag).toBe("ok");
+    expect(dated.result._tag).toBe("ok");
+    expect(ignored.result._tag).toBe("ok");
   });
 
   it("rejects invalid retry counts and applies plan-level client transforms", async () => {
