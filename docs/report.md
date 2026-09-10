@@ -232,7 +232,7 @@ Incomplete plans now expose `RequestBodyRequired` instead of `never`, so they ar
 compiler diagnostic identifies the missing step. The runtime value is a failed Effect carrying the same tagged error,
 which prevents an untyped or degraded caller from sending an empty body.
 
-### 3.5 `joinUrl` corrupts absolute paths declared under an API base URL
+### 3.5 ~~`joinUrl` corrupts absolute paths declared under an API base URL~~ — fixed
 
 **Severity: medium.**
 
@@ -249,12 +249,10 @@ hazard in reverse.
 Detect an absolute path (`/^[a-z][a-z0-9+.-]*:\/\//i`, or just `URL.canParse(path)`) and either ignore the base URL or
 fail loudly. Failing is probably better: silently ignoring a configured base URL is its own surprise.
 
-Related, and worth a decision rather than a fix: a base URL with a path prefix works as expected
-(`createApi("https://a.test/v1")` + `/users` ⇒ `https://a.test/v1/users`), but only because `joinUrl` strips and rejoins
-slashes. `new URL("/users", "https://a.test/v1")` would give `https://a.test/users`. The current behaviour is the more
-useful one; it should be documented as a deliberate departure from `URL` resolution semantics.
+`joinUrl` now rejects an absolute endpoint path when a base URL is present. Prefix joining remains unchanged and is
+documented as a deliberate departure from WHATWG URL resolution semantics.
 
-### 3.6 A query string baked into a path cannot be overridden and silently duplicates
+### 3.6 ~~A query string baked into a path cannot be overridden and silently duplicates~~ — fixed
 
 **Severity: medium.**
 
@@ -268,11 +266,11 @@ endpoint().setUrlParam("active", "0");
 string is already present in the URL string. So path-declared parameters are invisible to `setUrlParam`,
 `setUrlParams`, `removeUrlParam`, and `appendUrlParam`, and collisions become repeated parameters.
 
-Either parse a query string out of `definition.path` at endpoint construction and fold it into the initial
-`UrlParams` (which makes all the setters work uniformly), or reject query strings in `path` at construction. Doing
-nothing is the worst option, because `?active=1` in a path is a natural thing to write and the failure is silent.
+Endpoint calls now extract the declared query string into `UrlParams` after filling path placeholders. API defaults,
+declared path values, endpoint options, and plan setters then apply in that order. Repeated values and URL fragments are
+preserved.
 
-### 3.7 Replacing an existing response key silently changes tie-break precedence
+### 3.7 ~~Replacing an existing response key silently changes tie-break precedence~~ — fixed
 
 **Severity: low–medium — a documented rule that does not hold in one case.**
 
@@ -286,9 +284,8 @@ responses: [response({ key: "first", status: 200 }, S), response({ key: "second"
 prepended, so it wins an equally specific tie" — but the same prepend happens for an existing key, so overriding a
 rule's schema also promotes it above its equally-specific siblings. Probed and confirmed.
 
-Preserving position on replacement and prepending only on insertion is a two-line change to `setResponseRule`, and it
-matches both the documented rule and the intuition that `setResponseSchema` replaces a schema rather than reorders a
-table. The corresponding type (`SetResponseRule`) would need the same treatment to stay aligned with the runtime.
+Runtime and type-level replacement now preserve the existing key's position. A genuinely new plan rule is still
+prepended and therefore wins an equally specific tie.
 
 ### 3.8 The retry budget multiplies when transport errors and transient responses alternate
 

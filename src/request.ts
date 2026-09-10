@@ -156,10 +156,17 @@ type RemoveMatchingRule<Rules extends ReadonlyArray<AnyResponseRule>, Key extend
     : readonly [Head, ...RemoveMatchingRule<Tail, Key>]
   : readonly [];
 
-type SetResponseRule<Rules extends ReadonlyArray<AnyResponseRule>, Rule extends AnyResponseRule> = readonly [
-  Rule,
-  ...RemoveMatchingRule<Rules, KeyOf<Rule>>,
-];
+type ReplaceMatchingRule<
+  Rules extends ReadonlyArray<AnyResponseRule>,
+  Rule extends AnyResponseRule,
+> = Rules extends readonly [infer Head extends AnyResponseRule, ...infer Tail extends ReadonlyArray<AnyResponseRule>]
+  ? KeyOf<Head> extends KeyOf<Rule>
+    ? readonly [Rule, ...Tail]
+    : readonly [Head, ...ReplaceMatchingRule<Tail, Rule>]
+  : Rules;
+
+type SetResponseRule<Rules extends ReadonlyArray<AnyResponseRule>, Rule extends AnyResponseRule> =
+  KeyOf<Rule> extends KeyOf<Rules[number]> ? ReplaceMatchingRule<Rules, Rule> : readonly [Rule, ...Rules];
 
 type MergeResponseRules<
   Defaults extends ReadonlyArray<AnyResponseRule>,
@@ -325,6 +332,17 @@ export class DuplicateResponseKey extends Data.TaggedError("DuplicateResponseKey
 export class InvalidRetryCount extends Data.TaggedError("InvalidRetryCount")<{
   readonly retries: number;
 }> {}
+
+export class AbsolutePathWithBaseUrl extends Error {
+  readonly name = "AbsolutePathWithBaseUrl";
+
+  constructor(
+    readonly baseUrl: string,
+    readonly path: string,
+  ) {
+    super(`Cannot combine base URL ${JSON.stringify(baseUrl)} with absolute path ${JSON.stringify(path)}`);
+  }
+}
 
 export class ResponseDecodeError extends Data.TaggedError("ResponseDecodeError")<{
   readonly key: string;
@@ -737,7 +755,21 @@ const executeWithRetry = <Error extends HttpClientError.HttpClientError | Cause.
 
 const joinUrl = (baseUrl: string | undefined, path: string): string => {
   if (baseUrl === undefined) return path;
+  if (URL.canParse(path)) throw new AbsolutePathWithBaseUrl(baseUrl, path);
   return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+};
+
+const splitPathUrlParams = (path: string): { readonly path: string; readonly urlParams: UrlParams.UrlParams } => {
+  const fragmentIndex = path.indexOf("#");
+  const beforeFragment = fragmentIndex === -1 ? path : path.slice(0, fragmentIndex);
+  const fragment = fragmentIndex === -1 ? "" : path.slice(fragmentIndex);
+  const queryIndex = beforeFragment.indexOf("?");
+  if (queryIndex === -1) return { path, urlParams: UrlParams.empty };
+
+  return {
+    path: `${beforeFragment.slice(0, queryIndex)}${fragment}`,
+    urlParams: UrlParams.fromInput(new URLSearchParams(beforeFragment.slice(queryIndex + 1))),
+  };
 };
 
 const fillPath = (path: string, pathArguments: ReadonlyArray<string>): string => {
@@ -770,7 +802,11 @@ const specificity = (rule: AnyResponseRule): number => Object.keys(rule.match.he
 const setResponseRule = (
   rules: ReadonlyArray<AnyResponseRule>,
   rule: AnyResponseRule,
-): ReadonlyArray<AnyResponseRule> => [rule, ...rules.filter((candidate) => candidate.match.key !== rule.match.key)];
+): ReadonlyArray<AnyResponseRule> => {
+  const index = rules.findIndex((candidate) => candidate.match.key === rule.match.key);
+  if (index === -1) return [rule, ...rules];
+  return rules.map((candidate, candidateIndex) => (candidateIndex === index ? rule : candidate));
+};
 
 const validateUniqueResponseKeys = (rules: ReadonlyArray<AnyResponseRule>, owner: "api" | "request"): void => {
   const keys = new Set<string>();
@@ -783,14 +819,10 @@ const validateUniqueResponseKeys = (rules: ReadonlyArray<AnyResponseRule>, owner
 const mergeResponseRules = (
   defaults: ReadonlyArray<AnyResponseRule>,
   overrides: ReadonlyArray<AnyResponseRule>,
-): ReadonlyArray<AnyResponseRule> => {
-  let merged = defaults;
-  for (let index = overrides.length - 1; index >= 0; index -= 1) {
-    const rule = overrides[index];
-    if (rule !== undefined) merged = setResponseRule(merged, rule);
-  }
-  return merged;
-};
+): ReadonlyArray<AnyResponseRule> => [
+  ...overrides,
+  ...defaults.filter((rule) => !overrides.some((override) => override.match.key === rule.match.key)),
+];
 
 const findResponseRule = (
   rules: ReadonlyArray<AnyResponseRule>,
@@ -964,10 +996,12 @@ const createRequestInternal = <
   rules: Rules,
 ): Endpoint<Path, Body, Rules, BodyReady> => {
   const endpoint = (...pathArguments: PathArguments<Path>) => {
+    const filled = splitPathUrlParams(fillPath(definition.path, pathArguments));
     const baseHeaders = Headers.fromInput(definition.baseOptions?.headers);
     const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
     const baseParams = UrlParams.fromInput(definition.baseOptions?.urlParams ?? {});
-    const urlParams = UrlParams.setAll(baseParams, definition.urlParams ?? {});
+    const pathParams = UrlParams.setAll(baseParams, filled.urlParams);
+    const urlParams = UrlParams.setAll(pathParams, definition.urlParams ?? {});
     const requestTransforms = [definition.baseOptions?.transformRequest, definition.transformRequest].filter(
       (transform): transform is NonNullable<typeof transform> => transform !== undefined,
     );
@@ -978,7 +1012,7 @@ const createRequestInternal = <
       definition.retry ?? definition.retries ?? definition.baseOptions?.retry ?? definition.baseOptions?.retries,
     );
 
-    return makePlan<Body, Rules, BodyReady>({ ...definition, path: fillPath(definition.path, pathArguments) }, rules, {
+    return makePlan<Body, Rules, BodyReady>({ ...definition, path: filled.path }, rules, {
       baseUrl: definition.baseUrl,
       body: definition.defaultBody,
       hasBody: definition.defaultBody !== undefined,

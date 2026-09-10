@@ -31,7 +31,8 @@ const users = getUsers().pipe(
 );
 ```
 
-Colon-prefixed placeholders become positional endpoint arguments and are URL-encoded. Placeholders can occupy a full
+Colon-prefixed placeholders become positional endpoint arguments and are URL-encoded. Placeholder names start with an
+ASCII letter or underscore and may then contain ASCII letters, digits, or underscores. Placeholders can occupy a full
 segment or appear inside one, such as `/files/:name.:ext` or `/v:version/users`. A runtime arity check rejects degraded
 or untyped calls instead of sending unresolved placeholders:
 
@@ -50,6 +51,11 @@ A backslash escapes a literal colon that would otherwise look like a placeholder
 ```ts
 path: "/users/:userId\\:archive"; // getUser(userId) sends /users/<encoded-id>:archive
 ```
+
+An API base URL is a literal prefix rather than a WHATWG URL-resolution base: `https://example.test/v1` plus `/users`
+produces `https://example.test/v1/users`. An absolute endpoint path cannot be combined with a base URL and fails as a
+configuration defect instead of producing a concatenated URL. Query parameters written in `path` are normalized into
+the endpoint's query-parameter state, so endpoint options and plan setters can replace them without duplication.
 
 Plans, endpoints, and APIs are pipeable. Plan combinators preserve body typestate and response unions, while
 `mapEndpoint` turns an endpoint into another ordinary endpoint with the same path arguments:
@@ -123,8 +129,8 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
 - API response rules are inherited by every endpoint. This supports APIs with a common `404`, authentication response,
   maintenance response, or other shared response shape.
 - An endpoint response rule replaces an inherited rule with the same unique key.
-- `setResponseSchema` replaces the rule with the same key for one request plan. Other response possibilities stay
-  intact. It may change both the matcher and schema. If the key is new, the rule is added.
+- `setResponseSchema` replaces the rule with the same key in place for one request plan. Other response possibilities
+  and tie-break positions stay intact. It may change both the matcher and schema. If the key is new, the rule is added.
 - Status and header matchers accept exact values or predicates. Exact strings remain convenient, while predicates
   support status ranges and values such as `application/json; charset=utf-8` without introducing schema failures during
   rule selection.

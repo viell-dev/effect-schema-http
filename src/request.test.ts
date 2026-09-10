@@ -2,6 +2,7 @@ import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from 
 import { Cause, Effect, Either, Layer, Match, ParseResult, Schedule, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
+  AbsolutePathWithBaseUrl,
   createApi,
   createRequest,
   DuplicateResponseKey,
@@ -165,6 +166,61 @@ describe("createRequest", () => {
         ),
         Effect.runPromise,
       );
+  });
+
+  it("normalizes query parameters declared in the path before applying overrides", async () => {
+    const getUsers = createApi("https://example.test/v1", {
+      urlParams: { active: "api", locale: "sv" },
+    }).createRequest({
+      method: "GET",
+      path: "/users?active=path&tag=a&tag=b#table",
+      urlParams: { locale: "en" },
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+
+    await getUsers()
+      .setUrlParam("active", "plan")
+      .effect.pipe(
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async (request) => {
+              const url = new URL(request.url);
+              expect(url.pathname).toBe("/v1/users");
+              expect(url.hash).toBe("#table");
+              expect(url.searchParams.getAll("active")).toEqual(["plan"]);
+              expect(url.searchParams.getAll("tag")).toEqual(["a", "b"]);
+              expect(url.searchParams.get("locale")).toBe("en");
+              return Response.json([]);
+            }),
+          ),
+        ),
+        Effect.runPromise,
+      );
+  });
+
+  it("rejects an absolute endpoint path when a base URL is configured", async () => {
+    let sent = false;
+    const getUsers = createApi("https://api.example.test").createRequest({
+      method: "GET",
+      path: "https://mirror.example.test/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+    const result = await getUsers().effect.pipe(
+      Effect.exit,
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async () => {
+            sent = true;
+            return Response.json([]);
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(sent).toBe(false);
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(Cause.squash(result.cause)).toBeInstanceOf(AbsolutePathWithBaseUrl);
   });
 
   it("supports repeated and removed URL params plus plural and removed headers", async () => {
@@ -495,7 +551,7 @@ describe("createRequest", () => {
     expect(result.headers["X-Response-Shape"]).toBeUndefined();
   });
 
-  it("uses declaration order for ties and lets a new plan rule take precedence", async () => {
+  it("preserves tie order when replacing a rule and lets a new plan rule take precedence", async () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
@@ -504,12 +560,16 @@ describe("createRequest", () => {
     const layer = fetchLayer(mockFetch(async () => Response.json({ id: 1, name: "Ada" })));
 
     const declared = await getUser().effect.pipe(Effect.provide(layer), Effect.runPromise);
-    const overridden = await getUser()
+    const replaced = await getUser()
+      .setResponseSchema({ key: "second", status: 200 }, ThinUser)
+      .effect.pipe(Effect.provide(layer), Effect.runPromise);
+    const inserted = await getUser()
       .setResponseSchema({ key: "plan", status: 200 }, User)
       .effect.pipe(Effect.provide(layer), Effect.runPromise);
 
     expect(declared.key).toBe("first");
-    expect(overridden.key).toBe("plan");
+    expect(replaced.key).toBe("first");
+    expect(inserted.key).toBe("plan");
   });
 
   it("decodes text and drains no-body responses before decoding undefined", async () => {

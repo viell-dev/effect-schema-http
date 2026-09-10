@@ -1,4 +1,5 @@
 export {
+  AbsolutePathWithBaseUrl,
   UnhandledResponse,
   RequestBodyNotAllowed,
   RequestBodyRequired,
