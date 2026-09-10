@@ -48,6 +48,7 @@ export {
   type Api,
   type ApiExtensionOptions,
   type ApiOptions,
+  type AnyResponseRule,
   type CachePolicy,
   type DefaultResponseBodyCodec,
   type RetryInput,

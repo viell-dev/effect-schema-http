@@ -407,7 +407,8 @@ export interface ResponseRule<
   readonly codec: Codec;
 }
 
-type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema, ResponseBodyCodecOrDefault>;
+/** General response-rule type for helpers that accept arbitrary rule tuples. */
+export type AnyResponseRule = ResponseRule<ResponseMatcher, AnySchema, ResponseBodyCodecOrDefault>;
 
 type CodecOptions<S extends AnySchema, Codec extends ResponseBodyCodecOrDefault> = Codec extends AnyResponseBodyCodec
   ? Codec["name"] extends "none"
@@ -1973,6 +1974,22 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
           ? { times: overrides.retries }
           : (options.retry ?? (options.retries !== undefined ? { times: options.retries } : undefined)));
       const responses = mergeResponseRules(options.responses ?? [], overrides.responses ?? []);
+      const responseCodec = overrides.responseCodec ?? options.responseCodec;
+      const unhandledResponseBody = overrides.unhandledResponseBody ?? options.unhandledResponseBody;
+      const cache = overrides.cache ?? options.cache;
+      const timeout = overrides.timeout ?? options.timeout;
+      const transformRequest =
+        baseRequestTransform === undefined
+          ? overrideRequestTransform
+          : overrideRequestTransform === undefined
+            ? baseRequestTransform
+            : (request: HttpClientRequest.HttpClientRequest) => overrideRequestTransform(baseRequestTransform(request));
+      const transformClient =
+        baseClientTransform === undefined
+          ? overrideClientTransform
+          : overrideClientTransform === undefined
+            ? baseClientTransform
+            : (client: HttpClient.HttpClient) => overrideClientTransform(baseClientTransform(client));
 
       return createApi<MergeResponseRules<Defaults, Overrides>>(overrides.baseUrl ?? baseUrl, {
         headers: setHeaderEntries(
@@ -1983,23 +2000,13 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
           removeQueryParams(queryParamsFromInput(options.urlParams ?? {}), overrides.removeUrlParams),
           overrides.urlParams ?? {},
         ),
-        responseCodec: overrides.responseCodec ?? options.responseCodec,
-        unhandledResponseBody: overrides.unhandledResponseBody ?? options.unhandledResponseBody,
-        cache: overrides.cache ?? options.cache,
-        timeout: overrides.timeout ?? options.timeout,
-        retry,
-        transformRequest:
-          baseRequestTransform === undefined
-            ? overrideRequestTransform
-            : overrideRequestTransform === undefined
-              ? baseRequestTransform
-              : (request) => overrideRequestTransform(baseRequestTransform(request)),
-        transformClient:
-          baseClientTransform === undefined
-            ? overrideClientTransform
-            : overrideClientTransform === undefined
-              ? baseClientTransform
-              : (client) => overrideClientTransform(baseClientTransform(client)),
+        ...(responseCodec === undefined ? {} : { responseCodec }),
+        ...(unhandledResponseBody === undefined ? {} : { unhandledResponseBody }),
+        ...(cache === undefined ? {} : { cache }),
+        ...(timeout === undefined ? {} : { timeout }),
+        ...(retry === undefined ? {} : { retry }),
+        ...(transformRequest === undefined ? {} : { transformRequest }),
+        ...(transformClient === undefined ? {} : { transformClient }),
         responses: responses as MergeResponseRules<Defaults, Overrides>,
       });
     },

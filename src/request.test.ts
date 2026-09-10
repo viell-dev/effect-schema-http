@@ -704,7 +704,7 @@ describe("createRequest", () => {
     });
     const layer = fetchLayer(
       mockFetch(async () =>
-        Response.json({ id: 1, name: "Ada" }, { headers: shaped ? { "x-response-shape": "detailed" } : undefined }),
+        Response.json({ id: 1, name: "Ada" }, shaped ? { headers: { "x-response-shape": "detailed" } } : {}),
       ),
     );
 

@@ -37,11 +37,12 @@ const makeNodeClient = (): HttpClient.HttpClient =>
                   incoming.once("error", reject);
                   incoming.once("end", () => {
                     const responseHeaderEntries = entriesFromRawHeaders(incoming.rawHeaders);
-                    const source = new Response(Buffer.concat(chunks), {
+                    const responseInit: ResponseInit = {
                       headers: responseHeaderEntries.map(([name, value]) => [name, value]),
                       status: incoming.statusCode ?? 500,
-                      statusText: incoming.statusMessage,
-                    });
+                      ...(incoming.statusMessage === undefined ? {} : { statusText: incoming.statusMessage }),
+                    };
+                    const source = new Response(Buffer.concat(chunks), responseInit);
                     const clientResponse = HttpClientResponse.fromWeb(request, source);
                     resolve(attachHeaderEntries(clientResponse, responseHeaderEntries));
                   });

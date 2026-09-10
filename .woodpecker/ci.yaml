@@ -1,0 +1,15 @@
+# Run the same verification required before local commits.
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: verify
+    image: node:24-bookworm-slim
+    commands:
+      - corepack enable
+      - pnpm install --frozen-lockfile
+      - pnpm test
+      - pnpm typecheck
+      - pnpm lint
+      - pnpm format:check
+      - pnpm build

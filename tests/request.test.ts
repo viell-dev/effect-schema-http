@@ -117,7 +117,11 @@ describe("request integration", () => {
             sendJson(outgoing, 409, { current: currentUser, requested: body });
             return;
           }
-          currentUser = { ...currentUser, ...body };
+          currentUser = {
+            ...currentUser,
+            ...(body.name === undefined ? {} : { name: body.name }),
+            ...(body.email === undefined ? {} : { email: body.email }),
+          };
           sendJson(outgoing, 200, currentUser);
           return;
         }
