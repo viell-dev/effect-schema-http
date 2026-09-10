@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { SessionToken, UnauthorizedError, type UserId } from "@realworld/domain";
+import { ForbiddenError, SessionToken, UnauthorizedError, type UserId } from "@realworld/domain";
 import { Store } from "./store.js";
 
 const parseAuthHeader = (headerValue: string | undefined): SessionToken | undefined => {
@@ -28,3 +28,22 @@ export const requireSession = (headerValue: string | undefined): Effect.Effect<U
       userId ? Effect.succeed(userId) : Effect.fail(new UnauthorizedError({ message: "a valid session token is required" })),
     ),
   );
+
+/** Requires a session belonging to an admin account: `UnauthorizedError` with no/invalid
+ * session, `ForbiddenError` for a real but non-admin session. */
+export const requireAdmin = (
+  headerValue: string | undefined,
+): Effect.Effect<UserId, UnauthorizedError | ForbiddenError, Store> =>
+  Effect.gen(function* () {
+    const userId = yield* requireSession(headerValue);
+    const store = yield* Store;
+    const account = yield* store.getAccount(userId).pipe(
+      Effect.catchTag("NotFoundError", () =>
+        Effect.fail(new UnauthorizedError({ message: "a valid session token is required" })),
+      ),
+    );
+    if (account.role !== "admin") {
+      return yield* Effect.fail(new ForbiddenError({ message: "this action requires an admin account" }));
+    }
+    return userId;
+  });

@@ -6,7 +6,9 @@
  */
 import { DateTime, Effect, Ref } from "effect";
 import {
-  type Account,
+  Account,
+  type AttachmentId,
+  type AttachmentView,
   type Comment,
   ConflictError,
   type Email,
@@ -21,6 +23,11 @@ import {
   type Username,
 } from "@realworld/domain";
 
+interface StoredAttachment {
+  readonly meta: AttachmentView;
+  readonly bytes: Uint8Array;
+}
+
 interface State {
   readonly accounts: Map<UserId, Account>;
   readonly usernameIndex: Map<Username, UserId>;
@@ -29,6 +36,8 @@ interface State {
   readonly posts: Map<PostId, Post>;
   readonly slugIndex: Map<Slug, PostId>;
   readonly comments: Map<CommentId, Comment>;
+  readonly attachments: Map<AttachmentId, StoredAttachment>;
+  readonly lastCacheRefresh: DateTime.Utc | undefined;
 }
 
 const emptyState: State = {
@@ -39,25 +48,35 @@ const emptyState: State = {
   posts: new Map(),
   slugIndex: new Map(),
   comments: new Map(),
+  attachments: new Map(),
+  lastCacheRefresh: undefined,
 };
 
 export class Store extends Effect.Service<Store>()("Store", {
   effect: Effect.gen(function* () {
     const ref = yield* Ref.make(emptyState);
 
-    const insertAccount = (account: Account) =>
-      Ref.modify(ref, (state): readonly [ConflictError | undefined, State] => {
-        if (state.usernameIndex.has(account.username)) {
-          return [new ConflictError({ message: `username "${account.username}" is already taken` }), state];
+    // The caller never decides `role`: the very first account on a fresh server becomes the
+    // admin, and every account after that is an ordinary member. Keeping that bootstrap rule
+    // here, rather than in the route handler, means there is exactly one place that can ever
+    // grant admin — a route handler cannot accidentally (or otherwise) hand it out.
+    const insertAccount = (draft: Account) =>
+      Ref.modify(ref, (state): readonly [Account | ConflictError, State] => {
+        if (state.usernameIndex.has(draft.username)) {
+          return [new ConflictError({ message: `username "${draft.username}" is already taken` }), state];
         }
-        if (state.emailIndex.has(account.email)) {
-          return [new ConflictError({ message: `email "${account.email}" is already registered` }), state];
+        if (state.emailIndex.has(draft.email)) {
+          return [new ConflictError({ message: `email "${draft.email}" is already registered` }), state];
         }
+        const role = state.accounts.size === 0 ? "admin" : "member";
+        const account = draft.role === role ? draft : new Account({ ...draft, role });
         const accounts = new Map(state.accounts).set(account.id, account);
         const usernameIndex = new Map(state.usernameIndex).set(account.username, account.id);
         const emailIndex = new Map(state.emailIndex).set(account.email, account.id);
-        return [undefined, { ...state, accounts, usernameIndex, emailIndex }];
-      }).pipe(Effect.flatMap((error) => (error ? Effect.fail(error) : Effect.void)));
+        return [account, { ...state, accounts, usernameIndex, emailIndex }];
+      }).pipe(
+        Effect.flatMap((result) => (result instanceof Account ? Effect.succeed(result) : Effect.fail(result))),
+      );
 
     const findAccountByEmail = (email: Email) =>
       Ref.get(ref).pipe(
@@ -200,6 +219,61 @@ export class Store extends Effect.Service<Store>()("Store", {
         return [undefined, { ...state, comments }];
       }).pipe(Effect.flatMap((error) => (error ? Effect.fail(error) : Effect.void)));
 
+    const insertAttachment = (meta: AttachmentView, bytes: Uint8Array) =>
+      Ref.update(ref, (state) => ({
+        ...state,
+        attachments: new Map(state.attachments).set(meta.id, { meta, bytes }),
+      })).pipe(Effect.as(meta));
+
+    const listAttachmentsByPost = (postId: PostId) =>
+      Ref.get(ref).pipe(
+        Effect.map((state) =>
+          Array.from(state.attachments.values())
+            .map((stored) => stored.meta)
+            .filter((meta) => meta.postId === postId)
+            .sort((a, b) => DateTime.toEpochMillis(a.createdAt) - DateTime.toEpochMillis(b.createdAt)),
+        ),
+      );
+
+    const getAttachment = (attachmentId: AttachmentId) =>
+      Ref.get(ref).pipe(
+        Effect.flatMap((state) => {
+          const stored = state.attachments.get(attachmentId);
+          return stored
+            ? Effect.succeed(stored)
+            : Effect.fail(new NotFoundError({ resource: "Attachment", id: attachmentId }));
+        }),
+      );
+
+    const deleteAttachment = (attachmentId: AttachmentId, requesterId: UserId) =>
+      Ref.modify(ref, (state): readonly [NotFoundError | ForbiddenError | undefined, State] => {
+        const stored = state.attachments.get(attachmentId);
+        if (!stored) return [new NotFoundError({ resource: "Attachment", id: attachmentId }), state];
+        const post = state.posts.get(stored.meta.postId);
+        if (post?.authorId !== requesterId) {
+          return [new ForbiddenError({ message: "only the post's author can delete an attachment" }), state];
+        }
+        const attachments = new Map(state.attachments);
+        attachments.delete(attachmentId);
+        return [undefined, { ...state, attachments }];
+      }).pipe(Effect.flatMap((error) => (error ? Effect.fail(error) : Effect.void)));
+
+    const countStats = () =>
+      Ref.get(ref).pipe(
+        Effect.map((state) => ({
+          users: state.accounts.size,
+          posts: state.posts.size,
+          comments: state.comments.size,
+        })),
+      );
+
+    const refreshCache = () =>
+      Effect.gen(function* () {
+        const now = DateTime.unsafeNow();
+        yield* Ref.update(ref, (state) => ({ ...state, lastCacheRefresh: now }));
+        return now;
+      });
+
     return {
       insertAccount,
       findAccountByEmail,
@@ -218,6 +292,12 @@ export class Store extends Effect.Service<Store>()("Store", {
       commentCountByPost,
       getComment,
       deleteComment,
+      insertAttachment,
+      listAttachmentsByPost,
+      getAttachment,
+      deleteAttachment,
+      countStats,
+      refreshCache,
     } as const;
   }),
 }) {}

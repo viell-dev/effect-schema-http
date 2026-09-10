@@ -32,7 +32,15 @@ export const AdminStatsFromBytes = Schema.transformOrFail(Schema.Uint8ArrayFromS
 });
 export type AdminStatsFromBytes = typeof AdminStatsFromBytes.Type;
 
-/** No request or response payload at all — a bare RPC-style admin command. Paired client-side
- * with `ResponseBody.none`, per the library's README: "Use `ResponseBody.none` explicitly for
- * `HEAD`, `204`, or other bodyless responses." */
+/** An optional note logged alongside a cache refresh. The response carries no payload at all —
+ * paired client-side with `ResponseBody.none`, per the library's README: "Use `ResponseBody.none`
+ * explicitly for `HEAD`, `204`, or other bodyless responses." This one deliberately answers with
+ * `205 Reset Content` rather than `204 No Content`: per HTTP semantics, `205` tells the client the
+ * *view that submitted the request* should be reset, which is exactly what the admin page's
+ * "reason" field should do on success — see `packages/web/src/pages/admin.ts`. */
+export const RefreshCacheInput = Schema.Struct({
+  reason: Schema.optional(Schema.String.pipe(Schema.maxLength(280))),
+});
+export type RefreshCacheInput = typeof RefreshCacheInput.Type;
+
 export const CacheRefreshed = Schema.Void;

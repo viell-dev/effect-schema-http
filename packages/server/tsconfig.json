@@ -4,7 +4,12 @@
     "rootDir": "src",
     "outDir": "dist",
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    // This @types/node version doesn't ambiently declare the WHATWG `File`/`FormData`/`Request`
+    // globals Node itself provides at runtime (they come from `undici` under the hood but aren't
+    // re-exported as globals by these particular type declarations). Adding "DOM" pulls in their
+    // types from lib.dom.d.ts instead, which happens to describe the same runtime objects.
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["src"]
 }

@@ -2,18 +2,18 @@ import * as http from "node:http";
 import { Effect, Layer } from "effect";
 import * as routes from "./routes.js";
 import { Store } from "./store.js";
-import type { JsonResponse } from "./httpError.js";
+import type { RouteResponse } from "./httpError.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
-const MAX_BODY_BYTES = 1_000_000;
+const MAX_BODY_BYTES = 6_000_000;
 
 const StoreLayer = Store.Default;
 const runtime = Layer.toRuntime(StoreLayer).pipe(Effect.scoped, Effect.runSync);
 
-const run = <E>(effect: Effect.Effect<JsonResponse, E, Store>): Promise<JsonResponse> =>
-  Effect.runPromise(effect.pipe(Effect.provide(runtime)) as Effect.Effect<JsonResponse, E>);
+const run = <E>(effect: Effect.Effect<RouteResponse, E, Store>): Promise<RouteResponse> =>
+  Effect.runPromise(effect.pipe(Effect.provide(runtime)) as Effect.Effect<RouteResponse, E>);
 
-const readJsonBody = (req: http.IncomingMessage): Promise<unknown> =>
+const readRawBody = (req: http.IncomingMessage): Promise<Buffer> =>
   new Promise((resolve, reject) => {
     const chunks: Array<Buffer> = [];
     let size = 0;
@@ -26,76 +26,148 @@ const readJsonBody = (req: http.IncomingMessage): Promise<unknown> =>
       }
       chunks.push(chunk);
     });
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (raw.trim().length === 0) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        resolve({ __invalidJson: raw });
-      }
-    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
+
+const parseJsonBody = (raw: Buffer): unknown => {
+  const text = raw.toString("utf8");
+  if (text.trim().length === 0) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { __invalidJson: text };
+  }
+};
+
+/** Node's own `http` module has no multipart parser; building a WHATWG `Request` from the raw
+ * body and using its standard `.formData()` avoids reaching for a third-party dependency just for
+ * this one legacy-shaped upload endpoint. */
+const parseFormDataBody = (raw: Buffer, contentType: string): Promise<FormData> =>
+  new Request("http://localhost/", {
+    method: "POST",
+    headers: { "content-type": contentType },
+    body: new Uint8Array(raw),
+  }).formData();
+
+type BodyMode = "json" | "formData" | "none";
 
 interface Route {
   readonly method: string;
   readonly pattern: RegExp;
+  readonly bodyMode: BodyMode;
   readonly handle: (
     params: ReadonlyArray<string>,
     query: URLSearchParams,
     authHeader: string | undefined,
-    json: unknown,
-  ) => Promise<JsonResponse>;
+    body: unknown,
+  ) => Promise<RouteResponse>;
 }
 
 const routeTable: ReadonlyArray<Route> = [
-  { method: "POST", pattern: /^\/api\/users$/, handle: (_p, _q, _a, json) => run(routes.register(json)) },
-  { method: "POST", pattern: /^\/api\/users\/login$/, handle: (_p, _q, _a, json) => run(routes.login(json)) },
-  { method: "GET", pattern: /^\/api\/user$/, handle: (_p, _q, auth) => run(routes.currentUser(auth)) },
+  { method: "POST", pattern: /^\/api\/users$/, bodyMode: "json", handle: (_p, _q, _a, json) => run(routes.register(json)) },
+  {
+    method: "POST",
+    pattern: /^\/api\/users\/login$/,
+    bodyMode: "json",
+    handle: (_p, _q, _a, json) => run(routes.login(json)),
+  },
+  { method: "GET", pattern: /^\/api\/user$/, bodyMode: "none", handle: (_p, _q, auth) => run(routes.currentUser(auth)) },
   {
     method: "GET",
     pattern: /^\/api\/blogs\/([^/]+)$/,
+    bodyMode: "none",
     handle: ([username], _q, auth) => run(routes.getBlog(username!, auth)),
   },
   {
     method: "GET",
+    pattern: /^\/api\/blogs\/([^/]+)\/feed\.atom$/,
+    bodyMode: "none",
+    handle: ([username]) => run(routes.getBlogFeed(username!)),
+  },
+  {
+    method: "GET",
     pattern: /^\/api\/posts$/,
+    bodyMode: "none",
     handle: (_p, query) => run(routes.listFeed(query.get("page") ?? undefined, query.get("limit") ?? undefined)),
   },
-  { method: "POST", pattern: /^\/api\/posts$/, handle: (_p, _q, auth, json) => run(routes.createPost(auth, json)) },
+  {
+    method: "POST",
+    pattern: /^\/api\/posts$/,
+    bodyMode: "json",
+    handle: (_p, _q, auth, json) => run(routes.createPost(auth, json)),
+  },
   {
     method: "GET",
     pattern: /^\/api\/posts\/([^/]+)$/,
+    bodyMode: "none",
     handle: ([slug], _q, auth) => run(routes.getPost(slug!, auth)),
   },
   {
     method: "PUT",
     pattern: /^\/api\/posts\/([^/]+)$/,
+    bodyMode: "json",
     handle: ([slug], _q, auth, json) => run(routes.updatePost(slug!, auth, json)),
   },
   {
     method: "DELETE",
     pattern: /^\/api\/posts\/([^/]+)$/,
+    bodyMode: "none",
     handle: ([slug], _q, auth) => run(routes.deletePost(slug!, auth)),
   },
   {
     method: "GET",
     pattern: /^\/api\/posts\/([^/]+)\/comments$/,
+    bodyMode: "none",
     handle: ([slug], _q, auth) => run(routes.listComments(slug!, auth)),
   },
   {
     method: "POST",
     pattern: /^\/api\/posts\/([^/]+)\/comments$/,
+    bodyMode: "json",
     handle: ([slug], _q, auth, json) => run(routes.createComment(slug!, auth, json)),
   },
   {
     method: "DELETE",
     pattern: /^\/api\/posts\/([^/]+)\/comments\/([^/]+)$/,
+    bodyMode: "none",
     handle: ([slug, commentId], _q, auth) => run(routes.deleteComment(slug!, commentId!, auth)),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/posts\/([^/]+)\/attachments$/,
+    bodyMode: "none",
+    handle: ([slug], _q, auth) => run(routes.listAttachments(slug!, auth)),
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/posts\/([^/]+)\/attachments$/,
+    bodyMode: "formData",
+    handle: ([slug], _q, auth, formData) => run(routes.uploadAttachment(slug!, auth, formData as FormData)),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/posts\/([^/]+)\/attachments\/([^/]+)$/,
+    bodyMode: "none",
+    handle: ([slug, attachmentId], _q, auth) => run(routes.getAttachmentBytes(slug!, attachmentId!, auth)),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/api\/posts\/([^/]+)\/attachments\/([^/]+)$/,
+    bodyMode: "none",
+    handle: ([slug, attachmentId], _q, auth) => run(routes.deleteAttachment(slug!, attachmentId!, auth)),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/admin\/stats$/,
+    bodyMode: "none",
+    handle: (_p, _q, auth) => run(routes.adminStats(auth)),
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/admin\/cache\/refresh$/,
+    bodyMode: "json",
+    handle: (_p, _q, auth, json) => run(routes.adminRefreshCache(auth, json)),
   },
 ];
 
@@ -127,28 +199,44 @@ const server = http.createServer((req, res) => {
 
   const route = routeTable.find((candidate) => candidate.method === method && candidate.pattern.test(url.pathname));
 
-  const respond = (status: number, body: unknown) => {
-    const payload = body === null || body === undefined ? "" : JSON.stringify(body);
-    res.writeHead(status, { ...CORS_HEADERS, "content-type": "application/json" });
-    res.end(payload);
-    console.log(`${method} ${url.pathname} -> ${status} (${Date.now() - start}ms)`);
+  const respond = (response: RouteResponse) => {
+    if (response.kind === "empty") {
+      res.writeHead(response.status, CORS_HEADERS);
+      res.end();
+    } else if (response.kind === "json") {
+      const payload = response.body === undefined ? "" : JSON.stringify(response.body);
+      res.writeHead(response.status, { ...CORS_HEADERS, "content-type": "application/json" });
+      res.end(payload);
+    } else {
+      // "text" and "bytes" both write their body as-is; Node's `res.end` accepts a string or a
+      // Buffer/Uint8Array either way.
+      res.writeHead(response.status, { ...CORS_HEADERS, "content-type": response.contentType });
+      res.end(response.body);
+    }
+    console.log(`${method} ${url.pathname} -> ${response.status} (${Date.now() - start}ms)`);
   };
 
   if (!route) {
-    respond(404, { _tag: "NotFoundError", resource: "Route", id: url.pathname });
+    respond({ kind: "json", status: 404, body: { _tag: "NotFoundError", resource: "Route", id: url.pathname } });
     return;
   }
 
   const params = route.pattern.exec(url.pathname)?.slice(1) ?? [];
   const authHeader = req.headers.authorization;
-  const needsBody = method === "POST" || method === "PUT";
 
-  (needsBody ? readJsonBody(req) : Promise.resolve(undefined))
-    .then((json) => route.handle(params, url.searchParams, authHeader, json))
-    .then(({ status, body }) => respond(status, body))
+  const bodyPromise: Promise<unknown> =
+    route.bodyMode === "none"
+      ? Promise.resolve(undefined)
+      : readRawBody(req).then((raw) =>
+          route.bodyMode === "formData" ? parseFormDataBody(raw, req.headers["content-type"] ?? "") : parseJsonBody(raw),
+        );
+
+  bodyPromise
+    .then((body) => route.handle(params, url.searchParams, authHeader, body))
+    .then(respond)
     .catch((error: unknown) => {
       console.error("unhandled server error", error);
-      respond(500, { message: "internal server error" });
+      respond({ kind: "json", status: 500, body: { message: "internal server error" } });
     });
 });
 
