@@ -1,17 +1,18 @@
 /**
- * Browser-side session state (token + profile), persisted to `localStorage` and exposed as a
- * tiny pub-sub store so pages can re-render on login/logout without a UI framework.
+ * Browser-side session state (token + profile + role), persisted to `localStorage` and exposed
+ * as a tiny pub-sub store so pages can re-render on login/logout without a UI framework.
  */
 import { Schema } from "effect";
-import { type AuthResponse, Profile, SessionToken } from "@realworld/domain";
+import { AdminRole, Profile, SessionToken } from "@realworld/domain";
 
 const STORAGE_KEY = "realworld:session";
 
-const StoredSession = Schema.Struct({ token: SessionToken, profile: Profile });
+const StoredSession = Schema.Struct({ token: SessionToken, profile: Profile, role: AdminRole });
 
 export interface Session {
   readonly token: SessionToken;
   readonly profile: Profile;
+  readonly role: AdminRole;
 }
 
 let current: Session | undefined = load();
@@ -30,9 +31,9 @@ function load(): Session | undefined {
 
 export const getSession = (): Session | undefined => current;
 
-export const setSession = (auth: AuthResponse): void => {
-  current = auth;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(Schema.encodeSync(StoredSession)(auth)));
+export const setSession = (session: Session): void => {
+  current = session;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(Schema.encodeSync(StoredSession)(session)));
   for (const listener of listeners) listener(current);
 };
 

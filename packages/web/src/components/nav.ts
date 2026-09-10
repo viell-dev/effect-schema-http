@@ -18,6 +18,7 @@ export const renderNav = (): HTMLElement => {
             { class: "nav-session" },
             h("a", { href: `#/blog/${session.profile.username}` }, session.profile.username),
             h("a", { href: "#/new" }, "New post"),
+            session.role === "admin" ? h("a", { href: "#/admin" }, "Admin") : null,
             h(
               "a",
               {

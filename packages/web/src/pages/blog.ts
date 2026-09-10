@@ -38,7 +38,13 @@ export const renderBlogPage = async (root: HTMLElement, username: string): Promi
           "header",
           { class: "blog-header" },
           h("h1", {}, body.profile.displayName),
-          h("p", { class: "post-meta" }, `@${body.profile.username}`),
+          h(
+            "p",
+            { class: "post-meta" },
+            `@${body.profile.username}`,
+            " · ",
+            h("a", { href: `#/blog/${username}/feed` }, "Atom feed"),
+          ),
           body.profile.bio ? h("p", {}, body.profile.bio) : null,
         ),
         isOwnBlog

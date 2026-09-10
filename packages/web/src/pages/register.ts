@@ -7,7 +7,7 @@ import { register } from "../api.js";
 import { run } from "../runtime.js";
 import { decodeForm } from "../decodeForm.js";
 import { domainErrorMessage } from "../errors.js";
-import { setSession } from "../session.js";
+import { establishSession } from "../establishSession.js";
 import { navigate } from "../router.js";
 
 export const renderRegisterPage = (root: HTMLElement): void => {
@@ -57,8 +57,7 @@ export const renderRegisterPage = (root: HTMLElement): void => {
             }
             Match.value(result).pipe(
               Match.tag("created", ({ body }) => {
-                setSession(body);
-                navigate("/");
+                void establishSession(body).then(() => navigate("/"));
               }),
               Match.orElse(() => showError("Unexpected response from the server.")),
             );
