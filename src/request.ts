@@ -318,20 +318,36 @@ export class RequestBodyRequired extends Data.TaggedError("RequestBodyRequired")
   readonly reason: "Call setBody before reading effect";
 }> {}
 
-export class InvalidPathArguments extends Data.TaggedError("InvalidPathArguments")<{
-  readonly path: string;
-  readonly expected: number;
-  readonly received: number;
-}> {}
+export class InvalidPathArguments extends Error {
+  readonly name = "InvalidPathArguments";
 
-export class DuplicateResponseKey extends Data.TaggedError("DuplicateResponseKey")<{
-  readonly key: string;
-  readonly owner: "api" | "request";
-}> {}
+  constructor(
+    readonly path: string,
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(`Path ${JSON.stringify(path)} requires ${expected} arguments, received ${received}`);
+  }
+}
 
-export class InvalidRetryCount extends Data.TaggedError("InvalidRetryCount")<{
-  readonly retries: number;
-}> {}
+export class DuplicateResponseKey extends Error {
+  readonly name = "DuplicateResponseKey";
+
+  constructor(
+    readonly key: string,
+    readonly owner: "api" | "request",
+  ) {
+    super(`Duplicate response key ${JSON.stringify(key)} in ${owner} declaration`);
+  }
+}
+
+export class InvalidRetryCount extends Error {
+  readonly name = "InvalidRetryCount";
+
+  constructor(readonly retries: number) {
+    super(`Retry count must be a finite, non-negative integer; received ${String(retries)}`);
+  }
+}
 
 export class AbsolutePathWithBaseUrl extends Error {
   readonly name = "AbsolutePathWithBaseUrl";
@@ -386,6 +402,22 @@ export interface RequestOptions {
   readonly transformClient?: (client: HttpClient.HttpClient) => HttpClient.HttpClient;
 }
 
+type ExactAssignable<Provided, Expected> = Expected extends unknown
+  ? Provided extends Expected
+    ? Provided extends object
+      ? Exclude<keyof Provided, keyof Expected> extends never
+        ? Provided
+        : never
+      : Provided
+    : never
+  : never;
+
+type DefaultBodyValue<Body extends AnySchema, Provided> = [
+  ExactAssignable<Provided, Schema.Schema.Type<Body>>,
+] extends [never]
+  ? Schema.Schema.Type<Body>
+  : Provided;
+
 export interface ApiOptions<Defaults extends ReadonlyArray<AnyResponseRule> = readonly []> extends RequestOptions {
   readonly responses?: Defaults & UniqueResponseRules<Defaults>;
 }
@@ -408,9 +440,7 @@ export interface RequestDefinition<
   readonly defaultBody?: Uppercase<Method> extends "GET" | "HEAD"
     ? never
     : Body extends AnySchema
-      ? DefaultBody extends Schema.Schema.Type<Body>
-        ? DefaultBody
-        : never
+      ? DefaultBodyValue<Body, DefaultBody>
       : never;
   readonly responses?: Rules & UniqueResponseRules<Rules>;
 }
@@ -710,7 +740,7 @@ const normalizeRetry = (retry: RetryPolicy | number | undefined): RetryPolicy | 
   if (retry === undefined) return undefined;
   const policy = typeof retry === "number" ? { times: retry } : retry;
   if (!Number.isFinite(policy.times) || !Number.isInteger(policy.times) || policy.times < 0) {
-    throw new InvalidRetryCount({ retries: policy.times });
+    throw new InvalidRetryCount(policy.times);
   }
   return policy.times === 0 ? undefined : policy;
 };
@@ -814,7 +844,7 @@ const fillPath = (path: string, pathArguments: ReadonlyArray<string>): string =>
   const parameterPattern = /(?<!\\):([A-Za-z_][A-Za-z0-9_]*)/g;
   const expected = Array.from(path.matchAll(parameterPattern)).length;
   if (pathArguments.length !== expected) {
-    throw new InvalidPathArguments({ path, expected, received: pathArguments.length });
+    throw new InvalidPathArguments(path, expected, pathArguments.length);
   }
 
   let argumentIndex = 0;
@@ -849,7 +879,7 @@ const setResponseRule = (
 const validateUniqueResponseKeys = (rules: ReadonlyArray<AnyResponseRule>, owner: "api" | "request"): void => {
   const keys = new Set<string>();
   for (const rule of rules) {
-    if (keys.has(rule.match.key)) throw new DuplicateResponseKey({ key: rule.match.key, owner });
+    if (keys.has(rule.match.key)) throw new DuplicateResponseKey(rule.match.key, owner);
     keys.add(rule.match.key);
   }
 };

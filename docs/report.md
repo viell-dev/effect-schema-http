@@ -2,7 +2,8 @@
 
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
-in [`README.md`](../README.md) and [`design.md`](design.md).
+in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes in §3 track subsequent fixes on
+`sketch-request-builder`; the current suite has 50 tests across five files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -17,7 +18,7 @@ envelope union keyed by a user-chosen string, and a cold `Effect` that is only a
 and consistently executed. The type-level machinery (`MergeResponseRules`, `SetResponseRule`, `PathArguments`,
 `UniqueResponseRules`) is unusually disciplined for a first pass, and the doc is honest about what is deferred.
 
-The problems are concentrated in three places:
+The confirmed defects were concentrated in three places and have since been fixed in §3:
 
 1. **Type/runtime disagreements.** Four places where the types promise something the runtime does not deliver, one of
    which (`R = unknown`) makes a whole class of endpoints unusable.
@@ -323,7 +324,7 @@ sends headers promptly and then stalls the body is unbounded.
 The timeout now wraps transport execution and final response decoding as one attempt. Slow response bodies therefore
 fail with `TimeoutException`, which participates in the same retry budget when error retries are enabled.
 
-### 3.10 `defaultBody` accepts excess properties and reports failures badly
+### 3.10 ~~`defaultBody` accepts excess properties and reports failures badly~~ — fixed
 
 **Severity: low.**
 
@@ -340,14 +341,14 @@ exist"), because it flows through a plain parameter. `defaultBody` is validated 
 (`DefaultBody extends Schema.Schema.Type<Body> ? DefaultBody : never`), which is an assignability check and does not
 trigger excess property checking. The extra key is silently dropped by the schema at encode time.
 
-Worse, when `defaultBody` genuinely does not match, the diagnostic is:
+Previously, when `defaultBody` genuinely did not match, the diagnostic was:
 
 > Type `{ action: number; }` is not assignable to type `undefined`.
 
-The `never` from the conditional unions with `undefined` from the optional property, so the compiler reports the
-optionality rather than the mismatch. This is the least discoverable error message in the API.
+`defaultBody` now uses an exact assignability check against the schema type. Excess object-literal properties and field
+type mismatches point at the supplied value rather than collapsing the property type to optional `undefined`.
 
-### 3.11 Validation errors are thrown synchronously as `Data.TaggedError`
+### 3.11 ~~Validation errors are thrown synchronously as `Data.TaggedError`~~ — fixed
 
 **Severity: low — a consistency and idiom issue, not a correctness one.**
 
@@ -356,16 +357,11 @@ optionality rather than the mismatch. This is the least discoverable error messa
 `Data.TaggedError` subclasses that are `throw`n from ordinary functions. They can never reach an Effect error channel,
 so their tagged-ness buys nothing — callers must `try`/`catch` them, and `Effect.catchTag` will never see them.
 
-Two coherent positions, either of which is better than the current middle ground:
+The implementation now takes the first of the two coherent positions identified by the review:
 
-- These are **defects** (programmer errors surfaced by degraded or untyped calls). Then they should be plain `Error`
-  subclasses, or thrown via `Effect.die` at the point where an Effect exists, and the doc should say they are defects.
-- These are **failures**. Then `fillPath` must move into the plan's Effect so `InvalidPathArguments` lands in the error
-  channel — which contradicts "a runtime arity check rejects degraded calls" happening at call time.
-
-The first reading matches the design intent; only the representation is inconsistent with it. Note also that
-`InvalidRetryCount` thrown from `setRetries` breaks a `.pipe(...)` chain with an exception mid-expression, which is
-surprising in a library whose selling point is that building a plan does nothing.
+- These are **defects** (programmer errors surfaced by degraded or untyped calls). `InvalidPathArguments`,
+  `InvalidRetryCount`, and `DuplicateResponseKey` are now ordinary `Error` subclasses. The design document explicitly
+  states that they are synchronous configuration defects rather than members of an Effect error channel.
 
 ---
 
@@ -509,23 +505,18 @@ None require changes; all three deserve a sentence in the doc, because each is t
 
 ---
 
-## 5. Test coverage gaps
+## 5. Remaining test coverage gaps
 
 The suite is well constructed — three genuinely different layers, deterministic concurrency tests, real loopback
-servers for integration. Gaps, in rough priority order:
+servers for integration. The §3 remediation added coverage for zero-rule requirements, canonical envelope header keys,
+absolute paths under API bases, declared query strings and base path prefixes, mixed retry failures, slow response
+bodies, rule replacement ordering, incomplete-body runtime protection, and `defaultBody` diagnostics. The remaining
+gaps are:
 
-1. **`R` for the zero-rule case** (§3.1). The existing requirement-type test only covers one rule, which is exactly the
-   shape that works.
-2. **Envelope header keys.** No test reads a header off an envelope whose matcher used a non-lowercase name (§3.2).
-3. **URL construction.** No test for an absolute path under an API base URL (§3.5), a query string in a declared path
-   (§3.6), or a base URL with a path prefix.
-4. **Mixed-failure retry budgets** (§3.8). Both retry tests use a homogeneous failure mode.
-5. **Timeout scope.** The timeout test uses a slow _response_; none uses a slow _body_ (§3.9).
-6. **Rule reordering on replacement** (§3.7).
-7. **Concurrency of one plan.** Nothing asserts that a single plan evaluated concurrently sends independent requests —
+1. **Concurrency of one plan.** Nothing asserts that a single plan evaluated concurrently sends independent requests —
    the core "cold and repeatable" claim is only tested sequentially.
-8. **Interruption of a plan's effect** mid-flight, and what happens to the response body.
-9. **Type-level negative tests for path arity.** `@ts-expect-error` on `getUserPost(a)` and `getUserPost(a, b, c)` would
+2. **Interruption of a plan's effect** mid-flight, and what happens to the response body.
+3. **Type-level negative tests for path arity.** `@ts-expect-error` on `getUserPost(a)` and `getUserPost(a, b, c)` would
    pin the `PathArguments` contract; only the runtime arity check is tested.
 
 ---
@@ -565,10 +556,10 @@ Restating the doc's two, and adding the ones this review raises.
 
 **Raised here:**
 
-3. **Are validation failures defects or failures?** (§3.11) The answer determines whether `InvalidPathArguments` should
-   be a `Data.TaggedError` at all, and whether path filling stays at endpoint-call time.
-4. **Should the body typestate be enforced at runtime, not only in types?** (§3.4) Sending an empty body when a body
-   schema was declared is currently indistinguishable from a deliberate bodyless request.
+3. **Are validation failures defects or failures?** Answered in §3.11: path arity, duplicate keys, and invalid retry
+   counts are synchronous configuration defects represented by ordinary `Error` subclasses.
+4. **Should the body typestate be enforced at runtime, not only in types?** Answered in §3.4: yes; degraded callers
+   receive `RequestBodyRequired` before transport execution.
 5. **Should the envelope expose response metadata beyond headers?** `matched` explains the rule; nothing exposes the
    request that produced the response, redirect history, cookies, or timing. `HttpClientResponse` carries `cookies` and
    `request`; dropping all of it may be more than the "not safely replayable" argument requires.
@@ -583,13 +574,8 @@ Restating the doc's two, and adding the ones this review raises.
 
 ## 8. Recommended order of work
 
-1. Fix `ResponseContextOf` (§3.1) and add the zero-rule requirement test — one-line change, unblocks a whole shape.
-2. Fix the header-casing type (§3.2) and the digit-leading placeholder type (§3.3) — both are type/runtime lies.
-3. Replace the `never` typestate with a branded sentinel (§3.4) and add the matching runtime guard.
-4. Handle absolute paths in `joinUrl` (§3.5) and path-declared query strings (§3.6).
-5. Correct the retry budget (§3.8) and the timeout scope (§3.9), or restate both bounds in `design.md`.
-6. Preserve rule position on replacement (§3.7).
-7. Decide the defect-vs-failure question (§3.11) and make the representation consistent.
-8. Add a licence, a `repository` field, and CI running the five commands from `AGENTS.md`.
-9. Then the design work: `Retry-After`, `Accept`, `extend(baseUrl)`, `RetryPolicy.while`, and the named-path-argument
-   question (§4.1), which is the largest open API decision remaining.
+The original §3 remediation sequence is complete. Remaining work starts outside the scope of this pass:
+
+1. Add a licence, a `repository` field, and CI running the five commands from `AGENTS.md`.
+2. Then discuss the §4 design choices: `Retry-After`, `Accept`, `extend(baseUrl)`, `RetryPolicy.while`, and the named-path
+   argument question (§4.1), which is the largest open API decision remaining.

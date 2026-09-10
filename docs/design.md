@@ -209,6 +209,10 @@ one call site. `.setRetry({ times, schedule, mode })` accepts an Effect `Schedul
 explicit schedule uses jittered exponential backoff rather than immediate repeats. Counts must be finite, non-negative
 integers.
 
+Invalid retry counts, duplicate response keys, and path-argument arity mismatches are synchronous configuration defects
+represented by ordinary `Error` subclasses. They do not enter an Effect error channel, and validation never executes
+the HTTP request.
+
 The transient classification matches `HttpClient.retryTransient`: timeouts and transport failures, plus 408, 429, 500,
 502, 503, and 504 responses. One retry counter and schedule driver are shared across both kinds, so `times: 3` permits
 at most four attempts even when transport errors and transient responses alternate. A mapped transient response is

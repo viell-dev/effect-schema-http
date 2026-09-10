@@ -850,6 +850,25 @@ describe("createRequest", () => {
     expect(bodies).toEqual([{ action: "foo" }, { action: "bar" }]);
   });
 
+  it("checks default bodies against the schema type with useful diagnostics", () => {
+    const Body = Schema.Struct({ action: Schema.String });
+
+    createRequest({
+      method: "POST",
+      path: "https://example.test/actions",
+      body: Body,
+      // @ts-expect-error Object literal may only specify schema properties.
+      defaultBody: { action: "foo", unexpected: true },
+    });
+    createRequest({
+      method: "POST",
+      path: "https://example.test/actions",
+      body: Body,
+      // @ts-expect-error The default body's fields must match the schema type.
+      defaultBody: { action: 1 },
+    });
+  });
+
   it("allows cache and retry defaults to be overridden at a call site", async () => {
     let attempts = 0;
     const getUsers = createApi("https://example.test", {
