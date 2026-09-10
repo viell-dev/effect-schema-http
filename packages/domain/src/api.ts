@@ -4,9 +4,10 @@
  * (e.g. registration takes a plaintext `Password`; nothing about `Account` should).
  */
 import { Schema } from "effect";
-import { PostBody, PostTitle, PostVisibility } from "./post.js";
+import { PostBody, PostTitle, PostView, PostVisibility } from "./post.js";
 import { Bio, DisplayName, Email, NonZeroPositiveInt, Password, Username } from "./primitives.js";
-import { CommentBody } from "./comment.js";
+import { CommentBody, CommentView } from "./comment.js";
+import { Profile } from "./user.js";
 
 export const RegisterInput = Schema.Struct({
   username: Username,
@@ -47,3 +48,21 @@ export const PageQuery = Schema.Struct({
   limit: Schema.optionalWith(NonZeroPositiveInt, { default: () => 20 as NonZeroPositiveInt }),
 });
 export type PageQuery = typeof PageQuery.Type;
+
+export const BlogResponse = Schema.Struct({
+  profile: Profile,
+  posts: Schema.Array(PostView),
+});
+export type BlogResponse = typeof BlogResponse.Type;
+
+export const FeedResponse = Schema.Struct({
+  posts: Schema.Array(PostView),
+  page: NonZeroPositiveInt,
+  limit: NonZeroPositiveInt,
+});
+export type FeedResponse = typeof FeedResponse.Type;
+
+export const CommentsResponse = Schema.Struct({
+  comments: Schema.Array(CommentView),
+});
+export type CommentsResponse = typeof CommentsResponse.Type;
