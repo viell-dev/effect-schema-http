@@ -32,6 +32,7 @@ export {
   setHeader,
   setHeaders,
   setResponseCodec,
+  setUnhandledResponseBody,
   setResponseSchema,
   setRetries,
   setRetry,
@@ -70,6 +71,7 @@ export {
   type ResponseEnvelope,
   type ResponseOf,
   type ResponseRule,
+  type UnhandledResponseBodyPolicy,
 } from "./request.js";
 
 export {

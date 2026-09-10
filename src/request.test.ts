@@ -93,6 +93,20 @@ describe("createRequest", () => {
     expectTypeOf<ThinResult["body"]>().toEqualTypeOf<ReadonlyArray<typeof ThinUser.Type>>();
   });
 
+  it("constructs a fresh Effect only when a plan effect is read", () => {
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+    const plan = getUser().setHeader("x-source", "test").setUrlParam("view", "full");
+    const descriptor = Object.getOwnPropertyDescriptor(plan, "effect");
+
+    expect(descriptor?.get).toBeTypeOf("function");
+    expect(descriptor?.value).toBeUndefined();
+    expect(plan.effect).not.toBe(plan.effect);
+  });
+
   it("infers, validates, and encodes placeholders anywhere in a path", async () => {
     const getFile = createRequest({
       method: "GET",
@@ -1424,16 +1438,17 @@ describe("createRequest", () => {
     expect(requests.map((request) => request.headers.get("cache-control"))).toEqual(["no-store", "no-store"]);
   });
 
-  it("fails with the untouched response when no rule matches", async () => {
+  it("drains an unhandled response body by default", async () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
       responses: [response({ _tag: "ok", status: 200 }, User)] as const,
     });
+    const source = new Response("later", { status: 503 });
 
     const result = await getUser().effect.pipe(
       Effect.either,
-      Effect.provide(fetchLayer(mockFetch(async () => new Response("later", { status: 503 })))),
+      Effect.provide(fetchLayer(mockFetch(async () => source))),
       Effect.runPromise,
     );
 
@@ -1443,8 +1458,50 @@ describe("createRequest", () => {
     }
     if (Either.isLeft(result) && result.left instanceof UnhandledResponse) {
       expect(result.left.response.status).toBe(503);
+    }
+    expect(source.bodyUsed).toBe(true);
+
+    const emptyResult = await createRequest({ method: "GET", path: "https://example.test/no-content" })().effect.pipe(
+      Effect.either,
+      Effect.provide(fetchLayer(mockFetch(async () => new Response(null, { status: 204 })))),
+      Effect.runPromise,
+    );
+    expect(Either.isLeft(emptyResult)).toBe(true);
+    if (Either.isLeft(emptyResult) && emptyResult.left instanceof UnhandledResponse) {
+      expect(emptyResult.left.status).toBe(204);
+    }
+  });
+
+  it("can retain an unhandled response body for caller-owned recovery", async () => {
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+    const source = new Response("later", { status: 503 });
+
+    const result = await getUser()
+      .setUnhandledResponseBody("retain")
+      .effect.pipe(Effect.either, Effect.provide(fetchLayer(mockFetch(async () => source))), Effect.runPromise);
+
+    expect(source.bodyUsed).toBe(false);
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result) && result.left instanceof UnhandledResponse) {
       expect(await Effect.runPromise(result.left.response.text)).toBe("later");
     }
+
+    const discardedSource = new Response("ignore me", { status: 503 });
+    const discarded = await getUser()
+      .setUnhandledResponseBody("retain")
+      .effect.pipe(
+        Effect.either,
+        Effect.provide(fetchLayer(mockFetch(async () => discardedSource))),
+        Effect.runPromise,
+      );
+    if (Either.isLeft(discarded) && discarded.left instanceof UnhandledResponse) {
+      await Effect.runPromise(discarded.left.discard);
+    }
+    expect(discardedSource.bodyUsed).toBe(true);
   });
 
   it("wraps schema failures with response and rule context", async () => {

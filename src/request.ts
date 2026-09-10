@@ -22,6 +22,7 @@ import {
   ScheduleDecision,
   ScheduleIntervals,
   Schema,
+  Stream,
 } from "effect";
 import { dual } from "effect/Function";
 import type * as Pipeable from "effect/Pipeable";
@@ -489,6 +490,12 @@ export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
   get headers(): Headers.Headers {
     return this.response.headers;
   }
+
+  get discard(): Effect.Effect<void, HttpClientError.ResponseError> {
+    return Stream.runDrain(this.response.stream).pipe(
+      Effect.catchAll((error) => (error.reason === "EmptyBody" ? Effect.void : Effect.fail(error))),
+    );
+  }
 }
 
 export class RequestBodyNotAllowed extends Data.TaggedError("RequestBodyNotAllowed")<{
@@ -582,6 +589,8 @@ export interface CachePolicy {
   readonly fetch?: RequestCache;
 }
 
+export type UnhandledResponseBodyPolicy = "discard" | "retain";
+
 export type RetryInput =
   HttpClientResponse.HttpClientResponse | HttpClientError.HttpClientError | Cause.TimeoutException;
 export type RetrySchedule = Schedule.Schedule<unknown, RetryInput, never>;
@@ -598,6 +607,7 @@ export interface RequestOptions {
   readonly headers?: HeaderInput;
   readonly urlParams?: QueryParamsInput;
   readonly responseCodec?: DefaultResponseBodyCodec;
+  readonly unhandledResponseBody?: UnhandledResponseBodyPolicy;
   readonly cache?: CachePolicy;
   readonly timeout?: Duration.DurationInput;
   readonly retry?: RetryPolicy;
@@ -710,6 +720,7 @@ export interface RequestPlan<
   readonly removeHeader: HeaderRemover<RequestPlan<Body, Rules, BodyReady>>;
   readonly setCache: (cache: CachePolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setResponseCodec: (codec: DefaultResponseBodyCodec) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setUnhandledResponseBody: (policy: UnhandledResponseBodyPolicy) => RequestPlan<Body, Rules, BodyReady>;
   readonly setBaseUrl: (baseUrl: string | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setTimeout: (timeout: Duration.DurationInput | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setRetry: (retry: RetryPolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
@@ -852,6 +863,13 @@ export const setResponseCodec =
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.setResponseCodec(codec);
 
+export const setUnhandledResponseBody =
+  (policy: UnhandledResponseBodyPolicy) =>
+  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
+    plan: RequestPlan<Body, Rules, BodyReady>,
+  ): RequestPlan<Body, Rules, BodyReady> =>
+    plan.setUnhandledResponseBody(policy);
+
 export const setBaseUrl =
   (baseUrl: string | undefined) =>
   <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
@@ -959,6 +977,7 @@ interface PlanState {
   readonly headers: HeaderEntries;
   readonly urlParams: QueryParams;
   readonly responseCodec: DefaultResponseBodyCodec;
+  readonly unhandledResponseBody: UnhandledResponseBodyPolicy;
   readonly cache: CachePolicy | undefined;
   readonly timeout: Duration.DurationInput | undefined;
   readonly retry: RetryPolicy | undefined;
@@ -981,6 +1000,7 @@ interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly removeHeader: HeaderRemover<unknown>;
   readonly setCache: (cache: CachePolicy | undefined) => unknown;
   readonly setResponseCodec: (codec: DefaultResponseBodyCodec) => unknown;
+  readonly setUnhandledResponseBody: (policy: UnhandledResponseBodyPolicy) => unknown;
   readonly setBaseUrl: (baseUrl: string | undefined) => unknown;
   readonly setTimeout: (timeout: Duration.DurationInput | undefined) => unknown;
   readonly setRetry: (retry: RetryPolicy | undefined) => unknown;
@@ -1357,7 +1377,7 @@ const makePlan = <
   const update = (next: Partial<PlanState>): RequestPlan<Body, Rules, BodyReady> =>
     makePlan<Body, Rules, BodyReady>(definition, rules, { ...state, ...next });
 
-  const effect =
+  const getEffect = () =>
     definition.body !== undefined && !state.hasBody
       ? Effect.fail(
           new RequestBodyRequired({
@@ -1409,7 +1429,12 @@ const makePlan = <
           > => {
             const headerEntries = getHeaderEntries(raw);
             const rule = findResponseRule(rules, raw.status, raw.headers, headerEntries);
-            if (rule === undefined) return Effect.fail(new UnhandledResponse({ response: raw }));
+            if (rule === undefined) {
+              const error = new UnhandledResponse({ response: raw });
+              return state.unhandledResponseBody === "retain"
+                ? Effect.fail(error)
+                : Effect.zipRight(Effect.ignore(error.discard), Effect.fail(error));
+            }
 
             return Effect.map(decodeResponse(rule, raw, state.responseCodec), (body) => {
               const envelope = {
@@ -1469,6 +1494,7 @@ const makePlan = <
     removeHeader: (name: string, value?: string) => update({ headers: removeHeaderEntry(state.headers, name, value) }),
     setCache: (cache) => update({ cache }),
     setResponseCodec: (responseCodec) => update({ responseCodec }),
+    setUnhandledResponseBody: (unhandledResponseBody) => update({ unhandledResponseBody }),
     setBaseUrl: (baseUrl) => update({ baseUrl }),
     setTimeout: (timeout) => update({ timeout }),
     setRetry: (retry) => update({ retry: normalizeRetry(retry) }),
@@ -1491,7 +1517,9 @@ const makePlan = <
         state,
       );
     },
-    effect,
+    get effect() {
+      return getEffect();
+    },
   } satisfies InternalRequestPlan;
 
   return plan as unknown as RequestPlan<Body, Rules, BodyReady>;
@@ -1543,6 +1571,8 @@ const createRequestInternal = <
       headers,
       urlParams,
       responseCodec: definition.responseCodec ?? definition.baseOptions?.responseCodec ?? ResponseBody.json,
+      unhandledResponseBody:
+        definition.unhandledResponseBody ?? definition.baseOptions?.unhandledResponseBody ?? "discard",
       cache: definition.cache ?? definition.baseOptions?.cache,
       timeout: definition.timeout ?? definition.baseOptions?.timeout,
       retry,
@@ -1618,6 +1648,7 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
           overrides.urlParams ?? {},
         ),
         responseCodec: overrides.responseCodec ?? options.responseCodec,
+        unhandledResponseBody: overrides.unhandledResponseBody ?? options.unhandledResponseBody,
         cache: overrides.cache ?? options.cache,
         timeout: overrides.timeout ?? options.timeout,
         retry,

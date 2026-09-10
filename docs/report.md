@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
-`sketch-request-builder`; the current suite has 61 tests across seven files.
+`sketch-request-builder`; the current suite has 63 tests across seven files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -520,25 +520,28 @@ defaults before same-scope values are applied, permitting an intentional re-add.
 because they perform one mutation at a time. Tests cover full base-URL replacement, preservation and targeted removal
 of inherited values, same-scope re-addition, and per-plan base-URL replacement.
 
-### 4.8 A fresh `Effect` is constructed for every intermediate plan
+### 4.8 ~~A fresh `Effect` is constructed for every intermediate plan~~ — fixed
 
-`makePlan` builds `Effect.gen(...)` eagerly (`src/request.ts:821`), so a five-step combinator chain allocates six
-generator-backed Effects, five of which are discarded. Probed: six distinct objects. This is invisible in correctness
-terms and small in absolute terms, but it is trivially avoidable by making `effect` a getter, and it matters for the
+At review time, `makePlan` built `Effect.gen(...)` eagerly, so a five-step combinator chain allocated six
+generator-backed Effects, five of which were discarded. This was invisible in correctness terms but wasteful for the
 gate/loop patterns the README advertises, where plans are rebuilt per keystroke.
 
-A getter would also let §3.4's runtime check live at the point where `.effect` is actually read.
+`effect` is now a getter. Constructing or transforming a plan allocates no execution Effect; each property read creates
+a fresh lazy Effect that can be executed normally. The §3.4 `RequestBodyRequired` failure is likewise created only when
+an incomplete plan's getter is read. A unit test pins the property descriptor and fresh-per-read behavior.
 
-### 4.9 Unhandled response bodies are never drained
+### 4.9 ~~Unhandled response bodies are never drained~~ — fixed
 
-Probed: after `UnhandledResponse`, `response.bodyUsed` is `false`. This is documented and deliberate — ownership
-transfers to the caller — but it is worth being explicit that the consequence in Node is a leaked `undici` connection
-for every caller who logs the error and moves on, which is the overwhelmingly common recovery path. `HttpClient` here
-carries no `Scope`, so nothing will clean it up.
+At review time, after `UnhandledResponse`, `response.bodyUsed` remained `false`. Ownership transferred to the caller,
+but a caller that only logged the error could retain an `undici` connection until garbage collection.
 
-Consider either draining by default with an opt-in (`UnhandledResponse` currently offers `status` and `headers`
-getters, which is what most recovery code actually wants), or providing a `discard` helper on the error so the correct
-thing is one call away and appears in the doc example.
+Unhandled bodies are now stream-drained by default before the error is emitted. The error still retains the original
+response metadata, but its body has been consumed. `unhandledResponseBody: "retain"` is inherited through API and
+endpoint options, and `setUnhandledResponseBody("retain")` overrides it for one plan when the caller needs to inspect
+the unexpected payload. In retained mode ownership explicitly transfers to the caller; `UnhandledResponse.discard`
+provides the one-call cleanup path. Automatic cleanup ignores a drain failure so it cannot hide the primary
+`UnhandledResponse`, while an explicitly run `discard` Effect reports such failures. Tests pin both default draining
+and retained-body recovery.
 
 ### 4.10 Gate semantics that are correct but sharp
 

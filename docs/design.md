@@ -2,8 +2,9 @@
 
 The library defines an endpoint once, then creates immutable request plans at each call site. Endpoint functions take
 only their required path values; endpoints without placeholders are zero-argument. A plan remains lazy while the caller
-sets a body, query parameters, headers, execution policy, or response schemas; reading `.effect` produces the Effect
-that sends and decodes the request.
+sets a body, query parameters, headers, execution policy, or response schemas; `.effect` is a getter that constructs a
+fresh Effect only when read. Intermediate plans therefore allocate no discarded execution Effects, and a retained plan
+can be read and executed again.
 
 ```ts
 const api = createApi("https://api.example.com", {
@@ -124,10 +125,14 @@ gate. `_tag`, `status`, and `matched` are deliberately redundant: `_tag` is the 
 selected. Effect's `Match` is useful for consuming the result but not for defining the response table: its runtime
 cases erase the schema and context information the request factory needs to retain in its generics.
 
-`UnhandledResponse` retains the untouched `HttpClientResponse`, including its unconsumed body, instead of copying only
-status and headers. Ownership of that live body transfers to the caller, which must consume or cancel it when recovering
-from the error. `ResponseDecodeError` also retains response metadata and the schema cause, although its body has already
-been consumed. Mapped `ResponseBody.none` responses are drained by the library.
+`UnhandledResponse` retains the original `HttpClientResponse` rather than copying only status and headers. Its body is
+drained before the error is emitted by default, releasing the transport resource without buffering the complete body.
+API and endpoint options can select `unhandledResponseBody: "retain"`; the plan-level
+`setUnhandledResponseBody("retain")` form is useful for one diagnostic call. Ownership of that live body then transfers
+to the caller, which must consume it or run `error.discard`. The discard Effect treats an absent body as already clean
+and otherwise reports a response-stream failure to an explicit caller; automatic cleanup preserves the primary
+`UnhandledResponse` if cleanup itself fails. `ResponseDecodeError` also retains response metadata and the schema cause,
+although its body has already been consumed. Mapped `ResponseBody.none` responses are drained by the library.
 
 Files and multipart responses are intentionally not invented as a field yet. They should be introduced through body
 codecs so the envelope accurately describes whether `body`, `files`, or both exist for that response rule.
@@ -165,8 +170,8 @@ This replacement model keeps the common thin-object case precise: replacing the 
 
 The endpoint definition optionally declares a request body schema, but request bodies are never endpoint-function
 arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` has the diagnostic
-`RequestBodyRequired` type rather than an Effect. If an untyped caller bypasses this check, evaluating the underlying
-value fails with `RequestBodyRequired` before the HTTP client is called.
+`RequestBodyRequired` type rather than an Effect. Reading the getter still constructs a failed Effect at runtime, so an
+untyped caller that bypasses this check fails with `RequestBodyRequired` before the HTTP client is called.
 The caller supplies the ordinary decoded TypeScript value—never a schema-wrapped value—and the library uses the
 endpoint's schema to constrain and encode it. An optional or explicitly undefined body can be represented in the schema
 and set as such.
