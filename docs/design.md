@@ -356,6 +356,32 @@ Three layers catch different failures:
 
 Run them separately with `pnpm test:unit` and `pnpm test:integration`, or together with `pnpm test`.
 
-## Remaining design question
+## Repository and release shape
 
-1. Which response codecs should follow JSON, text, and no-body: bytes, form data, multipart files, or streaming bodies?
+Effect and Effect Platform are peer dependencies so consumers and the library share service identities. Published files
+exclude colocated unit tests and expose both the root entry point and `package.json`. The package metadata points to the
+Codeberg repository, and TypeScript checks the source with `noUncheckedIndexedAccess` and
+`exactOptionalPropertyTypes` in addition to strict mode. `AnyResponseRule` is public for application helpers that need
+to abstract over response-rule tuples.
+
+The Woodpecker pipeline under `.woodpecker/` runs the same five checks required before local commits. It still has to
+be enabled for the Codeberg repository before it can enforce them remotely.
+
+No licence has been selected. The package therefore remains all-rights-reserved and should not be published as a
+reusable library until the owner chooses a licence and adds both its `package.json` identifier and licence text.
+
+## Remaining design questions
+
+1. **Streaming responses.** JSON, text, bytes, form data, and explicit no-body responses are finite codecs. A streaming
+   response is a live, one-shot resource that cannot safely be cached or shared by a request gate. Decide whether it
+   should use a separate plan terminal such as `.stream`, a non-retainable envelope type, or another ownership model
+   before adding it.
+2. **Typed query parameters and headers.** V1 intentionally keeps both stringly typed. If schemas are added later,
+   decide whether typed setters replace the current setters or form a parallel API without making ordinary custom
+   fields cumbersome.
+3. **Additional response metadata.** Mapped envelopes deliberately omit the consumed `HttpClientResponse`. Decide
+   which replay-safe derived values—such as the final URL, originating request, redirect information, or timing—are
+   broadly useful enough to add to every envelope.
+4. **API introspection.** `Api` exposes `baseUrl`, but not its fully merged headers, query parameters, response rules,
+   transforms, or policies. Tooling and diagnostics may justify an immutable resolved-configuration snapshot; its
+   representation must preserve repeated headers and parameters without exposing mutable declaration inputs.
