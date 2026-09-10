@@ -20,7 +20,7 @@ const api = createApi("https://api.example.com", {
 const getUser = api.createRequest({
   method: "GET",
   path: "/users/:userId",
-  responses: [response({ key: "ok", status: 200 }, User)],
+  responses: [response({ _tag: "ok", status: 200 }, User)],
 });
 
 const program = getUser("user-1").pipe(

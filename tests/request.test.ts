@@ -157,46 +157,46 @@ describe("request integration", () => {
   it("supports standard and extension methods with typed path segments", async () => {
     const api = createApi(baseUrl, {
       responses: [
-        response({ key: "not-found", status: 404 }, NotFound),
-        response({ key: "not-implemented", status: 501 }, NotImplemented),
+        response({ _tag: "not-found", status: 404 }, NotFound),
+        response({ _tag: "not-implemented", status: 501 }, NotImplemented),
       ] as const,
     });
     const createUser = api.createRequest({
       method: "POST",
       path: "/users",
       body: CreateUser,
-      responses: [response({ key: "created", status: 201 }, User)] as const,
+      responses: [response({ _tag: "created", status: 201 }, User)] as const,
     });
     const getUser = api.createRequest({
       method: "GET",
       path: "/users/:userId",
-      responses: [response({ key: "ok", status: 200 }, User), response({ key: "gone", status: 410 }, Gone)] as const,
+      responses: [response({ _tag: "ok", status: 200 }, User), response({ _tag: "gone", status: 410 }, Gone)] as const,
     });
     const replaceUser = api.createRequest({
       method: "PUT",
       path: "/users/:userId",
       body: ReplaceUser,
-      responses: [response({ key: "ok", status: 200 }, User)] as const,
+      responses: [response({ _tag: "ok", status: 200 }, User)] as const,
     });
     const updateUser = api.createRequest({
       method: "PATCH",
       path: "/users/:userId",
       body: UpdateUser,
       responses: [
-        response({ key: "ok", status: 200 }, User),
-        response({ key: "conflict", status: 409 }, Conflict),
+        response({ _tag: "ok", status: 200 }, User),
+        response({ _tag: "conflict", status: 409 }, Conflict),
       ] as const,
     });
     const deleteUser = api.createRequest({
       method: "DELETE",
       path: "/users/:userId",
-      responses: [response({ key: "deleted", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
+      responses: [response({ _tag: "deleted", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
     });
     const headUser = api.createRequest({
       method: "HEAD",
       path: "/users/:userId",
       responses: [
-        response({ key: "exists", status: 200, headers: { "x-user-name": "Taken" } }, Schema.Void, {
+        response({ _tag: "exists", status: 200, headers: { "x-user-name": "Taken" } }, Schema.Void, {
           codec: ResponseBody.none,
         }),
       ] as const,
@@ -204,17 +204,17 @@ describe("request integration", () => {
     const inspectUser = api.createRequest({
       method: "PROPFIND",
       path: "/users/:userId",
-      responses: [response({ key: "properties", status: 207 }, User)],
+      responses: [response({ _tag: "properties", status: 207 }, User)],
     });
     const usersOptions = api.createRequest({
       method: "OPTIONS",
       path: "/users",
-      responses: [response({ key: "options", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
+      responses: [response({ _tag: "options", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
     });
     const getUserBlogPost = api.createRequest({
       method: "GET",
       path: "/users/:userId/posts/:postId",
-      responses: [response({ key: "ok", status: 200 }, BlogPost)] as const,
+      responses: [response({ _tag: "ok", status: 200 }, BlogPost)] as const,
     });
 
     expectTypeOf(getUser).parameters.toEqualTypeOf<[value: string]>();
@@ -223,31 +223,31 @@ describe("request integration", () => {
     const created = await createUser()
       .setBody({ name: "Ada", email: "ada@example.test" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(created).toMatchObject({ key: "created", status: 201, body: { id: userId, name: "Ada" } });
+    expect(created).toMatchObject({ _tag: "created", status: 201, body: { id: userId, name: "Ada" } });
 
     const fetched = await getUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(fetched).toMatchObject({ key: "ok", body: { id: userId, name: "Ada" } });
+    expect(fetched).toMatchObject({ _tag: "ok", body: { id: userId, name: "Ada" } });
 
     const inspected = await inspectUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(inspected).toMatchObject({ key: "properties", status: 207, body: { id: userId } });
+    expect(inspected).toMatchObject({ _tag: "properties", status: 207, body: { id: userId } });
 
     const replaced = await replaceUser(userId)
       .setBody({ name: "Grace", email: "grace@example.test" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    if (replaced.key !== "ok") {
-      throw new Error(`Expected ok response, received ${replaced.key}`);
+    if (replaced._tag !== "ok") {
+      throw new Error(`Expected ok response, received ${replaced._tag}`);
     }
     expect(replaced.body.name).toBe("Grace");
 
     const conflict = await updateUser(userId)
       .setBody({ name: "Taken" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(conflict.key).toBe("conflict");
+    expect(conflict._tag).toBe("conflict");
     const conflictMessage = Match.value(conflict).pipe(
-      Match.when({ key: "conflict" }, ({ body }) => `${body.requested.name} conflicts with ${body.current.name}`),
-      Match.when({ key: "ok" }, ({ body }) => body.name),
-      Match.when({ key: "not-found" }, ({ body }) => body.resource),
-      Match.when({ key: "not-implemented" }, ({ body }) => body.fallback),
+      Match.tag("conflict", ({ body }) => `${body.requested.name} conflicts with ${body.current.name}`),
+      Match.tag("ok", ({ body }) => body.name),
+      Match.tag("not-found", ({ body }) => body.resource),
+      Match.tag("not-implemented", ({ body }) => body.fallback),
       Match.exhaustive,
     );
     expect(conflictMessage).toBe("Taken conflicts with Grace");
@@ -256,10 +256,10 @@ describe("request integration", () => {
       .setUrlParam("force", "true")
       .setBody({ name: "Taken" })
       .effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(forced).toMatchObject({ key: "ok", body: { name: "Taken" } });
+    expect(forced).toMatchObject({ _tag: "ok", body: { name: "Taken" } });
 
     const head = await headUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(head).toMatchObject({ key: "exists", headers: { "x-user-name": "Taken" } });
+    expect(head).toMatchObject({ _tag: "exists", headers: { "x-user-name": "Taken" } });
 
     const post = await getUserBlogPost(userId, postId).effect.pipe(
       Effect.provide(FetchHttpClient.layer),
@@ -268,10 +268,10 @@ describe("request integration", () => {
     expect(post.body).toEqual({ id: postId, userId, title: "Typed HTTP" });
 
     const options = await usersOptions().effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(options).toMatchObject({ key: "options", status: 204 });
+    expect(options).toMatchObject({ _tag: "options", status: 204 });
 
     const deleted = await deleteUser(userId).effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(deleted).toMatchObject({ key: "deleted", status: 204 });
+    expect(deleted).toMatchObject({ _tag: "deleted", status: 204 });
 
     expect(methods).toEqual(["POST", "GET", "PROPFIND", "PUT", "PATCH", "PATCH", "HEAD", "GET", "OPTIONS", "DELETE"]);
   });
@@ -279,14 +279,14 @@ describe("request integration", () => {
   it("returns mapped 404, 410, and 501 responses as ordinary discriminated values", async () => {
     const api = createApi(baseUrl, {
       responses: [
-        response({ key: "not-found", status: 404 }, NotFound),
-        response({ key: "not-implemented", status: 501 }, NotImplemented),
+        response({ _tag: "not-found", status: 404 }, NotFound),
+        response({ _tag: "not-implemented", status: 501 }, NotImplemented),
       ] as const,
     });
     const getUser = api.createRequest({
       method: "GET",
       path: "/users/:userId",
-      responses: [response({ key: "ok", status: 200 }, User), response({ key: "gone", status: 410 }, Gone)] as const,
+      responses: [response({ _tag: "ok", status: 200 }, User), response({ _tag: "gone", status: 410 }, Gone)] as const,
     });
     const getFeature = api.createRequest({
       method: "GET",
@@ -300,8 +300,8 @@ describe("request integration", () => {
       Effect.runPromise,
     );
 
-    expect(missing).toMatchObject({ key: "not-found", status: 404, body: { resource: "user" } });
-    expect(gone).toMatchObject({ key: "gone", status: 410 });
-    expect(unsupported).toMatchObject({ key: "not-implemented", status: 501 });
+    expect(missing).toMatchObject({ _tag: "not-found", status: 404, body: { resource: "user" } });
+    expect(gone).toMatchObject({ _tag: "gone", status: 410 });
+    expect(unsupported).toMatchObject({ _tag: "not-implemented", status: 501 });
   });
 });

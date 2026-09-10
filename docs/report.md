@@ -14,7 +14,7 @@ probes through temporary Vitest files); all probe files were removed afterwards 
 ## 1. Verdict
 
 This is a strong spike. The central bet — an endpoint defined once, immutable plans per call site, a discriminated
-envelope union keyed by a user-chosen string, and a cold `Effect` that is only assembled on `.effect` — is well chosen
+envelope union tagged by a user-chosen string, and a cold `Effect` that is only assembled on `.effect` — is well chosen
 and consistently executed. The type-level machinery (`MergeResponseRules`, `SetResponseRule`, `PathArguments`,
 `UniqueResponseRules`) is unusually disciplined for a first pass, and the doc is honest about what is deferred.
 
@@ -45,9 +45,10 @@ best design call in the library. It keeps `RequestPlan` a pure description and l
 
 ### 2.2 The response envelope is the right shape
 
-Keying the union on a user-supplied `key` rather than on status is what makes several statuses per key, and several keys
-per status, both expressible. `key`/`status`/`matched` redundancy is justified in the doc and pays off: `Match.when({ key
-})` narrows the body without a custom guard, and `matched` is genuinely useful when the matcher is a predicate.
+Tagging the union with a user-supplied `_tag` rather than using status is what makes several statuses per tag, and
+several tags per status, both expressible. `_tag`/`status`/`matched` redundancy is justified in the doc and pays off:
+`Match.tag(...)` narrows the body without a custom guard, and `matched` is genuinely useful when the matcher is a
+predicate.
 
 Not retaining the `HttpClientResponse` in a mapped envelope is correct: the body has already been consumed, and a
 replayable-looking handle that is not replayable would be worse than no handle. The asymmetry — `UnhandledResponse`
@@ -55,13 +56,13 @@ keeps the live response, mapped envelopes do not — is the right call, and it i
 
 ### 2.3 Response-rule inheritance and replacement
 
-`MergeResponseRules` / `RemoveMatchingRule` correctly implement "replace by key, keep everything else", at both type and
+`MergeResponseRules` / `RemoveMatchingRule` correctly implement "replace by tag, keep everything else", at both type and
 value level, and the ordering is stable and tested (`src/request.test.ts:341`). The thin-object case the doc calls out
 works: replacing the `200` schema removes the original `200` body type from the union while inherited `404`/`410`
 envelopes survive.
 
-`UniqueResponseRules` emitting `{ "Duplicate response key": "same" }` as the failure type is a nice touch — the
-duplicate key appears verbatim in the compiler message.
+`UniqueResponseRules` emitting `{ "Duplicate response tag": "same" }` as the failure type is a nice touch — the
+duplicate tag appears verbatim in the compiler message.
 
 ### 2.4 Context and error tracking through schemas
 
@@ -162,7 +163,7 @@ that test only covers the single-rule case, which is why this slipped through.
 **Severity: high — a type assertion that is false at runtime.**
 
 ```ts
-response({ key: "ok", status: 200, headers: { "Content-Type": "application/json" } }, User);
+response({ _tag: "ok", status: 200, headers: { "Content-Type": "application/json" } }, User);
 // envelope.headers["Content-Type"] types as "application/json"
 // envelope.headers["Content-Type"] is undefined at runtime
 ```
@@ -213,7 +214,7 @@ const incomplete = createUser(); // body schema declared, setBody not called
 await Effect.runPromise(Effect.provide(incomplete.effect, layer)); // compiles, sends POST with an empty body
 ```
 
-Probed: the request is sent, the body is `""`, and the plan resolves normally to `{ key: "ok" }`. The protection only
+Probed: the request is sent, the body is `""`, and the plan resolves normally to `{ _tag: "ok" }`. The protection only
 bites in the two places where `never` is structurally rejected — `yield*` inside `Effect.gen` ("Type 'never' must have a
 '[Symbol.iterator](<>)' method") and `.pipe(...)` ("Property 'pipe' does not exist on type 'never'"). Both messages are
 also poor: neither mentions the body.
@@ -272,21 +273,21 @@ API defaults, declared path values, endpoint options, and plan setters then appl
 fragments are preserved. Query values distinguish `true` (bare `key`) from `""` (`key=`) without passing through
 `URLSearchParams`, which would normalize both forms.
 
-### 3.7 ~~Replacing an existing response key silently changes tie-break precedence~~ — fixed
+### 3.7 ~~Replacing an existing response tag silently changes tie-break precedence~~ — fixed
 
 **Severity: low–medium — a documented rule that does not hold in one case.**
 
 ```ts
-responses: [response({ key: "first", status: 200 }, S), response({ key: "second", status: 200 }, S)];
-// endpoint()                                              -> key "first"
-// endpoint().setResponseSchema({ key: "second", ... }, S)  -> key "second"
+responses: [response({ _tag: "first", status: 200 }, S), response({ _tag: "second", status: 200 }, S)];
+// endpoint()                                               -> _tag "first"
+// endpoint().setResponseSchema({ _tag: "second", ... }, S) -> _tag "second"
 ```
 
-`setResponseRule` unconditionally prepends (`src/request.ts:755`). The doc says "A plan rule with a **new** key is
-prepended, so it wins an equally specific tie" — but the same prepend happens for an existing key, so overriding a
+`setResponseRule` unconditionally prepends (`src/request.ts:755`). The doc says "A plan rule with a **new** tag is
+prepended, so it wins an equally specific tie" — but the same prepend happens for an existing tag, so overriding a
 rule's schema also promotes it above its equally-specific siblings. Probed and confirmed.
 
-Runtime and type-level replacement now preserve the existing key's position. A genuinely new plan rule is still
+Runtime and type-level replacement now preserve the existing tag's position. A genuinely new plan rule is still
 prepended and therefore wins an equally specific tie.
 
 ### 3.8 ~~The retry budget multiplies when transport errors and transient responses alternate~~ — fixed
@@ -353,16 +354,18 @@ type mismatches point at the supplied value rather than collapsing the property 
 
 **Severity: low — a consistency and idiom issue, not a correctness one.**
 
-`InvalidPathArguments` (from `fillPath`, on every endpoint call), `InvalidRetryCount` (from `normalizeRetry`, on
-`setRetries` and on endpoint construction), and `DuplicateResponseKey` (from `validateUniqueResponseKeys`) are all
-`Data.TaggedError` subclasses that are `throw`n from ordinary functions. They can never reach an Effect error channel,
-so their tagged-ness buys nothing — callers must `try`/`catch` them, and `Effect.catchTag` will never see them.
+At review time, `InvalidPathArguments` (from `fillPath`, on every endpoint call), `InvalidRetryCount` (from
+`normalizeRetry`, on `setRetries` and on endpoint construction), and `DuplicateResponseKey` (from
+`validateUniqueResponseKeys`) were all `Data.TaggedError` subclasses that were `throw`n from ordinary functions. They
+could never reach an Effect error channel, so their tagged-ness bought nothing — callers had to `try`/`catch` them, and
+`Effect.catchTag` could never see them.
 
 The implementation now takes the first of the two coherent positions identified by the review:
 
 - These are **defects** (programmer errors surfaced by degraded or untyped calls). `InvalidPathArguments`,
-  `InvalidRetryCount`, and `DuplicateResponseKey` are now ordinary `Error` subclasses. The design document explicitly
-  states that they are synchronous configuration defects rather than members of an Effect error channel.
+  `InvalidRetryCount`, and the subsequently renamed `DuplicateResponseTag` are now ordinary `Error` subclasses. The
+  design document explicitly states that they are synchronous configuration defects rather than members of an Effect
+  error channel.
 
 ---
 
@@ -401,8 +404,8 @@ The second is the one that actually solves it, and it composes with `mapEndpoint
 
 ```ts
 responses: [
-  response({ key: "server-error", status: (s) => s >= 500 }, S),
-  response({ key: "unavailable", status: 503 }, S),
+  response({ _tag: "server-error", status: (s) => s >= 500 }, S),
+  response({ _tag: "unavailable", status: 503 }, S),
 ];
 // a 503 selects "server-error"
 ```
@@ -557,7 +560,7 @@ Restating the doc's two, and adding the ones this review raises.
 
 **Raised here:**
 
-3. **Are validation failures defects or failures?** Answered in §3.11: path arity, duplicate keys, and invalid retry
+3. **Are validation failures defects or failures?** Answered in §3.11: path arity, duplicate tags, and invalid retry
    counts are synchronous configuration defects represented by ordinary `Error` subclasses.
 4. **Should the body typestate be enforced at runtime, not only in types?** Answered in §3.4: yes; degraded callers
    receive `RequestBodyRequired` before transport execution.

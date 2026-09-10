@@ -74,12 +74,12 @@ export type StatusMatcher = number | StatusPredicate;
 export type HeaderMatcher = string | HeaderPredicate;
 
 export interface ResponseMatcher<
-  Key extends string = string,
+  Tag extends string = string,
   Status extends StatusMatcher = StatusMatcher,
   MatchHeaders extends Readonly<Record<string, HeaderMatcher>> | undefined =
     Readonly<Record<string, HeaderMatcher>> | undefined,
 > {
-  readonly key: Key;
+  readonly _tag: Tag;
   readonly status: Status;
   readonly headers?: MatchHeaders;
 }
@@ -153,28 +153,28 @@ export const response = <
 type MatcherOf<Rule extends AnyResponseRule> =
   Rule extends ResponseRule<infer Matcher, AnySchema, ResponseBodyCodecOrDefault> ? Matcher : never;
 
-type KeyOf<Rule extends AnyResponseRule> = MatcherOf<Rule>["key"];
+type TagOf<Rule extends AnyResponseRule> = MatcherOf<Rule>["_tag"];
 
-type RemoveMatchingRule<Rules extends ReadonlyArray<AnyResponseRule>, Key extends string> = Rules extends readonly [
+type RemoveMatchingRule<Rules extends ReadonlyArray<AnyResponseRule>, Tag extends string> = Rules extends readonly [
   infer Head extends AnyResponseRule,
   ...infer Tail extends ReadonlyArray<AnyResponseRule>,
 ]
-  ? KeyOf<Head> extends Key
-    ? RemoveMatchingRule<Tail, Key>
-    : readonly [Head, ...RemoveMatchingRule<Tail, Key>]
+  ? TagOf<Head> extends Tag
+    ? RemoveMatchingRule<Tail, Tag>
+    : readonly [Head, ...RemoveMatchingRule<Tail, Tag>]
   : readonly [];
 
 type ReplaceMatchingRule<
   Rules extends ReadonlyArray<AnyResponseRule>,
   Rule extends AnyResponseRule,
 > = Rules extends readonly [infer Head extends AnyResponseRule, ...infer Tail extends ReadonlyArray<AnyResponseRule>]
-  ? KeyOf<Head> extends KeyOf<Rule>
+  ? TagOf<Head> extends TagOf<Rule>
     ? readonly [Rule, ...Tail]
     : readonly [Head, ...ReplaceMatchingRule<Tail, Rule>]
   : Rules;
 
 type SetResponseRule<Rules extends ReadonlyArray<AnyResponseRule>, Rule extends AnyResponseRule> =
-  KeyOf<Rule> extends KeyOf<Rules[number]> ? ReplaceMatchingRule<Rules, Rule> : readonly [Rule, ...Rules];
+  TagOf<Rule> extends TagOf<Rules[number]> ? ReplaceMatchingRule<Rules, Rule> : readonly [Rule, ...Rules];
 
 type MergeResponseRules<
   Defaults extends ReadonlyArray<AnyResponseRule>,
@@ -183,22 +183,22 @@ type MergeResponseRules<
   infer Head extends AnyResponseRule,
   ...infer Tail extends ReadonlyArray<AnyResponseRule>,
 ]
-  ? readonly [Head, ...MergeResponseRules<RemoveMatchingRule<Defaults, KeyOf<Head>>, Tail>]
+  ? readonly [Head, ...MergeResponseRules<RemoveMatchingRule<Defaults, TagOf<Head>>, Tail>]
   : Defaults;
 
-type DuplicateResponseKeyOf<
+type DuplicateResponseTagOf<
   Rules extends ReadonlyArray<AnyResponseRule>,
   Seen extends string = never,
 > = Rules extends readonly [infer Head extends AnyResponseRule, ...infer Tail extends ReadonlyArray<AnyResponseRule>]
-  ? KeyOf<Head> extends Seen
-    ? KeyOf<Head>
-    : DuplicateResponseKeyOf<Tail, Seen | KeyOf<Head>>
+  ? TagOf<Head> extends Seen
+    ? TagOf<Head>
+    : DuplicateResponseTagOf<Tail, Seen | TagOf<Head>>
   : never;
 
 type UniqueResponseRules<Rules extends ReadonlyArray<AnyResponseRule>> =
-  DuplicateResponseKeyOf<Rules> extends never
+  DuplicateResponseTagOf<Rules> extends never
     ? unknown
-    : { readonly "Duplicate response key": DuplicateResponseKeyOf<Rules> };
+    : { readonly "Duplicate response tag": DuplicateResponseTagOf<Rules> };
 
 type ExactMatchedHeaders<MatchHeaders extends Readonly<Record<string, HeaderMatcher>>> = {
   readonly [
@@ -218,7 +218,7 @@ type MatchedHeaders<Matcher extends ResponseMatcher> =
 type MatchedStatus<Matcher extends ResponseMatcher> = Matcher["status"] extends number ? Matcher["status"] : number;
 
 export interface ResponseEnvelope<Matcher extends ResponseMatcher, Body> {
-  readonly key: Matcher["key"];
+  readonly _tag: Matcher["_tag"];
   readonly status: MatchedStatus<Matcher>;
   readonly headers: Headers.Headers & MatchedHeaders<Matcher>;
   readonly body: Body;
@@ -338,14 +338,14 @@ export class InvalidPathArguments extends Error {
   }
 }
 
-export class DuplicateResponseKey extends Error {
-  readonly name = "DuplicateResponseKey";
+export class DuplicateResponseTag extends Error {
+  readonly name = "DuplicateResponseTag";
 
   constructor(
-    readonly key: string,
+    readonly tag: string,
     readonly owner: "api" | "request",
   ) {
-    super(`Duplicate response key ${JSON.stringify(key)} in ${owner} declaration`);
+    super(`Duplicate response tag ${JSON.stringify(tag)} in ${owner} declaration`);
   }
 }
 
@@ -369,7 +369,7 @@ export class AbsolutePathWithBaseUrl extends Error {
 }
 
 export class ResponseDecodeError extends Data.TaggedError("ResponseDecodeError")<{
-  readonly key: string;
+  readonly responseTag: string;
   readonly response: HttpClientResponse.HttpClientResponse;
   readonly cause: ParseResult.ParseError;
 }> {
@@ -973,16 +973,16 @@ const setResponseRule = (
   rules: ReadonlyArray<AnyResponseRule>,
   rule: AnyResponseRule,
 ): ReadonlyArray<AnyResponseRule> => {
-  const index = rules.findIndex((candidate) => candidate.match.key === rule.match.key);
+  const index = rules.findIndex((candidate) => candidate.match._tag === rule.match._tag);
   if (index === -1) return [rule, ...rules];
   return rules.map((candidate, candidateIndex) => (candidateIndex === index ? rule : candidate));
 };
 
-const validateUniqueResponseKeys = (rules: ReadonlyArray<AnyResponseRule>, owner: "api" | "request"): void => {
-  const keys = new Set<string>();
+const validateUniqueResponseTags = (rules: ReadonlyArray<AnyResponseRule>, owner: "api" | "request"): void => {
+  const tags = new Set<string>();
   for (const rule of rules) {
-    if (keys.has(rule.match.key)) throw new DuplicateResponseKey(rule.match.key, owner);
-    keys.add(rule.match.key);
+    if (tags.has(rule.match._tag)) throw new DuplicateResponseTag(rule.match._tag, owner);
+    tags.add(rule.match._tag);
   }
 };
 
@@ -991,7 +991,7 @@ const mergeResponseRules = (
   overrides: ReadonlyArray<AnyResponseRule>,
 ): ReadonlyArray<AnyResponseRule> => [
   ...overrides,
-  ...defaults.filter((rule) => !overrides.some((override) => override.match.key === rule.match.key)),
+  ...defaults.filter((rule) => !overrides.some((override) => override.match._tag === rule.match._tag)),
 ];
 
 const findResponseRule = (
@@ -1021,7 +1021,7 @@ const decodeResponse = (
   Effect.flatMap((rule.codec ?? defaultCodec).decode(raw), Schema.decodeUnknown(rule.schema)).pipe(
     Effect.mapError((error) =>
       ParseResult.isParseError(error)
-        ? new ResponseDecodeError({ key: rule.match.key, response: raw, cause: error })
+        ? new ResponseDecodeError({ responseTag: rule.match._tag, response: raw, cause: error })
         : error,
     ),
   );
@@ -1088,7 +1088,7 @@ const makePlan = <
 
             return Effect.map(decodeResponse(rule, raw, state.responseCodec), (body) => {
               const envelope = {
-                key: rule.match.key,
+                _tag: rule.match._tag,
                 status: raw.status,
                 headers: raw.headers,
                 body,
@@ -1222,7 +1222,7 @@ export const createRequest = <
 >(
   definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
 ): Endpoint<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>> => {
-  validateUniqueResponseKeys(definition.responses ?? [], "request");
+  validateUniqueResponseTags(definition.responses ?? [], "request");
   return createRequestInternal<Path, Body, Rules, InitialBodyReady<Body, DefaultBody>>(
     definition,
     definition.responses ?? ([] as unknown as Rules),
@@ -1249,14 +1249,14 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
   baseUrl: string,
   options: ApiOptions<Defaults> = {} as ApiOptions<Defaults>,
 ): Api<Defaults> => {
-  validateUniqueResponseKeys(options.responses ?? [], "api");
+  validateUniqueResponseTags(options.responses ?? [], "api");
   return {
     pipe: pipeSelf,
     baseUrl,
     extend: <const Overrides extends ReadonlyArray<AnyResponseRule> = readonly []>(
       overrides: ApiOptions<Overrides>,
     ): Api<MergeResponseRules<Defaults, Overrides>> => {
-      validateUniqueResponseKeys(overrides.responses ?? [], "api");
+      validateUniqueResponseTags(overrides.responses ?? [], "api");
       const baseRequestTransform = options.transformRequest;
       const overrideRequestTransform = overrides.transformRequest;
       const baseClientTransform = options.transformClient;
@@ -1299,7 +1299,7 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
     >(
       definition: RequestDefinition<Method, Path, Body, Rules, DefaultBody>,
     ): Endpoint<Path, Body, MergeResponseRules<Defaults, Rules>, InitialBodyReady<Body, DefaultBody>> => {
-      validateUniqueResponseKeys(definition.responses ?? [], "request");
+      validateUniqueResponseTags(definition.responses ?? [], "request");
       const rules = mergeResponseRules(options.responses ?? [], definition.responses ?? []);
       return createRequestInternal<
         Path,

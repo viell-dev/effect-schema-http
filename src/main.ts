@@ -5,7 +5,7 @@ export {
   RequestBodyRequired,
   RequestBodyEncodeError,
   InvalidPathArguments,
-  DuplicateResponseKey,
+  DuplicateResponseTag,
   InvalidRetryCount,
   ResponseDecodeError,
   ResponseBody,

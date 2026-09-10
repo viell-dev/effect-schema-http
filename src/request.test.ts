@@ -5,7 +5,7 @@ import {
   AbsolutePathWithBaseUrl,
   createApi,
   createRequest,
-  DuplicateResponseKey,
+  DuplicateResponseTag,
   extendApi,
   InvalidPathArguments,
   InvalidRetryCount,
@@ -47,7 +47,7 @@ describe("createRequest", () => {
       method: "POST",
       path: "https://example.test/users",
       body: Schema.Struct({ name: Schema.String }),
-      responses: [response({ key: "created", status: 201 }, User)],
+      responses: [response({ _tag: "created", status: 201 }, User)],
     });
     const createAda = createUser.pipe(mapEndpoint(withBody({ name: "Ada" })));
     const effect = createAda().pipe(withHeader("x-source", "composed"), toEffect);
@@ -74,11 +74,14 @@ describe("createRequest", () => {
     const getUsers = createRequest({
       method: "GET",
       path: "https://example.test/teams/:teamId/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
     const getThinUsers = getUsers.pipe(
       mapEndpoint((plan) =>
-        plan.pipe(withUrlParam("fields", "id"), withResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser))),
+        plan.pipe(
+          withUrlParam("fields", "id"),
+          withResponseSchema({ _tag: "ok", status: 200 }, Schema.Array(ThinUser)),
+        ),
       ),
     );
 
@@ -92,7 +95,7 @@ describe("createRequest", () => {
     const getFile = createRequest({
       method: "GET",
       path: "https://example.test/v:version/files/:name.:ext",
-      responses: [response({ key: "post", status: 200 }, Schema.Struct({ id: Schema.String }))] as const,
+      responses: [response({ _tag: "post", status: 200 }, Schema.Struct({ id: Schema.String }))] as const,
     });
 
     expectTypeOf(getFile).parameters.toEqualTypeOf<[value: string, value: string, value: string]>();
@@ -117,7 +120,7 @@ describe("createRequest", () => {
     const archiveUser = createRequest({
       method: "POST",
       path: "https://example.test/v1/users/:userId\\:archive",
-      responses: [response({ key: "archived", status: 200 }, User)],
+      responses: [response({ _tag: "archived", status: 200 }, User)],
     });
     expectTypeOf(archiveUser).parameters.toEqualTypeOf<[value: string]>();
 
@@ -136,7 +139,7 @@ describe("createRequest", () => {
     const literalVersion = createRequest({
       method: "GET",
       path: "https://example.test/v:1/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
     });
     expectTypeOf(literalVersion).parameters.toEqualTypeOf<[]>();
   });
@@ -148,7 +151,7 @@ describe("createRequest", () => {
       method: "GET",
       path: "/users",
       urlParams: { locale: "sv" },
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))] as const,
     });
 
     await getUsers()
@@ -175,7 +178,7 @@ describe("createRequest", () => {
       method: "GET",
       path: "/users?active=path&tag=a&tag=b#table",
       urlParams: { locale: "en" },
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
 
     await getUsers()
@@ -203,7 +206,7 @@ describe("createRequest", () => {
     const getUsers = createApi("https://api.example.test").createRequest({
       method: "GET",
       path: "https://mirror.example.test/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
     const result = await getUsers().effect.pipe(
       Effect.exit,
@@ -230,7 +233,7 @@ describe("createRequest", () => {
     }).createRequest({
       method: "GET",
       path: "/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
 
     await getUsers()
@@ -265,8 +268,8 @@ describe("createRequest", () => {
   });
 
   it("composes API defaults and permits a plan-level base URL override", async () => {
-    const notFound = response({ key: "not-found", status: 404 }, NotFound);
-    const unauthorized = response({ key: "unauthorized", status: 401 }, Schema.Struct({ message: Schema.String }));
+    const notFound = response({ _tag: "not-found", status: 404 }, NotFound);
+    const unauthorized = response({ _tag: "unauthorized", status: 401 }, Schema.Struct({ message: Schema.String }));
     const api = createApi("https://example.test", {
       headers: { authorization: "Bearer base", "x-base": "1" },
       urlParams: { scope: "base", page: "1" },
@@ -283,7 +286,7 @@ describe("createRequest", () => {
       method: "GET",
       path: "/users",
       urlParams: { page: "2" },
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
 
     expect(api.baseUrl).toBe("https://example.test");
@@ -307,9 +310,9 @@ describe("createRequest", () => {
         Effect.runPromise,
       );
 
-    expect(result.key).toBe("ok");
+    expect(result._tag).toBe("ok");
     type Result = Awaited<typeof result>;
-    expectTypeOf<Result["key"]>().toEqualTypeOf<"ok" | "unauthorized" | "not-found">();
+    expectTypeOf<Result["_tag"]>().toEqualTypeOf<"ok" | "unauthorized" | "not-found">();
   });
 
   it("rejects GET and HEAD bodies at the definition and transformed-request boundaries", async () => {
@@ -318,13 +321,13 @@ describe("createRequest", () => {
       path: "https://example.test/users",
       // @ts-expect-error Fetch does not support GET request bodies.
       body: Schema.Struct({ probe: Schema.Boolean }),
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))] as const,
     });
 
     const getUsers = createRequest({
       method: "GET",
       path: "https://example.test/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))] as const,
     });
     const result = await getUsers()
       .mapRequest(HttpClientRequest.bodyUnsafeJson({ probe: true }))
@@ -355,7 +358,7 @@ describe("createRequest", () => {
     const inspectUsers = createRequest({
       method: "PROPFIND",
       path: "https://example.test/users",
-      responses: [response({ key: "multi-status", status: 207 }, Schema.Literal("inspected"))],
+      responses: [response({ _tag: "multi-status", status: 207 }, Schema.Literal("inspected"))],
     });
 
     const result = await inspectUsers().effect.pipe(
@@ -370,24 +373,24 @@ describe("createRequest", () => {
       Effect.runPromise,
     );
 
-    expect(result).toMatchObject({ key: "multi-status", body: "inspected" });
+    expect(result).toMatchObject({ _tag: "multi-status", body: "inspected" });
   });
 
   it("is lazy and replaces only the response rule with the same matcher", async () => {
     const requests: Array<Request> = [];
     const api = createApi("https://example.test", {
       headers: { authorization: "Bearer token" },
-      responses: [response({ key: "not-found", status: 404 }, NotFound)] as const,
+      responses: [response({ _tag: "not-found", status: 404 }, NotFound)] as const,
     });
     const getUsers = api.createRequest({
       method: "GET",
       path: "/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))] as const,
     });
 
     const plan = getUsers()
       .setUrlParam("fields", "id")
-      .setResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser));
+      .setResponseSchema({ _tag: "ok", status: 200 }, Schema.Array(ThinUser));
 
     expect(requests).toEqual([]);
 
@@ -416,9 +419,9 @@ describe("createRequest", () => {
   });
 
   it("keeps API and endpoint response rule order aligned in the endpoint type", () => {
-    const defaultRule = response({ key: "default", status: 404 }, NotFound);
-    const firstRule = response({ key: "first", status: 200 }, User);
-    const secondRule = response({ key: "second", status: 201 }, User);
+    const defaultRule = response({ _tag: "default", status: 404 }, NotFound);
+    const firstRule = response({ _tag: "first", status: 200 }, User);
+    const secondRule = response({ _tag: "second", status: 201 }, User);
     const endpoint = createApi("https://example.test", { responses: [defaultRule] }).createRequest({
       method: "GET",
       path: "/users",
@@ -432,7 +435,7 @@ describe("createRequest", () => {
   });
 
   it("exposes the complete success, error, and requirement types", () => {
-    const ok = response({ key: "ok", status: 200 }, User);
+    const ok = response({ _tag: "ok", status: 200 }, User);
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
@@ -467,7 +470,7 @@ describe("createRequest", () => {
       method: "POST",
       path: "https://example.test/users",
       body: Schema.Struct({ name: Schema.String }),
-      responses: [response({ key: "created", status: 201 }, User)],
+      responses: [response({ _tag: "created", status: 201 }, User)],
     });
     const incomplete = createUser();
 
@@ -493,20 +496,20 @@ describe("createRequest", () => {
     if (Either.isLeft(result)) expect(result.left).toBeInstanceOf(RequestBodyRequired);
   });
 
-  it("rejects duplicate response keys in declarations", () => {
+  it("rejects duplicate response tags in declarations", () => {
     const duplicateRules = [
-      response({ key: "same", status: 200 }, User),
-      response({ key: "same", status: 201 }, User),
+      response({ _tag: "same", status: 200 }, User),
+      response({ _tag: "same", status: 201 }, User),
     ] as const;
 
     expect(() =>
       createRequest({
         method: "GET",
         path: "https://example.test/users",
-        // @ts-expect-error Response keys must be unique within one declaration.
+        // @ts-expect-error Response tags must be unique within one declaration.
         responses: duplicateRules,
       }),
-    ).toThrow(DuplicateResponseKey);
+    ).toThrow(DuplicateResponseTag);
   });
 
   it("matches status and headers with predicates without exposing a consumed raw response", async () => {
@@ -516,13 +519,13 @@ describe("createRequest", () => {
       responses: [
         response(
           {
-            key: "json",
+            _tag: "json",
             status: (status) => status >= 200 && status < 300,
             headers: { "content-type": (value) => value?.startsWith("application/json") ?? false },
           },
           User,
         ),
-        response({ key: "success", status: (status) => status >= 200 && status < 300 }, User),
+        response({ _tag: "success", status: (status) => status >= 200 && status < 300 }, User),
       ],
     });
 
@@ -533,17 +536,19 @@ describe("createRequest", () => {
       Effect.runPromise,
     );
 
-    expect(result.key).toBe("json");
+    expect(result._tag).toBe("json");
+    expect(result.matched._tag).toBe("json");
     expect(result.status).toBe(200);
     expect(result.headers["x-extra"]).toBe("kept");
     expect("response" in result).toBe(false);
+    expect("key" in result).toBe(false);
   });
 
   it("reflects exact matched header names in their canonical lowercase form", async () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
-      responses: [response({ key: "thin", status: 200, headers: { "X-Response-Shape": "thin" } }, ThinUser)],
+      responses: [response({ _tag: "thin", status: 200, headers: { "X-Response-Shape": "thin" } }, ThinUser)],
     });
 
     const result = await getUser().effect.pipe(
@@ -562,33 +567,33 @@ describe("createRequest", () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
-      responses: [response({ key: "first", status: 200 }, User), response({ key: "second", status: 200 }, User)],
+      responses: [response({ _tag: "first", status: 200 }, User), response({ _tag: "second", status: 200 }, User)],
     });
     const layer = fetchLayer(mockFetch(async () => Response.json({ id: 1, name: "Ada" })));
 
     const declared = await getUser().effect.pipe(Effect.provide(layer), Effect.runPromise);
     const replaced = await getUser()
-      .setResponseSchema({ key: "second", status: 200 }, ThinUser)
+      .setResponseSchema({ _tag: "second", status: 200 }, ThinUser)
       .effect.pipe(Effect.provide(layer), Effect.runPromise);
     const inserted = await getUser()
-      .setResponseSchema({ key: "plan", status: 200 }, User)
+      .setResponseSchema({ _tag: "plan", status: 200 }, User)
       .effect.pipe(Effect.provide(layer), Effect.runPromise);
 
-    expect(declared.key).toBe("first");
-    expect(replaced.key).toBe("first");
-    expect(inserted.key).toBe("plan");
+    expect(declared._tag).toBe("first");
+    expect(replaced._tag).toBe("first");
+    expect(inserted._tag).toBe("plan");
   });
 
   it("decodes text and drains no-body responses before decoding undefined", async () => {
     const getStatus = createRequest({
       method: "GET",
       path: "https://example.test/status",
-      responses: [response({ key: "ok", status: 200 }, Schema.Literal("ready"), { codec: ResponseBody.text })],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Literal("ready"), { codec: ResponseBody.text })],
     });
     const trigger = createRequest({
       method: "POST",
       path: "https://example.test/trigger",
-      responses: [response({ key: "done", status: 202 }, Schema.Void, { codec: ResponseBody.none })],
+      responses: [response({ _tag: "done", status: 202 }, Schema.Void, { codec: ResponseBody.none })],
     });
     const Acknowledgement = Schema.transform(Schema.Undefined, Schema.Literal("accepted"), {
       strict: true,
@@ -598,7 +603,7 @@ describe("createRequest", () => {
     const acknowledge = createRequest({
       method: "POST",
       path: "https://example.test/acknowledge",
-      responses: [response({ key: "accepted", status: 204 }, Acknowledgement, { codec: ResponseBody.none })],
+      responses: [response({ _tag: "accepted", status: 204 }, Acknowledgement, { codec: ResponseBody.none })],
     });
 
     const text = await getStatus().effect.pipe(
@@ -619,7 +624,7 @@ describe("createRequest", () => {
     expect(acknowledged.body).toBe("accepted");
 
     response(
-      { key: "invalid", status: 204 },
+      { _tag: "invalid", status: 204 },
       User,
       // @ts-expect-error A no-body codec requires a schema whose output accepts undefined.
       { codec: ResponseBody.none },
@@ -631,7 +636,7 @@ describe("createRequest", () => {
       encode: () => "undefined",
     });
     response(
-      { key: "invalid-transform", status: 204 },
+      { _tag: "invalid-transform", status: 204 },
       UndefinedFromString,
       // @ts-expect-error A no-body codec supplies undefined to the schema's encoded side, which is string here.
       { codec: ResponseBody.none },
@@ -643,18 +648,18 @@ describe("createRequest", () => {
     const getTextParsedUser = api.createRequest({
       method: "GET",
       path: "/text-user",
-      responses: [response({ key: "ok", status: 200 }, Schema.parseJson(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.parseJson(User))],
     });
     const getJsonUser = api.createRequest({
       method: "GET",
       path: "/json-user",
       responseCodec: ResponseBody.json,
-      responses: [response({ key: "ok", status: 200 }, User)],
+      responses: [response({ _tag: "ok", status: 200 }, User)],
     });
     const getNoBody = api.createRequest({
       method: "GET",
       path: "/empty",
-      responses: [response({ key: "empty", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+      responses: [response({ _tag: "empty", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
     });
 
     const textParsed = await getTextParsedUser().effect.pipe(
@@ -667,7 +672,7 @@ describe("createRequest", () => {
     );
     const planOverride = await getJsonUser()
       .setResponseCodec(ResponseBody.text)
-      .setResponseSchema({ key: "ok", status: 200 }, Schema.parseJson(User))
+      .setResponseSchema({ _tag: "ok", status: 200 }, Schema.parseJson(User))
       .effect.pipe(
         Effect.provide(fetchLayer(mockFetch(async () => new Response('{"id":3,"name":"Lin"}')))),
         Effect.runPromise,
@@ -686,14 +691,14 @@ describe("createRequest", () => {
   it("keeps mapped 4xx responses in the success channel", async () => {
     const api = createApi("https://example.test", {
       responses: [
-        response({ key: "not-found", status: 404 }, NotFound),
-        response({ key: "gone", status: 410 }, Gone),
+        response({ _tag: "not-found", status: 404 }, NotFound),
+        response({ _tag: "gone", status: 410 }, Gone),
       ] as const,
     });
     const getUser = api.createRequest({
       method: "GET",
       path: "/users/1",
-      responses: [response({ key: "ok", status: 200 }, User)] as const,
+      responses: [response({ _tag: "ok", status: 200 }, User)] as const,
     });
 
     const result = await getUser().effect.pipe(
@@ -704,9 +709,9 @@ describe("createRequest", () => {
     expect(result).toMatchObject({ status: 410, body: { deletedAt: "2026-09-09" } });
     if (result.status === 410) expectTypeOf(result.body).toEqualTypeOf<typeof Gone.Type>();
     const description = Match.value(result).pipe(
-      Match.when({ key: "ok" }, ({ body }) => body.name),
-      Match.when({ key: "not-found" }, ({ body }) => body.message),
-      Match.when({ key: "gone" }, ({ body }) => body.deletedAt),
+      Match.tag("ok", ({ body }) => body.name),
+      Match.tag("not-found", ({ body }) => body.message),
+      Match.tag("gone", ({ body }) => body.deletedAt),
       Match.exhaustive,
     );
     expect(description).toBe("2026-09-09");
@@ -714,7 +719,7 @@ describe("createRequest", () => {
     const getDetailedUser = api.createRequest({
       method: "GET",
       path: "/detailed-users/1",
-      responses: [response({ key: "not-found", status: 404 }, DetailedNotFound)] as const,
+      responses: [response({ _tag: "not-found", status: 404 }, DetailedNotFound)] as const,
     });
     const detailed = await getDetailedUser().effect.pipe(
       Effect.provide(
@@ -734,7 +739,7 @@ describe("createRequest", () => {
       method: "POST",
       path: "https://example.test/users",
       body: Schema.Struct({ name: Schema.String }),
-      responses: [response({ key: "created", status: 201 }, User)] as const,
+      responses: [response({ _tag: "created", status: 201 }, User)] as const,
     });
 
     const plan = createUser();
@@ -767,7 +772,7 @@ describe("createRequest", () => {
       path: "https://example.test/actions",
       body: XmlCommand,
       bodyCodec: RequestBody.text("application/xml"),
-      responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+      responses: [response({ _tag: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
     });
     const requests: Array<Request> = [];
     const layer = fetchLayer(
@@ -804,7 +809,7 @@ describe("createRequest", () => {
       path: "https://example.test/actions",
       body: XmlString,
       bodyCodec: RequestBody.text("application/xml"),
-      responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+      responses: [response({ _tag: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
     });
     let sent = false;
 
@@ -842,7 +847,7 @@ describe("createRequest", () => {
       path: "https://example.test/foo",
       body: Schema.Struct({ action: Schema.String }),
       defaultBody: { action: "foo" },
-      responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
+      responses: [response({ _tag: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const,
     });
     const layer = fetchLayer(
       mockFetch(async (request) => {
@@ -884,7 +889,7 @@ describe("createRequest", () => {
     }).createRequest({
       method: "GET",
       path: "/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))] as const,
     });
 
     const result = await getUsers()
@@ -918,8 +923,8 @@ describe("createRequest", () => {
       method: "GET",
       path: "https://example.test/health",
       responses: [
-        response({ key: "available", status: 200 }, Schema.Struct({ ready: Schema.Literal(true) })),
-        response({ key: "unavailable", status: 503 }, Schema.Struct({ retryAfter: Schema.Number })),
+        response({ _tag: "available", status: 200 }, Schema.Struct({ ready: Schema.Literal(true) })),
+        response({ _tag: "unavailable", status: 503 }, Schema.Struct({ retryAfter: Schema.Number })),
       ],
     });
 
@@ -940,7 +945,7 @@ describe("createRequest", () => {
 
     expect(responses).toHaveLength(3);
     expect(responses.map((raw) => raw.bodyUsed)).toEqual([true, true, true]);
-    expect(result).toMatchObject({ key: "unavailable", body: { retryAfter: 1 } });
+    expect(result).toMatchObject({ _tag: "unavailable", body: { retryAfter: 1 } });
   });
 
   it("shares one retry budget across alternating transport and response failures", async () => {
@@ -948,7 +953,7 @@ describe("createRequest", () => {
     const getHealth = createRequest({
       method: "GET",
       path: "https://example.test/health",
-      responses: [response({ key: "unavailable", status: 503 }, Schema.Struct({ retryAfter: Schema.Number }))],
+      responses: [response({ _tag: "unavailable", status: 503 }, Schema.Struct({ retryAfter: Schema.Number }))],
     });
 
     const result = await getHealth()
@@ -976,7 +981,7 @@ describe("createRequest", () => {
     const getUsers = createRequest({
       method: "GET",
       path: "https://example.test/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
 
     expect(() => getUsers().setRetries(-1)).toThrow(InvalidRetryCount);
@@ -998,7 +1003,7 @@ describe("createRequest", () => {
     const getUsers = createRequest({
       method: "GET",
       path: "https://example.test/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
 
     const result = await getUsers()
@@ -1027,7 +1032,7 @@ describe("createRequest", () => {
     const getUsers = createRequest({
       method: "GET",
       path: "https://example.test/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
     });
     const slowBody = new ReadableStream({
       start(controller) {
@@ -1058,7 +1063,7 @@ describe("createRequest", () => {
     const getUsers = createRequest({
       method: "GET",
       path: "https://example.test/users",
-      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))] as const,
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))] as const,
     });
     const requests: Array<Request> = [];
     const layer = fetchLayer(
@@ -1084,7 +1089,7 @@ describe("createRequest", () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
-      responses: [response({ key: "ok", status: 200 }, User)] as const,
+      responses: [response({ _tag: "ok", status: 200 }, User)] as const,
     });
 
     const result = await getUser().effect.pipe(
@@ -1107,7 +1112,7 @@ describe("createRequest", () => {
     const getUser = createRequest({
       method: "GET",
       path: "https://example.test/users/1",
-      responses: [response({ key: "ok", status: 200 }, User)],
+      responses: [response({ _tag: "ok", status: 200 }, User)],
     });
 
     const result = await getUser().effect.pipe(
@@ -1120,7 +1125,7 @@ describe("createRequest", () => {
     if (Either.isLeft(result)) {
       expect(result.left).toBeInstanceOf(ResponseDecodeError);
       if (result.left instanceof ResponseDecodeError) {
-        expect(result.left.key).toBe("ok");
+        expect(result.left.responseTag).toBe("ok");
         expect(result.left.status).toBe(200);
         expect(result.left.response.status).toBe(200);
       }

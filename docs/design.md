@@ -9,22 +9,22 @@ that sends and decodes the request.
 const api = createApi("https://api.example.com", {
   headers: { authorization: "Bearer ..." },
   retries: 0,
-  responses: [response({ key: "not-found", status: 404 }, MyApiNotFound)],
+  responses: [response({ _tag: "not-found", status: 404 }, MyApiNotFound)],
 });
 
 const getUsers = api.createRequest({
   method: "GET",
   path: "/users",
   responses: [
-    response({ key: "ok", status: 200 }, Schema.Array(User)),
-    response({ key: "empty", status: 204 }, Schema.Void, { codec: ResponseBody.none }),
-    response({ key: "gone", status: 410 }, Gone),
+    response({ _tag: "ok", status: 200 }, Schema.Array(User)),
+    response({ _tag: "empty", status: 204 }, Schema.Void, { codec: ResponseBody.none }),
+    response({ _tag: "gone", status: 410 }, Gone),
   ],
 });
 
 const users = getUsers().pipe(
   setUrlParam("fields", "id,name"),
-  setResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser)),
+  setResponseSchema({ _tag: "ok", status: 200 }, Schema.Array(ThinUser)),
   setCache({ control: "max-age=3600", fetch: "force-cache" }),
   setRetries(3),
   toEffect,
@@ -40,7 +40,7 @@ or untyped calls instead of sending unresolved placeholders:
 const getUserPost = api.createRequest({
   method: "GET",
   path: "/users/:userId/posts/:postId",
-  responses: [response({ key: "ok", status: 200 }, BlogPost)],
+  responses: [response({ _tag: "ok", status: 200 }, BlogPost)],
 });
 
 const request = getUserPost(userId, postId);
@@ -63,7 +63,7 @@ Plans, endpoints, and APIs are pipeable. Plan combinators preserve body typestat
 ```ts
 const getThinUsers = getUsers.pipe(
   mapEndpoint((plan) =>
-    plan.pipe(setUrlParam("fields", "id,name"), setResponseSchema({ key: "ok", status: 200 }, Schema.Array(ThinUser))),
+    plan.pipe(setUrlParam("fields", "id,name"), setResponseSchema({ _tag: "ok", status: 200 }, Schema.Array(ThinUser))),
   ),
 );
 
@@ -88,33 +88,34 @@ Each mapped response produces an envelope:
 
 ```ts
 type ResponseEnvelope = {
-  readonly key: "ok";
+  readonly _tag: "ok";
   readonly status: 200;
   readonly headers: Headers;
   readonly body: ReadonlyArray<User>;
-  readonly matched: { readonly key: "ok"; readonly status: 200 };
+  readonly matched: { readonly _tag: "ok"; readonly status: 200 };
 };
 ```
 
-The actual type is a discriminated union over all response rules. Each declaration enforces unique keys at both the
-type and runtime levels, so checking `response.key` narrows both the envelope and its body without custom guards, even
-when several rules share a status. The key also makes the union work directly with Effect's `Match`:
+The actual type is a discriminated union over all response rules. Each declaration enforces unique tags at both the
+type and runtime levels, so checking `response._tag` narrows both the envelope and its body without custom guards, even
+when several rules share a status. The tag also makes the union work directly with Effect's `Match.tag`:
 
 ```ts
 const description = Match.value(result).pipe(
-  Match.when({ key: "ok" }, ({ body }) => body.name),
-  Match.when({ key: "not-found" }, ({ body }) => body.message),
-  Match.when({ key: "gone" }, ({ body }) => body.deletedAt),
+  Match.tag("ok", ({ body }) => body.name),
+  Match.tag("not-found", ({ body }) => body.message),
+  Match.tag("gone", ({ body }) => body.deletedAt),
   Match.exhaustive,
 );
 ```
 
 `matched` preserves the complete selected matcher, and exact matcher headers are reflected in the header type. A mapped
 envelope does not retain the original `HttpClientResponse`: its body has already been consumed and the response would
-not be safely replayable from a request gate. `key`, `status`, and `matched` are deliberately redundant: `key` is the
-ergonomic discriminant, `status` is the actual status (and remains a literal for exact status matchers), and `matched`
-explains why the rule was selected. Effect's `Match` is useful for consuming the result but not for defining the response
-table: its runtime cases erase the schema and context information the request factory needs to retain in its generics.
+not be safely replayable from a request gate. `_tag`, `status`, and `matched` are deliberately redundant: `_tag` is the
+Effect-compatible discriminant, `status` is the actual status (and remains a literal for exact status matchers), and
+`matched` explains why the rule was selected. Effect's `Match` is useful for consuming the result but not for defining
+the response table: its runtime cases erase the schema and context information the request factory needs to retain in
+its generics.
 
 `UnhandledResponse` retains the untouched `HttpClientResponse`, including its unconsumed body, instead of copying only
 status and headers. Ownership of that live body transfers to the caller, which must consume or cancel it when recovering
@@ -128,14 +129,14 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
 
 - API response rules are inherited by every endpoint. This supports APIs with a common `404`, authentication response,
   maintenance response, or other shared response shape.
-- An endpoint response rule replaces an inherited rule with the same unique key.
-- `setResponseSchema` replaces the rule with the same key in place for one request plan. Other response possibilities
-  and tie-break positions stay intact. It may change both the matcher and schema. If the key is new, the rule is added.
+- An endpoint response rule replaces an inherited rule with the same unique tag.
+- `setResponseSchema` replaces the rule with the same tag in place for one request plan. Other response possibilities
+  and tie-break positions stay intact. It may change both the matcher and schema. If the tag is new, the rule is added.
 - Status and header matchers accept exact values or predicates. Exact strings remain convenient, while predicates
   support status ranges and values such as `application/json; charset=utf-8` without introducing schema failures during
   rule selection.
 - Header-constrained rules beat status-only rules. Within API and endpoint declarations, the first equally specific
-  rule wins. A plan rule with a new key is prepended, so it wins an equally specific tie at that call site.
+  rule wins. A plan rule with a new tag is prepended, so it wins an equally specific tie at that call site.
 - API options flow to endpoints and plans. Endpoint options override API defaults; plan setters override both.
 - `api.extend(options)` and pipeable `extendApi(options)` create a sub-API with merged headers, query parameters,
   policies, transforms, and response rules. APIs expose their base URL, and `setBaseUrl(...)` can redirect one plan to a
@@ -162,7 +163,7 @@ const doFoo = api.createRequest({
   path: "/foo",
   body: FooCommand,
   defaultBody: { action: "foo" },
-  responses: [response({ key: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+  responses: [response({ _tag: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
 });
 
 const request = doFoo();
@@ -215,7 +216,7 @@ one call site. `.setRetry({ times, schedule, mode })` accepts an Effect `Schedul
 explicit schedule uses jittered exponential backoff rather than immediate repeats. Counts must be finite, non-negative
 integers.
 
-Invalid retry counts, duplicate response keys, and path-argument arity mismatches are synchronous configuration defects
+Invalid retry counts, duplicate response tags, and path-argument arity mismatches are synchronous configuration defects
 represented by ordinary `Error` subclasses. They do not enter an Effect error channel, and validation never executes
 the HTTP request.
 

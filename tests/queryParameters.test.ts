@@ -38,7 +38,7 @@ describe("query parameter wire syntax", () => {
       method: "GET",
       path: "/inspect?pathFlag&pathEmpty=&pathFalse=false",
       urlParams: { endpointFlag: true },
-      responses: [response({ key: "ok", status: 200 }, ReflectedQuery)],
+      responses: [response({ _tag: "ok", status: 200 }, ReflectedQuery)],
     });
 
     const result = await inspectQuery()
@@ -64,7 +64,7 @@ describe("query parameter wire syntax", () => {
     const inspectQuery = createApi(baseUrl).createRequest({
       method: "GET",
       path: "/inspect?foo=a&foo=b&foo=b&foo=c&flag&flag=",
-      responses: [response({ key: "ok", status: 200 }, ReflectedQuery)],
+      responses: [response({ _tag: "ok", status: 200 }, ReflectedQuery)],
     });
 
     const replaced = await inspectQuery()

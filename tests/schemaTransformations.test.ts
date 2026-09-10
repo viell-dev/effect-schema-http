@@ -141,13 +141,13 @@ describe("schema transformations over HTTP", () => {
     const getVersion = api.createRequest({
       method: "GET",
       path: "/",
-      responses: [response({ key: "version", status: 200 }, Version)],
+      responses: [response({ _tag: "version", status: 200 }, Version)],
     });
     const getVersionFromString = api.createRequest({
       method: "GET",
       path: "/version-text",
       responseCodec: ResponseBody.text,
-      responses: [response({ key: "version", status: 200 }, VersionFromString)],
+      responses: [response({ _tag: "version", status: 200 }, VersionFromString)],
     });
 
     const json = await getVersion().effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
@@ -164,7 +164,7 @@ describe("schema transformations over HTTP", () => {
     const getInvalidVersion = createApi(baseUrl).createRequest({
       method: "GET",
       path: "/invalid-version",
-      responses: [response({ key: "version", status: 200 }, Version)],
+      responses: [response({ _tag: "version", status: 200 }, Version)],
     });
 
     const result = await getInvalidVersion().effect.pipe(
@@ -177,7 +177,7 @@ describe("schema transformations over HTTP", () => {
     if (Either.isLeft(result)) {
       expect(result.left).toBeInstanceOf(ResponseDecodeError);
       if (result.left instanceof ResponseDecodeError) {
-        expect(result.left.key).toBe("version");
+        expect(result.left.responseTag).toBe("version");
         expect(result.left.status).toBe(200);
         expect(ParseResult.isParseError(result.left.cause)).toBe(true);
       }
@@ -190,7 +190,7 @@ describe("schema transformations over HTTP", () => {
       path: "/commands",
       body: RequestXmlString,
       bodyCodec: RequestBody.text("application/xml"),
-      responses: [response({ key: "accepted", status: 202 }, XmlAcknowledgement, { codec: ResponseBody.text })],
+      responses: [response({ _tag: "accepted", status: 202 }, XmlAcknowledgement, { codec: ResponseBody.text })],
     });
 
     const accepted = await sendCommand()
@@ -211,18 +211,18 @@ describe("schema transformations over HTTP", () => {
     const acknowledge = createApi(baseUrl).createRequest({
       method: "POST",
       path: "/empty-acknowledgement",
-      responses: [response({ key: "accepted", status: 204 }, EmptyAcknowledgement, { codec: ResponseBody.none })],
+      responses: [response({ _tag: "accepted", status: 204 }, EmptyAcknowledgement, { codec: ResponseBody.none })],
     });
 
     const result = await acknowledge().effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);
-    expect(result).toMatchObject({ key: "accepted", body: "accepted" });
+    expect(result).toMatchObject({ _tag: "accepted", body: "accepted" });
   });
 
   it("validates recursive JSON values through a real response", async () => {
     const getJson = createApi(baseUrl).createRequest({
       method: "GET",
       path: "/recursive-json",
-      responses: [response({ key: "json", status: 200 }, JsonValueSchema)],
+      responses: [response({ _tag: "json", status: 200 }, JsonValueSchema)],
     });
 
     const result = await getJson().effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.runPromise);

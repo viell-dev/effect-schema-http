@@ -75,7 +75,7 @@ describe("request gates over HTTP", () => {
     const getUsers = createApi(baseUrl).createRequest({
       method: "GET",
       path: "/users",
-      responses: [response({ key: "ok", status: 200 }, Users), response({ key: "not-found", status: 404 }, NotFound)],
+      responses: [response({ _tag: "ok", status: 200 }, Users), response({ _tag: "not-found", status: 404 }, NotFound)],
     });
 
     return yield* makeRequestGate(
@@ -101,10 +101,10 @@ describe("request gates over HTTP", () => {
 
     const result = await Effect.runPromise(program);
 
-    expect(result.first).toMatchObject({ key: "ok", body: [{ name: "Ada", request: 1 }] });
+    expect(result.first).toMatchObject({ _tag: "ok", body: [{ name: "Ada", request: 1 }] });
     expect(Either.isLeft(result.invalid)).toBe(true);
     expect(result.restored).toBe(result.first);
-    expect(result.refreshed).toMatchObject({ key: "ok", body: [{ name: "Ada", request: 2 }] });
+    expect(result.refreshed).toMatchObject({ _tag: "ok", body: [{ name: "Ada", request: 2 }] });
     expect(requests).toBe(2);
   });
 
@@ -122,8 +122,8 @@ describe("request gates over HTTP", () => {
     const result = await Effect.runPromise(program);
 
     expect(result.slow[0]).toBe(result.slow[1]);
-    expect(result.slow[0]).toMatchObject({ key: "ok", body: [{ name: "slow", request: 1 }] });
-    expect(result.missing).toMatchObject({ key: "not-found", body: { search: "missing", request: 2 } });
+    expect(result.slow[0]).toMatchObject({ _tag: "ok", body: [{ name: "slow", request: 1 }] });
+    expect(result.missing).toMatchObject({ _tag: "not-found", body: { search: "missing", request: 2 } });
     expect(result.missingAgain).toBe(result.missing);
     expect(requests).toBe(2);
   });
