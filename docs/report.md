@@ -287,7 +287,7 @@ rule's schema also promotes it above its equally-specific siblings. Probed and c
 Runtime and type-level replacement now preserve the existing key's position. A genuinely new plan rule is still
 prepended and therefore wins an equally specific tie.
 
-### 3.8 The retry budget multiplies when transport errors and transient responses alternate
+### 3.8 ~~The retry budget multiplies when transport errors and transient responses alternate~~ — fixed
 
 **Severity: low–medium — the doc's stated bound is wrong for mixed failures.**
 
@@ -304,10 +304,10 @@ Worth noting for fairness: `HttpClient.retryTransient` with `mode: "both"` nests
 with the same `times` and has the same multiplication property, so this is inherited from upstream rather than invented
 here. But this library both re-implements the loop _and_ documents a specific bound, so it owns the discrepancy.
 
-Fix by threading a single attempt counter through both dimensions, or by decrementing the errors-only budget from the
-response loop's remaining allowance. At minimum, restate the bound in the doc.
+Retry handling now uses one loop, one counter, and one schedule driver for errors and responses. `times` is therefore a
+single shared retry budget, and intermediate transient responses are still drained before the next attempt.
 
-### 3.9 Per-attempt timeouts do not cover response body reading
+### 3.9 ~~Per-attempt timeouts do not cover response body reading~~ — fixed
 
 **Severity: low–medium — the guarantee is narrower than it reads.**
 
@@ -320,9 +320,8 @@ Probed: the effect **succeeds** after ~120 ms. `Effect.timeout` is applied throu
 resolves when headers are available. Body reading happens later, in `decodeResponse`, outside the timeout. A server that
 sends headers promptly and then stalls the body is unbounded.
 
-This is arguably the right layering for a "per-attempt" timeout (a retry cannot re-read a partially consumed body), but
-"applies to each individual attempt" reads like a wall-clock bound on the attempt. Either extend the timeout to cover
-decoding, or add a separate total-deadline option, and say which one it is in the doc.
+The timeout now wraps transport execution and final response decoding as one attempt. Slow response bodies therefore
+fail with `TimeoutException`, which participates in the same retry budget when error retries are enabled.
 
 ### 3.10 `defaultBody` accepts excess properties and reports failures badly
 

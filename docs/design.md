@@ -210,13 +210,14 @@ explicit schedule uses jittered exponential backoff rather than immediate repeat
 integers.
 
 The transient classification matches `HttpClient.retryTransient`: timeouts and transport failures, plus 408, 429, 500,
-502, 503, and 504 responses. A mapped transient response is still retried before rule selection, so a mapped 503 with
-`times: 3` is returned after at most four attempts. Intermediate transient responses are drained before another request
-is sent. `mode` can restrict a policy to errors or responses when that distinction matters.
+502, 503, and 504 responses. One retry counter and schedule driver are shared across both kinds, so `times: 3` permits
+at most four attempts even when transport errors and transient responses alternate. A mapped transient response is
+still retried before rule selection. Intermediate transient responses are drained before another request is sent.
+`mode` can restrict a policy to errors or responses when that distinction matters.
 
-`timeout` options and `.setTimeout(...)` apply to each individual attempt. Effect interruption propagates through the
-HTTP client, while a timeout becomes a transient `TimeoutException` that can participate in the configured retry
-policy.
+`timeout` options and `.setTimeout(...)` apply to each individual attempt, including decoding the final response body.
+Effect interruption propagates through the HTTP client, while a timeout becomes a transient `TimeoutException` that
+can participate in the configured retry policy.
 
 No cache policy is supplied by default. API and endpoint definitions can specify a `CachePolicy`, and `.setCache(...)`
 can replace or clear it at a call site. Its `control` field writes a standard `Cache-Control` request header for HTTP

@@ -718,36 +718,74 @@ const normalizeRetry = (retry: RetryPolicy | number | undefined): RetryPolicy | 
 const isTransientResponseStatus = (status: number): boolean =>
   status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 
-const executeWithRetry = <Error extends HttpClientError.HttpClientError | Cause.TimeoutException>(
+const isTransientRetryError = (error: unknown): boolean =>
+  Cause.isTimeoutException(error) ||
+  (HttpClientError.isHttpClientError(error) &&
+    ((error._tag === "RequestError" && error.reason === "Transport") ||
+      (error._tag === "ResponseError" && isTransientResponseStatus(error.response.status))));
+
+const withAttemptTimeout = <Success, Error, Requirements>(
+  effect: Effect.Effect<Success, Error, Requirements>,
+  timeout: Duration.DurationInput | undefined,
+): Effect.Effect<Success, Error | Cause.TimeoutException, Requirements> =>
+  timeout === undefined ? effect : Effect.timeout(effect, timeout);
+
+const executeWithRetry = <Success, HandlingError, Requirements, Error extends HttpClientError.HttpClientError>(
   client: HttpClient.HttpClient.With<Error>,
   request: HttpClientRequest.HttpClientRequest,
   retry: RetryPolicy | undefined,
-): Effect.Effect<HttpClientResponse.HttpClientResponse, Error | HttpClientError.ResponseError> => {
-  if (retry === undefined) return client.execute(request);
-
-  const mode = retry.mode ?? "both";
-  const schedule = retry.schedule ?? defaultRetrySchedule;
-  const errorRetryingClient =
-    mode === "response-only"
-      ? client
-      : HttpClient.retryTransient(client, { mode: "errors-only", schedule, times: retry.times });
-  const execute = errorRetryingClient.execute(request);
-  if (mode === "errors-only") return execute;
+  timeout: Duration.DurationInput | undefined,
+  handleResponse: (raw: HttpClientResponse.HttpClientResponse) => Effect.Effect<Success, HandlingError, Requirements>,
+): Effect.Effect<
+  Success,
+  Error | HandlingError | HttpClientError.ResponseError | Cause.TimeoutException,
+  Requirements
+> => {
+  const mode = retry?.mode ?? "both";
+  const times = retry?.times ?? 0;
+  const schedule = retry?.schedule ?? defaultRetrySchedule;
 
   return Effect.gen(function* () {
     const driver = yield* Schedule.driver(schedule);
     let retries = 0;
-    while (true) {
-      const raw = yield* execute;
-      if (!isTransientResponseStatus(raw.status) || retries >= retry.times) return raw;
 
-      const canRetry = yield* driver.next(raw).pipe(
+    while (true) {
+      const attempt = withAttemptTimeout(
+        Effect.gen(function* () {
+          const raw = yield* client.execute(request);
+          if (mode !== "errors-only" && retries < times && isTransientResponseStatus(raw.status)) {
+            return { _tag: "RetryResponse" as const, response: raw };
+          }
+          return { _tag: "Done" as const, value: yield* handleResponse(raw) };
+        }),
+        timeout,
+      );
+      const outcome = yield* Effect.either(attempt);
+
+      if (outcome._tag === "Left") {
+        if (mode === "response-only" || retries >= times || !isTransientRetryError(outcome.left)) {
+          return yield* Effect.fail(outcome.left);
+        }
+
+        const canRetry = yield* driver.next(outcome.left as RetryInput).pipe(
+          Effect.as(true),
+          Effect.catchAll(() => Effect.succeed(false)),
+        );
+        if (!canRetry) return yield* Effect.fail(outcome.left);
+
+        retries += 1;
+        continue;
+      }
+
+      if (outcome.right._tag === "Done") return outcome.right.value;
+
+      const canRetry = yield* driver.next(outcome.right.response).pipe(
         Effect.as(true),
         Effect.catchAll(() => Effect.succeed(false)),
       );
-      if (!canRetry) return raw;
+      if (!canRetry) return yield* withAttemptTimeout(handleResponse(outcome.right.response), timeout);
 
-      yield* raw.arrayBuffer;
+      yield* withAttemptTimeout(outcome.right.response.arrayBuffer, timeout);
       retries += 1;
     }
   });
@@ -907,13 +945,28 @@ const makePlan = <
 
           let client = yield* HttpClient.HttpClient;
           for (const transform of state.clientTransforms) client = transform(client);
-          const timedClient =
-            state.timeout === undefined
-              ? client
-              : HttpClient.transformResponse(client, (responseEffect) =>
-                  Effect.timeout(responseEffect, state.timeout!),
-                );
-          let send = executeWithRetry(timedClient, request, state.retry);
+          const handleResponse = (
+            raw: HttpClientResponse.HttpClientResponse,
+          ): Effect.Effect<
+            ResponseOf<Rules>,
+            UnhandledResponse | HttpClientError.ResponseError | ResponseDecodeError,
+            unknown
+          > => {
+            const rule = findResponseRule(rules, raw.status, raw.headers);
+            if (rule === undefined) return Effect.fail(new UnhandledResponse({ response: raw }));
+
+            return Effect.map(decodeResponse(rule, raw, state.responseCodec), (body) => {
+              const envelope = {
+                key: rule.match.key,
+                status: raw.status,
+                headers: raw.headers,
+                body,
+                matched: rule.match,
+              } satisfies ResponseEnvelope<ResponseMatcher, unknown>;
+              return envelope as ResponseOf<Rules>;
+            });
+          };
+          let send = executeWithRetry(client, request, state.retry, state.timeout, handleResponse);
 
           if (state.cache?.fetch !== undefined) {
             const existingRequestInit = yield* Effect.serviceOption(FetchHttpClient.RequestInit);
@@ -923,20 +976,7 @@ const makePlan = <
             });
           }
 
-          const raw = yield* send;
-          const rule = findResponseRule(rules, raw.status, raw.headers);
-
-          if (rule === undefined) return yield* new UnhandledResponse({ response: raw });
-
-          const body = yield* decodeResponse(rule, raw, state.responseCodec);
-          const envelope = {
-            key: rule.match.key,
-            status: raw.status,
-            headers: raw.headers,
-            body,
-            matched: rule.match,
-          } satisfies ResponseEnvelope<ResponseMatcher, unknown>;
-          return envelope as ResponseOf<Rules>;
+          return yield* send;
         });
 
   const plan = {

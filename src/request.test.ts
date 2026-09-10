@@ -917,6 +917,34 @@ describe("createRequest", () => {
     expect(result).toMatchObject({ key: "unavailable", body: { retryAfter: 1 } });
   });
 
+  it("shares one retry budget across alternating transport and response failures", async () => {
+    let attempts = 0;
+    const getHealth = createRequest({
+      method: "GET",
+      path: "https://example.test/health",
+      responses: [response({ key: "unavailable", status: 503 }, Schema.Struct({ retryAfter: Schema.Number }))],
+    });
+
+    const result = await getHealth()
+      .setRetry({ times: 2, schedule: Schedule.recurs(2) })
+      .effect.pipe(
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async () => {
+              attempts += 1;
+              if (attempts % 2 === 1) throw new TypeError("transport failed");
+              return Response.json({ retryAfter: 1 }, { status: 503 });
+            }),
+          ),
+        ),
+        Effect.either,
+        Effect.runPromise,
+      );
+
+    expect(attempts).toBe(3);
+    expect(Either.isLeft(result)).toBe(true);
+  });
+
   it("rejects invalid retry counts and applies plan-level client transforms", async () => {
     let transformed = false;
     const getUsers = createRequest({
@@ -965,6 +993,37 @@ describe("createRequest", () => {
       );
 
     expect(attempts).toBe(2);
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result)) expect(Cause.isTimeoutException(result.left)).toBe(true);
+  });
+
+  it("includes response body decoding in the per-attempt timeout", async () => {
+    const getUsers = createRequest({
+      method: "GET",
+      path: "https://example.test/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Array(User))],
+    });
+    const slowBody = new ReadableStream({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(new TextEncoder().encode("[]"));
+          controller.close();
+        }, 50);
+      },
+    });
+
+    const result = await getUsers()
+      .setTimeout("5 millis")
+      .effect.pipe(
+        Effect.either,
+        Effect.provide(
+          fetchLayer(
+            mockFetch(async () => new Response(slowBody, { headers: { "content-type": "application/json" } })),
+          ),
+        ),
+        Effect.runPromise,
+      );
+
     expect(Either.isLeft(result)).toBe(true);
     if (Either.isLeft(result)) expect(Cause.isTimeoutException(result.left)).toBe(true);
   });
