@@ -1,0 +1,20 @@
+{
+  "name": "effect-schema-http-realworld",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Realworld-style multi-user blog exercising viell-effect-schema-http and Effect Schema.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "dev:server": "pnpm --filter @realworld/server run dev",
+    "dev:web": "pnpm --filter @realworld/web run dev",
+    "test": "pnpm -r --if-present run test"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}
