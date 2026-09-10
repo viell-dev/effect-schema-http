@@ -196,11 +196,14 @@ decodes `undefined`. The no-body codec only accepts schemas whose encoded/input 
 declarations that are guaranteed to fail while still allowing `undefined` to transform into a domain value. Additional
 byte, form, multipart, or streaming codecs can be added without changing the rule shape.
 
-Query parameters and request headers remain raw platform inputs for now. The generic design leaves room for a later
-typed API surface without making schemas for them part of the first version. Singular and plural query setters replace
-the named values they receive while retaining unrelated API and endpoint defaults; append and remove operations support
-repeated parameters and explicit deletion. Headers likewise have singular, plural, and removal setters. `mapRequest`
-and `mapClient` provide ordered plan-level escape hatches after API and endpoint transforms.
+Query parameters and request headers remain unschematized. Query values are `string | true`: strings produce ordinary
+`key=value` syntax, an empty string produces `key=`, and `true` produces the bare implicit-true form `key`. Explicit
+booleans remain explicit strings (`"true"` or `"false"`), while omission uses `removeUrlParam`. The library owns query
+serialization because WHATWG `URLSearchParams` normalizes `key` into `key=` and cannot preserve that distinction.
+Singular and plural query setters replace the named values they receive while retaining unrelated API and endpoint
+defaults; append and remove operations support repeated parameters and explicit deletion. Headers likewise have
+singular, plural, and removal setters. `mapRequest` and `mapClient` provide ordered plan-level escape hatches after API
+and endpoint transforms.
 
 ## Retry and cache policy
 

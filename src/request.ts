@@ -21,6 +21,14 @@ type AnySchema = Schema.Schema.Any;
 
 export type RequestMethod = string;
 
+export type QueryParamValue = string | true;
+export type QueryParamsInput =
+  | Readonly<Record<string, QueryParamValue | ReadonlyArray<QueryParamValue> | undefined>>
+  | Iterable<readonly [string, QueryParamValue]>
+  | URLSearchParams;
+
+type QueryParams = ReadonlyArray<readonly [string, QueryParamValue]>;
+
 export interface RequestBodyCodec<Input = unknown> {
   readonly name: string;
   readonly encode: (
@@ -392,7 +400,7 @@ export interface RetryPolicy {
 
 export interface RequestOptions {
   readonly headers?: Headers.Input;
-  readonly urlParams?: UrlParams.Input;
+  readonly urlParams?: QueryParamsInput;
   readonly responseCodec?: DefaultResponseBodyCodec;
   readonly cache?: CachePolicy;
   readonly timeout?: Duration.DurationInput;
@@ -466,9 +474,9 @@ export interface RequestPlan<
   extends Pipeable.Pipeable {
   readonly setBody: BodySetter<Body, Rules>;
   readonly setRequestBodyCodec: RequestBodyCodecSetter<Body, Rules, BodyReady>;
-  readonly setUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
-  readonly setUrlParams: (params: UrlParams.Input) => RequestPlan<Body, Rules, BodyReady>;
-  readonly appendUrlParam: (key: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setUrlParam: (key: string, value: QueryParamValue) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setUrlParams: (params: QueryParamsInput) => RequestPlan<Body, Rules, BodyReady>;
+  readonly appendUrlParam: (key: string, value: QueryParamValue) => RequestPlan<Body, Rules, BodyReady>;
   readonly removeUrlParam: (key: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setHeader: (name: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
   readonly setHeaders: (headers: Headers.Input) => RequestPlan<Body, Rules, BodyReady>;
@@ -530,21 +538,21 @@ export const setRequestBodyCodec =
     plan.setRequestBodyCodec(codec as RequestBodyCodec<Schema.Schema.Encoded<Body>>);
 
 export const setUrlParam =
-  (key: string, value: string) =>
+  (key: string, value: QueryParamValue) =>
   <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
     plan: RequestPlan<Body, Rules, BodyReady>,
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.setUrlParam(key, value);
 
 export const setUrlParams =
-  (params: UrlParams.Input) =>
+  (params: QueryParamsInput) =>
   <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
     plan: RequestPlan<Body, Rules, BodyReady>,
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.setUrlParams(params);
 
 export const appendUrlParam =
-  (key: string, value: string) =>
+  (key: string, value: QueryParamValue) =>
   <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
     plan: RequestPlan<Body, Rules, BodyReady>,
   ): RequestPlan<Body, Rules, BodyReady> =>
@@ -695,7 +703,7 @@ interface PlanState {
   readonly hasBody: boolean;
   readonly bodyCodec: RequestBodyCodec<never>;
   readonly headers: Headers.Headers;
-  readonly urlParams: UrlParams.UrlParams;
+  readonly urlParams: QueryParams;
   readonly responseCodec: DefaultResponseBodyCodec;
   readonly cache: CachePolicy | undefined;
   readonly timeout: Duration.DurationInput | undefined;
@@ -709,9 +717,9 @@ interface PlanState {
 interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly setBody: (body: unknown) => unknown;
   readonly setRequestBodyCodec: (codec: RequestBodyCodec<never>) => unknown;
-  readonly setUrlParam: (key: string, value: string) => unknown;
-  readonly setUrlParams: (params: UrlParams.Input) => unknown;
-  readonly appendUrlParam: (key: string, value: string) => unknown;
+  readonly setUrlParam: (key: string, value: QueryParamValue) => unknown;
+  readonly setUrlParams: (params: QueryParamsInput) => unknown;
+  readonly appendUrlParam: (key: string, value: QueryParamValue) => unknown;
   readonly removeUrlParam: (key: string) => unknown;
   readonly setHeader: (name: string, value: string) => unknown;
   readonly setHeaders: (headers: Headers.Input) => unknown;
@@ -827,16 +835,72 @@ const joinUrl = (baseUrl: string | undefined, path: string): string => {
   return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 };
 
-const splitPathUrlParams = (path: string): { readonly path: string; readonly urlParams: UrlParams.UrlParams } => {
+const queryParamsFromInput = (input: QueryParamsInput): QueryParams => {
+  if (Symbol.iterator in input) {
+    return Array.from(input, ([key, value]) => [key, value] as const);
+  }
+
+  return Object.entries(input).flatMap(([key, value]) => {
+    if (value === undefined) return [];
+    return Array.isArray(value)
+      ? value.map((item) => [key, item] as const)
+      : [[key, value as QueryParamValue] as const];
+  });
+};
+
+const setQueryParam = (params: QueryParams, key: string, value: QueryParamValue): QueryParams => [
+  ...params.filter(([candidate]) => candidate !== key),
+  [key, value],
+];
+
+const setQueryParams = (params: QueryParams, input: QueryParamsInput): QueryParams => {
+  const incoming = queryParamsFromInput(input);
+  const keys = new Set(incoming.map(([key]) => key));
+  return [...incoming, ...params.filter(([key]) => !keys.has(key))];
+};
+
+const appendQueryParam = (params: QueryParams, key: string, value: QueryParamValue): QueryParams => [
+  ...params,
+  [key, value],
+];
+
+const removeQueryParam = (params: QueryParams, key: string): QueryParams =>
+  params.filter(([candidate]) => candidate !== key);
+
+const encodeQueryParam = ([key, value]: readonly [string, QueryParamValue]): string => {
+  const encoded = new URLSearchParams([[key, value === true ? "" : value]]).toString();
+  return value === true ? encoded.slice(0, -1) : encoded;
+};
+
+const setUrlQuery = (url: string, params: QueryParams): string => {
+  if (params.length === 0) return url;
+
+  const fragmentIndex = url.indexOf("#");
+  const beforeFragment = fragmentIndex === -1 ? url : url.slice(0, fragmentIndex);
+  const fragment = fragmentIndex === -1 ? "" : url.slice(fragmentIndex);
+  const separator = beforeFragment.includes("?") ? (beforeFragment.endsWith("?") ? "" : "&") : "?";
+  return `${beforeFragment}${separator}${params.map(encodeQueryParam).join("&")}${fragment}`;
+};
+
+const parsePathQuery = (query: string): QueryParams =>
+  query.split("&").flatMap((part) => {
+    if (part === "") return [];
+    const parsed = new URLSearchParams(part).entries().next();
+    if (parsed.done) return [];
+    const [key, value] = parsed.value;
+    return [[key, part.includes("=") ? value : true] as const];
+  });
+
+const splitPathUrlParams = (path: string): { readonly path: string; readonly urlParams: QueryParams } => {
   const fragmentIndex = path.indexOf("#");
   const beforeFragment = fragmentIndex === -1 ? path : path.slice(0, fragmentIndex);
   const fragment = fragmentIndex === -1 ? "" : path.slice(fragmentIndex);
   const queryIndex = beforeFragment.indexOf("?");
-  if (queryIndex === -1) return { path, urlParams: UrlParams.empty };
+  if (queryIndex === -1) return { path, urlParams: [] };
 
   return {
     path: `${beforeFragment.slice(0, queryIndex)}${fragment}`,
-    urlParams: UrlParams.fromInput(new URLSearchParams(beforeFragment.slice(queryIndex + 1))),
+    urlParams: parsePathQuery(beforeFragment.slice(queryIndex + 1)),
   };
 };
 
@@ -947,10 +1011,9 @@ const makePlan = <
         )
       : Effect.gen(function* () {
           let request = HttpClientRequest.make(definition.method as HttpMethod.HttpMethod)(
-            joinUrl(state.baseUrl, definition.path),
+            setUrlQuery(joinUrl(state.baseUrl, definition.path), state.urlParams),
           );
           request = HttpClientRequest.setHeaders(request, state.headers);
-          request = HttpClientRequest.setUrlParams(request, state.urlParams);
 
           if (state.cache?.control !== undefined && !Headers.has(request.headers, "cache-control")) {
             request = HttpClientRequest.setHeader(request, "cache-control", state.cache.control);
@@ -1013,10 +1076,10 @@ const makePlan = <
     pipe: pipeSelf,
     setBody: (body: unknown) => makePlan<Body, Rules, true>(definition, rules, { ...state, body, hasBody: true }),
     setRequestBodyCodec: (bodyCodec: RequestBodyCodec<never>) => update({ bodyCodec }),
-    setUrlParam: (key, value) => update({ urlParams: UrlParams.set(state.urlParams, key, value) }),
-    setUrlParams: (params) => update({ urlParams: UrlParams.setAll(state.urlParams, params) }),
-    appendUrlParam: (key, value) => update({ urlParams: UrlParams.append(state.urlParams, key, value) }),
-    removeUrlParam: (key) => update({ urlParams: UrlParams.remove(state.urlParams, key) }),
+    setUrlParam: (key, value) => update({ urlParams: setQueryParam(state.urlParams, key, value) }),
+    setUrlParams: (params) => update({ urlParams: setQueryParams(state.urlParams, params) }),
+    appendUrlParam: (key, value) => update({ urlParams: appendQueryParam(state.urlParams, key, value) }),
+    removeUrlParam: (key) => update({ urlParams: removeQueryParam(state.urlParams, key) }),
     setHeader: (name, value) => update({ headers: Headers.set(state.headers, name, value) }),
     setHeaders: (headers) => update({ headers: Headers.setAll(state.headers, headers) }),
     removeHeader: (name) => update({ headers: Headers.remove(state.headers, name) }),
@@ -1069,9 +1132,9 @@ const createRequestInternal = <
     const filled = splitPathUrlParams(fillPath(definition.path, pathArguments));
     const baseHeaders = Headers.fromInput(definition.baseOptions?.headers);
     const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
-    const baseParams = UrlParams.fromInput(definition.baseOptions?.urlParams ?? {});
-    const pathParams = UrlParams.setAll(baseParams, filled.urlParams);
-    const urlParams = UrlParams.setAll(pathParams, definition.urlParams ?? {});
+    const baseParams = queryParamsFromInput(definition.baseOptions?.urlParams ?? {});
+    const pathParams = setQueryParams(baseParams, filled.urlParams);
+    const urlParams = setQueryParams(pathParams, definition.urlParams ?? {});
     const requestTransforms = [definition.baseOptions?.transformRequest, definition.transformRequest].filter(
       (transform): transform is NonNullable<typeof transform> => transform !== undefined,
     );
@@ -1157,7 +1220,7 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
 
       return createApi<MergeResponseRules<Defaults, Overrides>>(baseUrl, {
         headers: Headers.setAll(Headers.fromInput(options.headers), overrides.headers ?? {}),
-        urlParams: UrlParams.setAll(UrlParams.fromInput(options.urlParams ?? {}), overrides.urlParams ?? {}),
+        urlParams: setQueryParams(queryParamsFromInput(options.urlParams ?? {}), overrides.urlParams ?? {}),
         responseCodec: overrides.responseCodec ?? options.responseCodec,
         cache: overrides.cache ?? options.cache,
         timeout: overrides.timeout ?? options.timeout,

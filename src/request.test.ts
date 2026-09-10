@@ -235,6 +235,8 @@ describe("createRequest", () => {
 
     await getUsers()
       .removeUrlParam("remove")
+      .setUrlParam("bare", true)
+      .setUrlParam("empty", "")
       .appendUrlParam("tag", "a")
       .appendUrlParam("tag", "b")
       .setHeaders({ "x-one": "1", "x-two": "2" })
@@ -244,6 +246,8 @@ describe("createRequest", () => {
           fetchLayer(
             mockFetch(async (request) => {
               const url = new URL(request.url);
+              expect(request.url).toContain("bare&");
+              expect(request.url).toContain("empty=");
               expect(url.searchParams.getAll("tag")).toEqual(["a", "b"]);
               expect(url.searchParams.has("remove")).toBe(false);
               expect(request.headers.get("authorization")).toBe("Bearer token");
@@ -255,6 +259,9 @@ describe("createRequest", () => {
         ),
         Effect.runPromise,
       );
+
+    // @ts-expect-error Explicit false is the string "false"; only implicit true has special syntax.
+    getUsers().setUrlParam("disabled", false);
   });
 
   it("composes API defaults and permits a plan-level base URL override", async () => {

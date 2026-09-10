@@ -47,6 +47,8 @@ export {
   type RequestMethod,
   type RequestOptions,
   type RequestPlan,
+  type QueryParamValue,
+  type QueryParamsInput,
   type ResponseMatcher,
   type StatusMatcher,
   type StatusPredicate,

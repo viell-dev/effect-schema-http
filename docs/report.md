@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes in §3 track subsequent fixes on
-`sketch-request-builder`; the current suite has 50 tests across five files.
+`sketch-request-builder`; the current suite has 51 tests across six files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -267,9 +267,10 @@ endpoint().setUrlParam("active", "0");
 string is already present in the URL string. So path-declared parameters are invisible to `setUrlParam`,
 `setUrlParams`, `removeUrlParam`, and `appendUrlParam`, and collisions become repeated parameters.
 
-Endpoint calls now extract the declared query string into `UrlParams` after filling path placeholders. API defaults,
-declared path values, endpoint options, and plan setters then apply in that order. Repeated values and URL fragments are
-preserved.
+Endpoint calls now extract the declared query string into library-owned query state after filling path placeholders.
+API defaults, declared path values, endpoint options, and plan setters then apply in that order. Repeated values and URL
+fragments are preserved. Query values distinguish `true` (bare `key`) from `""` (`key=`) without passing through
+`URLSearchParams`, which would normalize both forms.
 
 ### 3.7 ~~Replacing an existing response key silently changes tie-break precedence~~ — fixed
 
