@@ -186,7 +186,9 @@ type UniqueResponseRules<Rules extends ReadonlyArray<AnyResponseRule>> =
     : { readonly "Duplicate response key": DuplicateResponseKeyOf<Rules> };
 
 type ExactMatchedHeaders<MatchHeaders extends Readonly<Record<string, HeaderMatcher>>> = {
-  readonly [Key in keyof MatchHeaders as MatchHeaders[Key] extends string ? Key : never]: MatchHeaders[Key];
+  readonly [
+    Key in keyof MatchHeaders as MatchHeaders[Key] extends string ? Lowercase<Key & string> : never
+  ]: MatchHeaders[Key];
 };
 
 type MatchedHeaders<Matcher extends ResponseMatcher> =
@@ -215,10 +217,10 @@ type EnvelopeOfRule<Rule> =
 
 export type ResponseOf<Rules extends ReadonlyArray<AnyResponseRule>> = EnvelopeOfRule<Rules[number]>;
 
-type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> =
-  Rules[number] extends ResponseRule<ResponseMatcher, infer S, ResponseBodyCodecOrDefault>
-    ? Schema.Schema.Context<S>
-    : never;
+type ContextOfRule<Rule> =
+  Rule extends ResponseRule<ResponseMatcher, infer S, ResponseBodyCodecOrDefault> ? Schema.Schema.Context<S> : never;
+
+type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> = ContextOfRule<Rules[number]>;
 
 type BodyContextOf<Body extends AnySchema | undefined> = Body extends AnySchema ? Schema.Schema.Context<Body> : never;
 type RequestEncodingError<Body extends AnySchema | undefined> = Body extends AnySchema ? RequestBodyEncodeError : never;
@@ -260,13 +262,20 @@ type LowercaseLetter =
   | "y"
   | "z";
 
-type PathParameterCharacter = LowercaseLetter | Uppercase<LowercaseLetter> | `${number}` | "_";
+type PathParameterStartCharacter = LowercaseLetter | Uppercase<LowercaseLetter> | "_";
+type PathParameterCharacter = PathParameterStartCharacter | `${number}`;
 
-type TakePathParameter<Input extends string, Name extends string = ""> = Input extends `${infer Character}${infer Rest}`
+type TakePathParameterRest<Input extends string, Name extends string> = Input extends `${infer Character}${infer Rest}`
   ? Character extends PathParameterCharacter
-    ? TakePathParameter<Rest, `${Name}${Character}`>
+    ? TakePathParameterRest<Rest, `${Name}${Character}`>
     : readonly [name: Name, rest: Input]
   : readonly [name: Name, rest: ""];
+
+type TakePathParameter<Input extends string> = Input extends `${infer Character}${infer Rest}`
+  ? Character extends PathParameterStartCharacter
+    ? TakePathParameterRest<Rest, Character>
+    : readonly [name: "", rest: Input]
+  : readonly [name: "", rest: ""];
 
 type PathArguments<Path extends string> = Path extends `\\:${infer Rest}`
   ? PathArguments<Rest>
@@ -294,6 +303,12 @@ export class UnhandledResponse extends Data.TaggedError("UnhandledResponse")<{
 
 export class RequestBodyNotAllowed extends Data.TaggedError("RequestBodyNotAllowed")<{
   readonly request: HttpClientRequest.HttpClientRequest;
+}> {}
+
+export class RequestBodyRequired extends Data.TaggedError("RequestBodyRequired")<{
+  readonly method: RequestMethod;
+  readonly path: string;
+  readonly reason: "Call setBody before reading effect";
 }> {}
 
 export class InvalidPathArguments extends Data.TaggedError("InvalidPathArguments")<{
@@ -442,7 +457,7 @@ export interface RequestPlan<
         | ResponseDecodingError<Rules>,
         HttpClient.HttpClient | BodyContextOf<Body> | ResponseContextOf<Rules>
       >
-    : never;
+    : RequestBodyRequired;
 }
 
 export type Endpoint<
@@ -821,65 +836,76 @@ const makePlan = <
   const update = (next: Partial<PlanState>): RequestPlan<Body, Rules, BodyReady> =>
     makePlan<Body, Rules, BodyReady>(definition, rules, { ...state, ...next });
 
-  const effect = Effect.gen(function* () {
-    let request = HttpClientRequest.make(definition.method as HttpMethod.HttpMethod)(
-      joinUrl(state.baseUrl, definition.path),
-    );
-    request = HttpClientRequest.setHeaders(request, state.headers);
-    request = HttpClientRequest.setUrlParams(request, state.urlParams);
+  const effect =
+    definition.body !== undefined && !state.hasBody
+      ? Effect.fail(
+          new RequestBodyRequired({
+            method: definition.method,
+            path: definition.path,
+            reason: "Call setBody before reading effect",
+          }),
+        )
+      : Effect.gen(function* () {
+          let request = HttpClientRequest.make(definition.method as HttpMethod.HttpMethod)(
+            joinUrl(state.baseUrl, definition.path),
+          );
+          request = HttpClientRequest.setHeaders(request, state.headers);
+          request = HttpClientRequest.setUrlParams(request, state.urlParams);
 
-    if (state.cache?.control !== undefined && !Headers.has(request.headers, "cache-control")) {
-      request = HttpClientRequest.setHeader(request, "cache-control", state.cache.control);
-    }
+          if (state.cache?.control !== undefined && !Headers.has(request.headers, "cache-control")) {
+            request = HttpClientRequest.setHeader(request, "cache-control", state.cache.control);
+          }
 
-    if (definition.body !== undefined && state.hasBody) {
-      const encoded = yield* Schema.encodeUnknown(definition.body)(state.body).pipe(
-        Effect.mapError((cause) => new RequestBodyEncodeError({ request, cause })),
-      );
-      const bodyCodec = state.bodyCodec as RequestBodyCodec<unknown>;
-      request = yield* bodyCodec
-        .encode(encoded, request)
-        .pipe(Effect.mapError((cause) => new RequestBodyEncodeError({ request, cause })));
-    }
+          if (definition.body !== undefined && state.hasBody) {
+            const encoded = yield* Schema.encodeUnknown(definition.body)(state.body).pipe(
+              Effect.mapError((cause) => new RequestBodyEncodeError({ request, cause })),
+            );
+            const bodyCodec = state.bodyCodec as RequestBodyCodec<unknown>;
+            request = yield* bodyCodec
+              .encode(encoded, request)
+              .pipe(Effect.mapError((cause) => new RequestBodyEncodeError({ request, cause })));
+          }
 
-    for (const transform of state.requestTransforms) request = transform(request);
+          for (const transform of state.requestTransforms) request = transform(request);
 
-    const normalizedMethod = request.method.toUpperCase();
-    if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && request.body._tag !== "Empty") {
-      return yield* new RequestBodyNotAllowed({ request });
-    }
+          const normalizedMethod = request.method.toUpperCase();
+          if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && request.body._tag !== "Empty") {
+            return yield* new RequestBodyNotAllowed({ request });
+          }
 
-    let client = yield* HttpClient.HttpClient;
-    for (const transform of state.clientTransforms) client = transform(client);
-    const timedClient =
-      state.timeout === undefined
-        ? client
-        : HttpClient.transformResponse(client, (responseEffect) => Effect.timeout(responseEffect, state.timeout!));
-    let send = executeWithRetry(timedClient, request, state.retry);
+          let client = yield* HttpClient.HttpClient;
+          for (const transform of state.clientTransforms) client = transform(client);
+          const timedClient =
+            state.timeout === undefined
+              ? client
+              : HttpClient.transformResponse(client, (responseEffect) =>
+                  Effect.timeout(responseEffect, state.timeout!),
+                );
+          let send = executeWithRetry(timedClient, request, state.retry);
 
-    if (state.cache?.fetch !== undefined) {
-      const existingRequestInit = yield* Effect.serviceOption(FetchHttpClient.RequestInit);
-      send = Effect.provideService(send, FetchHttpClient.RequestInit, {
-        ...Option.getOrElse(existingRequestInit, () => ({})),
-        cache: state.cache.fetch,
-      });
-    }
+          if (state.cache?.fetch !== undefined) {
+            const existingRequestInit = yield* Effect.serviceOption(FetchHttpClient.RequestInit);
+            send = Effect.provideService(send, FetchHttpClient.RequestInit, {
+              ...Option.getOrElse(existingRequestInit, () => ({})),
+              cache: state.cache.fetch,
+            });
+          }
 
-    const raw = yield* send;
-    const rule = findResponseRule(rules, raw.status, raw.headers);
+          const raw = yield* send;
+          const rule = findResponseRule(rules, raw.status, raw.headers);
 
-    if (rule === undefined) return yield* new UnhandledResponse({ response: raw });
+          if (rule === undefined) return yield* new UnhandledResponse({ response: raw });
 
-    const body = yield* decodeResponse(rule, raw, state.responseCodec);
-    const envelope = {
-      key: rule.match.key,
-      status: raw.status,
-      headers: raw.headers,
-      body,
-      matched: rule.match,
-    } satisfies ResponseEnvelope<ResponseMatcher, unknown>;
-    return envelope as ResponseOf<Rules>;
-  });
+          const body = yield* decodeResponse(rule, raw, state.responseCodec);
+          const envelope = {
+            key: rule.match.key,
+            status: raw.status,
+            headers: raw.headers,
+            body,
+            matched: rule.match,
+          } satisfies ResponseEnvelope<ResponseMatcher, unknown>;
+          return envelope as ResponseOf<Rules>;
+        });
 
   const plan = {
     pipe: pipeSelf,

@@ -141,7 +141,9 @@ This replacement model keeps the common thin-object case precise: replacing the 
 ## Bodies and request fields
 
 The endpoint definition optionally declares a request body schema, but request bodies are never endpoint-function
-arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` is unavailable at the type level.
+arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` has the diagnostic
+`RequestBodyRequired` type rather than an Effect. If an untyped caller bypasses this check, evaluating the underlying
+value fails with `RequestBodyRequired` before the HTTP client is called.
 The caller supplies the ordinary decoded TypeScript value—never a schema-wrapped value—and the library uses the
 endpoint's schema to constrain and encode it. An optional or explicitly undefined body can be represented in the schema
 and set as such.

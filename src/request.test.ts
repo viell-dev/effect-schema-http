@@ -11,6 +11,7 @@ import {
   RequestBody,
   RequestBodyEncodeError,
   RequestBodyNotAllowed,
+  RequestBodyRequired,
   response,
   ResponseBody,
   ResponseDecodeError,
@@ -130,6 +131,13 @@ describe("createRequest", () => {
       ),
       Effect.runPromise,
     );
+
+    const literalVersion = createRequest({
+      method: "GET",
+      path: "https://example.test/v:1/users",
+      responses: [response({ key: "ok", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
+    });
+    expectTypeOf(literalVersion).parameters.toEqualTypeOf<[]>();
   });
 
   it("merges plural URL parameter updates over API and endpoint defaults", async () => {
@@ -379,6 +387,47 @@ describe("createRequest", () => {
         HttpClient.HttpClient
       >
     >();
+
+    const noRules = createRequest({ method: "GET", path: "https://example.test/ping" });
+    expectTypeOf(noRules().effect).toEqualTypeOf<
+      Effect.Effect<
+        never,
+        UnhandledResponse | RequestBodyNotAllowed | HttpClientError.HttpClientError | Cause.TimeoutException,
+        HttpClient.HttpClient
+      >
+    >();
+  });
+
+  it("makes an incomplete body plan non-executable in types and at runtime", async () => {
+    let sent = false;
+    const createUser = createRequest({
+      method: "POST",
+      path: "https://example.test/users",
+      body: Schema.Struct({ name: Schema.String }),
+      responses: [response({ key: "created", status: 201 }, User)],
+    });
+    const incomplete = createUser();
+
+    expectTypeOf(incomplete.effect).toEqualTypeOf<RequestBodyRequired>();
+    // @ts-expect-error An incomplete plan is not an Effect until setBody supplies its body.
+    const invalidEffect: Effect.Effect<unknown> = incomplete.effect;
+    const degradedEffect = invalidEffect as Effect.Effect<unknown, RequestBodyRequired>;
+    const result = await degradedEffect.pipe(
+      Effect.either,
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async () => {
+            sent = true;
+            return Response.json({ id: 1, name: "Ada" }, { status: 201 });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(sent).toBe(false);
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result)) expect(result.left).toBeInstanceOf(RequestBodyRequired);
   });
 
   it("rejects duplicate response keys in declarations", () => {
@@ -425,6 +474,25 @@ describe("createRequest", () => {
     expect(result.status).toBe(200);
     expect(result.headers["x-extra"]).toBe("kept");
     expect("response" in result).toBe(false);
+  });
+
+  it("reflects exact matched header names in their canonical lowercase form", async () => {
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ key: "thin", status: 200, headers: { "X-Response-Shape": "thin" } }, ThinUser)],
+    });
+
+    const result = await getUser().effect.pipe(
+      Effect.provide(
+        fetchLayer(mockFetch(async () => Response.json({ id: 1 }, { headers: { "x-response-shape": "thin" } }))),
+      ),
+      Effect.runPromise,
+    );
+
+    expectTypeOf(result.headers["x-response-shape"]).toEqualTypeOf<"thin">();
+    expect(result.headers["x-response-shape"]).toBe("thin");
+    expect(result.headers["X-Response-Shape"]).toBeUndefined();
   });
 
   it("uses declaration order for ties and lets a new plan rule take precedence", async () => {
@@ -604,7 +672,7 @@ describe("createRequest", () => {
 
     const plan = createUser();
     expectTypeOf(plan.setBody).parameter(0).toEqualTypeOf<{ readonly name: string }>();
-    expectTypeOf(plan.effect).toEqualTypeOf<never>();
+    expectTypeOf(plan.effect).toEqualTypeOf<RequestBodyRequired>();
 
     const result = await plan.setBody({ name: "Ada" }).effect.pipe(
       Effect.provide(

@@ -1,6 +1,7 @@
 export {
   UnhandledResponse,
   RequestBodyNotAllowed,
+  RequestBodyRequired,
   RequestBodyEncodeError,
   InvalidPathArguments,
   DuplicateResponseKey,

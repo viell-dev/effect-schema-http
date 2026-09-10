@@ -114,7 +114,7 @@ responses is exactly the right assertion.
 
 Ordered by severity.
 
-### 3.1 An endpoint with no response rules types as `R = unknown` and cannot be run
+### 3.1 ~~An endpoint with no response rules types as `R = unknown` and cannot be run~~ — fixed
 
 **Severity: high — makes a documented usage shape unusable and poisons composition.**
 
@@ -140,7 +140,7 @@ type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> =
 For `Rules = readonly []`, `Rules[number]` is `never`. `never extends X` is vacuously true, `S` is inferred as
 `unknown`, and `Schema.Schema.Context<unknown>` collapses to `unknown`, which then absorbs `HttpClient` in the union.
 
-The fix is to mirror the pattern already used correctly by `EnvelopeOfRule` — distribute over a naked type parameter, so
+Fixed by mirroring the pattern already used correctly by `EnvelopeOfRule` — distributing over a naked type parameter, so
 `never` distributes to `never`:
 
 ```ts
@@ -150,13 +150,13 @@ type ContextOfRule<Rule> =
 type ResponseContextOf<Rules extends ReadonlyArray<AnyResponseRule>> = ContextOfRule<Rules[number]>;
 ```
 
-I applied this patch locally to verify it: empty rules then type as `HttpClient`, two context-carrying rules still type
-as `HttpClient | ServiceA`, and all 43 existing tests still pass. The patch was reverted; the tree is unmodified.
+Empty rules now type as `HttpClient`, while context-carrying rules continue to contribute their schema requirements. A
+zero-rule regression assertion now sits beside the complete Effect-signature test.
 
 A regression test belongs alongside the existing "exposes the complete success, error, and requirement types" test —
 that test only covers the single-rule case, which is why this slipped through.
 
-### 3.2 Exact header matchers lie about the envelope's header keys
+### 3.2 ~~Exact header matchers lie about the envelope's header keys~~ — fixed
 
 **Severity: high — a type assertion that is false at runtime.**
 
@@ -180,10 +180,10 @@ Two viable fixes:
   Cheap, and it makes the type match reality.
 - Or reject non-lowercase matcher keys at the type level, so the declaration site is the thing that has to change.
 
-The first is friendlier; the second is more honest about the fact that HTTP header names are case-insensitive and the
-library has picked a canonical form.
+`ExactMatchedHeaders` now lowercases exact matcher keys in the reflected envelope type, matching the platform's
+canonical runtime representation.
 
-### 3.3 Path placeholders whose name starts with a digit are accepted by the type and rejected at runtime
+### 3.3 ~~Path placeholders whose name starts with a digit are accepted by the type and rejected at runtime~~ — fixed
 
 **Severity: medium — a compiling call that always throws.**
 
@@ -197,11 +197,10 @@ including the first, so `:1x` is a one-character-or-more parameter name at the t
 `/(?<!\\):([A-Za-z_][A-Za-z0-9_]*)/g` requires a leading `[A-Za-z_]`, so it sees no placeholder at all. The type demands
 one argument; the runtime demands zero.
 
-This is a narrow case, but it is the exact case the escape syntax exists for: `/v:1/api` looks like a version-pinned
-path and is more likely in the wild than it first appears. Align the two by giving the type a separate
-`PathParameterStartCharacter = LowercaseLetter | Uppercase<LowercaseLetter> | "_"` used only for the first character.
+The type-level parser now uses a separate `PathParameterStartCharacter`, matching the runtime grammar. `/v:1/api` is
+therefore a literal path at both levels, while digits remain valid after the first placeholder character.
 
-### 3.4 The body typestate is bypassable without a diagnostic
+### 3.4 ~~The body typestate is bypassable without a diagnostic~~ — fixed
 
 **Severity: medium — silent wrong behaviour, not just a missing error.**
 
@@ -229,9 +228,9 @@ readonly effect: BodyReady extends true
 That produces a diagnostic at every use site, and the diagnostic names the problem. It also fixes `toEffect`, which
 currently returns `never` and therefore silently type-checks in the same way.
 
-The runtime should probably match: reading `.effect` on a plan whose definition declares a body but has no value could
-fail with a tagged error rather than sending an empty body. Right now the `state.hasBody` check simply skips encoding
-(`src/request.ts:833`), which is indistinguishable from a legitimately bodyless request.
+Incomplete plans now expose `RequestBodyRequired` instead of `never`, so they are not assignable to Effect APIs and the
+compiler diagnostic identifies the missing step. The runtime value is a failed Effect carrying the same tagged error,
+which prevents an untyped or degraded caller from sending an empty body.
 
 ### 3.5 `joinUrl` corrupts absolute paths declared under an API base URL
 
