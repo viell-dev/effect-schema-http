@@ -13,3 +13,4 @@ steps:
       - pnpm lint
       - pnpm format:check
       - pnpm build
+      - pnpm pack:check

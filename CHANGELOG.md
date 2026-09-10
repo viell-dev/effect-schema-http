@@ -1,0 +1,23 @@
+# Changelog
+
+All notable changes to this project will be documented in this file. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0-beta.1] - 2026-09-10
+
+### Added
+
+- Lazy, immutable, pipeable HTTP request plans backed by Effect Platform `HttpClient`.
+- Schema-based request encoding and tag-discriminated response decoding.
+- API defaults, sub-API extension, path parameters, and call-site overrides.
+- JSON, text, byte, form-data, and explicit no-body response codecs.
+- Retry schedules, timeouts, cache controls, response matching, and repeated-field support.
+- Single-entry request gates with in-flight de-duplication, refresh, reload, and interruption.
+- Unit, type-level, and loopback-server integration test coverage.
+- ESM package metadata, MIT licensing, release checks, and a Node.js 20 runtime baseline.
+
+[Unreleased]: https://codeberg.org/viell/effect-schema-http/compare/0.1.0-beta.1...HEAD
+[0.1.0-beta.1]: https://codeberg.org/viell/effect-schema-http/releases/tag/0.1.0-beta.1

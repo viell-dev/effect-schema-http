@@ -1,6 +1,6 @@
 {
   "name": "viell-effect-schema-http",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "description": "Lazy, schema-driven HTTP request plans for Effect",
   "keywords": [
     "effect",
@@ -18,6 +18,13 @@
   "bugs": {
     "url": "https://codeberg.org/viell/effect-schema-http/issues"
   },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
   "packageManager": "pnpm@10.32.1",
   "type": "module",
   "sideEffects": false,
@@ -32,13 +39,20 @@
   },
   "files": [
     "dist",
-    "!dist/**/*.test.*"
+    "src",
+    "CHANGELOG.md",
+    "!dist/**/*.test.*",
+    "!src/**/*.test.ts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm format:check && pnpm build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "oxlint && eslint .",
+    "pack:check": "pnpm pack --dry-run",
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm check",
     "test": "vitest run",
     "test:integration": "vitest run tests",
     "test:unit": "vitest run src",

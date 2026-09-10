@@ -359,16 +359,19 @@ Run them separately with `pnpm test:unit` and `pnpm test:integration`, or togeth
 ## Repository and release shape
 
 Effect and Effect Platform are peer dependencies so consumers and the library share service identities. Published files
-exclude colocated unit tests and expose both the root entry point and `package.json`. The package metadata points to the
-Codeberg repository, and TypeScript checks the source with `noUncheckedIndexedAccess` and
-`exactOptionalPropertyTypes` in addition to strict mode. `AnyResponseRule` is public for application helpers that need
-to abstract over response-rule tuples.
+include implementation sources for working source maps, exclude colocated unit tests, and expose both the root entry
+point and `package.json`. The package metadata points to the Codeberg repository, and TypeScript checks the source with
+`noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` in addition to strict mode. `AnyResponseRule` is public for
+application helpers that need to abstract over response-rule tuples.
 
 The Woodpecker pipeline under `.woodpecker/` runs the same five checks required before local commits. It still has to
 be enabled for the Codeberg repository before it can enforce them remotely.
 
 The project is distributed under the MIT licence. The package metadata and repository `LICENSE` file carry the same
 licence designation.
+
+The first public prerelease is `0.1.0-beta.1`. The package is ESM-only, declares Node.js 20 as its supported Node
+baseline, and publishes prerelease builds under the npm `beta` tag so they cannot accidentally replace `latest`.
 
 ## Remaining design questions
 
