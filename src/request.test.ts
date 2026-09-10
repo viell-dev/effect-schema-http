@@ -1,3 +1,4 @@
+/** Unit tests for lazy request-plan construction, typing, matching, and execution semantics. */
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "@effect/platform";
 import { Cause, Clock, Duration, Effect, Either, Layer, Match, ParseResult, Schedule, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";

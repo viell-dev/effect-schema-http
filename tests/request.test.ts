@@ -1,3 +1,4 @@
+/** Server-backed coverage of HTTP methods, path parameters, overrides, retries, and response matching. */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";

@@ -1,3 +1,4 @@
+/** Server-backed coverage of fallible schema transformations and custom body codecs. */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { FetchHttpClient, HttpClientError } from "@effect/platform";

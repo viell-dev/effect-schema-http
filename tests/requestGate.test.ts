@@ -1,3 +1,4 @@
+/** Server-backed coverage of request-gate de-duplication and provider cancellation. */
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";

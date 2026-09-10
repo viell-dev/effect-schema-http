@@ -1,25 +1,60 @@
+/**
+ * Single-entry request memoization with in-flight de-duplication.
+ *
+ * @packageDocumentation
+ */
 import { Data, Deferred, Effect, Exit, Option, Ref } from "effect";
 import type * as Pipeable from "effect/Pipeable";
 
+/** Applies pipeable operations to the current value. */
 const pipeSelf = function (this: unknown, ...operations: ReadonlyArray<(value: unknown) => unknown>): unknown {
   return operations.reduce<unknown>((value, operation) => operation(value), this);
 } as Pipeable.Pipeable["pipe"];
 
+/**
+ * Indicates that a gate has no successful request available to reload.
+ *
+ * @public
+ */
 export class NoPreviousRequest extends Data.TaggedError("NoPreviousRequest") {}
 
+/**
+ * Configuration for deriving and comparing request-gate keys.
+ *
+ * @typeParam Input - Input accepted by the gated request.
+ * @typeParam Key - Comparable memoization key derived from the input.
+ * @public
+ */
 export interface RequestGateOptions<Input, Key> {
+  /** Derives the memoization key for an input. */
   readonly key: (input: Input) => Key;
+  /** Compares keys. Defaults to {@link Object.is}. */
   readonly equivalent?: (left: Key, right: Key) => boolean;
 }
 
+/**
+ * A single-entry request gate with explicit refresh, reload, and invalidation operations.
+ *
+ * @typeParam Input - Input accepted by the request.
+ * @typeParam A - Successful request value.
+ * @typeParam E - Request error.
+ * @typeParam R - Effect requirements needed to execute the request.
+ * @public
+ */
 export interface RequestGate<Input, A, E, R> extends Pipeable.Pipeable {
+  /** Returns the latest equivalent success or executes the request. */
   readonly run: (input: Input) => Effect.Effect<A, E, R>;
+  /** Executes the request even when an equivalent success is cached. */
   readonly refresh: (input: Input) => Effect.Effect<A, E, R>;
+  /** Re-executes the input that produced the latest successful value. */
   readonly reload: Effect.Effect<A, E | NoPreviousRequest, R>;
+  /** Clears the cached success and interrupts every in-flight request owned by the gate. */
   readonly invalidate: Effect.Effect<void>;
+  /** Reads the cached success without executing a request. */
   readonly peek: Effect.Effect<Option.Option<A>>;
 }
 
+/** A successful value retained by a gate. */
 interface CacheEntry<Input, Key, A> {
   readonly input: Input;
   readonly key: Key;
@@ -27,6 +62,7 @@ interface CacheEntry<Input, Key, A> {
   readonly generation: number;
 }
 
+/** An executing request shared by equivalent callers. */
 interface InFlight<Input, Key, A, E> {
   readonly input: Input;
   readonly key: Key;
@@ -35,6 +71,7 @@ interface InFlight<Input, Key, A, E> {
   readonly cancellation: Deferred.Deferred<void>;
 }
 
+/** Complete mutable state stored atomically in the gate Ref. */
 interface GateState<Input, Key, A, E> {
   readonly cache: Option.Option<CacheEntry<Input, Key, A>>;
   readonly inFlight: ReadonlyArray<InFlight<Input, Key, A, E>>;
@@ -42,11 +79,13 @@ interface GateState<Input, Key, A, E> {
   readonly invalidatedThrough: number;
 }
 
+/** Atomic decision made for one request attempt. */
 type Decision<Input, Key, A, E> =
   | { readonly _tag: "Cached"; readonly value: A }
   | { readonly _tag: "Await"; readonly deferred: Deferred.Deferred<A, E> }
   | { readonly _tag: "Execute"; readonly flight: InFlight<Input, Key, A, E> };
 
+/** Finds the newest equivalent request that callers may safely join. */
 const findLatestEquivalent = <Input, Key, A, E>(
   inFlight: ReadonlyArray<InFlight<Input, Key, A, E>>,
   key: Key,
@@ -59,6 +98,24 @@ const findLatestEquivalent = <Input, Key, A, E>(
   return undefined;
 };
 
+/**
+ * Creates an isolated, single-entry request gate.
+ *
+ * @remarks
+ * Equivalent concurrent calls share one execution. Invalidation interrupts all current executions. The fiber that
+ * wins the execute decision owns the shared execution; interrupting that fiber completes its waiters as interrupted.
+ * Interrupting a waiter only stops that waiter.
+ *
+ * @typeParam Input - Input accepted by the request.
+ * @typeParam Key - Memoization key derived from an input.
+ * @typeParam A - Successful request value.
+ * @typeParam E - Request error.
+ * @typeParam R - Effect requirements needed to execute the request.
+ * @param execute - Effectful request function to memoize.
+ * @param options - Key derivation and optional key equivalence.
+ * @returns An Effect that allocates a new request gate.
+ * @public
+ */
 export const makeRequestGate = <Input, Key, A, E, R>(
   execute: (input: Input) => Effect.Effect<A, E, R>,
   options: RequestGateOptions<Input, Key>,
@@ -167,19 +224,47 @@ export const makeRequestGate = <Input, Key, A, E, R>(
     return gate;
   });
 
+/**
+ * Pipeable form of {@link RequestGate.run}.
+ *
+ * @param input - Request input.
+ * @returns A transformation from a gate to its gated request Effect.
+ * @public
+ */
 export const runRequest =
   <Input>(input: Input) =>
   <A, E, R>(gate: RequestGate<Input, A, E, R>): Effect.Effect<A, E, R> =>
     gate.run(input);
 
+/**
+ * Pipeable form of {@link RequestGate.refresh}.
+ *
+ * @param input - Request input.
+ * @returns A transformation from a gate to a forced request Effect.
+ * @public
+ */
 export const refreshRequest =
   <Input>(input: Input) =>
   <A, E, R>(gate: RequestGate<Input, A, E, R>): Effect.Effect<A, E, R> =>
     gate.refresh(input);
 
+/**
+ * Pipeable form of {@link RequestGate.reload}.
+ *
+ * @param gate - Gate whose latest successful input should be executed again.
+ * @returns The reload Effect.
+ * @public
+ */
 export const reloadRequest = <Input, A, E, R>(
   gate: RequestGate<Input, A, E, R>,
 ): Effect.Effect<A, E | NoPreviousRequest, R> => gate.reload;
 
+/**
+ * Pipeable form of {@link RequestGate.invalidate}.
+ *
+ * @param gate - Gate to clear and interrupt.
+ * @returns An Effect that invalidates the gate.
+ * @public
+ */
 export const invalidateRequestGate = <Input, A, E, R>(gate: RequestGate<Input, A, E, R>): Effect.Effect<void> =>
   gate.invalidate;

@@ -1,3 +1,4 @@
+/** Unit tests for request-gate caching, sharing, refresh, reload, and interruption semantics. */
 import { Cause, Deferred, Effect, Either, Exit, Fiber, Option } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {

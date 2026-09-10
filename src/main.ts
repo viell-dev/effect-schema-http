@@ -1,3 +1,8 @@
+/**
+ * Public API for lazy, schema-driven Effect HTTP requests.
+ *
+ * @packageDocumentation
+ */
 export {
   AbsolutePathWithBaseUrl,
   UnhandledResponse,

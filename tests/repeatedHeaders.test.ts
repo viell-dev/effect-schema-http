@@ -1,3 +1,4 @@
+/** Server-backed coverage of repeated request and response header field lines. */
 import { HttpClient, HttpClientError, HttpClientResponse } from "@effect/platform";
 import { createServer, request as sendNodeRequest, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
