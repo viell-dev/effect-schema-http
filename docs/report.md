@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
-`sketch-request-builder`; the current suite has 59 tests across six files.
+`sketch-request-builder`; the current suite has 61 tests across seven files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -515,10 +515,10 @@ deliberately left to callers that need it, using the exposed parent `api.baseUrl
 Relatedly, endpoint definitions could only _add_ headers and query parameters to API defaults; there was no way to
 remove an inherited one at endpoint scope (only per-plan, via `removeHeader`/`removeUrlParam`). API extensions and
 endpoint definitions now accept plural `removeHeaders` and `removeUrlParams` lists. They remove inherited declarative
-defaults before same-scope values are applied, permitting an intentional re-add. Removing a query parameter removes
-all of its repeated values. The existing plan-level operations remain singular because they perform one mutation at a
-time. Tests cover full base-URL replacement, preservation and removal of inherited values, same-scope re-addition, and
-per-plan base-URL replacement.
+defaults before same-scope values are applied, permitting an intentional re-add. A string entry removes every value;
+`{ name, value }` removes only exact matching repeated values. The existing plan-level operations remain singular
+because they perform one mutation at a time. Tests cover full base-URL replacement, preservation and targeted removal
+of inherited values, same-scope re-addition, and per-plan base-URL replacement.
 
 ### 4.8 A fresh `Effect` is constructed for every intermediate plan
 
@@ -607,9 +607,9 @@ Restating the doc's two, and adding the ones this review raises.
    invalid retry counts are synchronous configuration defects represented by ordinary `Error` subclasses.
 4. **Should the body typestate be enforced at runtime, not only in types?** Answered in §3.4: yes; degraded callers
    receive `RequestBodyRequired` before transport execution.
-5. **Should the envelope expose response metadata beyond headers?** `matched` explains the rule; nothing exposes the
-   request that produced the response, redirect history, cookies, or timing. `HttpClientResponse` carries `cookies` and
-   `request`; dropping all of it may be more than the "not safely replayable" argument requires.
+5. **Should the envelope expose response metadata beyond headers?** Partially answered: envelopes now expose
+   independently repeated `headerEntries` when supplied by the provider and Effect's parsed `cookies`. The request that
+   produced the response, redirect history, and timing remain unavailable.
 6. **Should query parameters and headers get schema support?** The doc defers this. The decision has a deadline: once
    `setUrlParam(key, value)` is public and stringly typed, adding a typed surface later means two parallel APIs.
 7. **What is the story for content negotiation?** (§4.5) `Accept` today, `Content-Type`-driven response codec selection

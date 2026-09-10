@@ -274,9 +274,9 @@ describe("createRequest", () => {
     if (result._tag === "Failure") expect(Cause.squash(result.cause)).toBeInstanceOf(AbsolutePathWithBaseUrl);
   });
 
-  it("supports repeated and removed URL params plus plural and removed headers", async () => {
+  it("supports repeated and targeted URL params and headers", async () => {
     const getUsers = createApi("https://example.test", {
-      headers: { authorization: "Bearer token", "x-remove": "api" },
+      headers: { authorization: "Bearer token", "x-remove": "api", "x-repeat": ["a", "remove"] },
       urlParams: { remove: "api" },
     }).createRequest({
       method: "GET",
@@ -292,6 +292,9 @@ describe("createRequest", () => {
       .appendUrlParam("tag", "b")
       .setHeaders({ "x-one": "1", "x-two": "2" })
       .removeHeader("x-remove")
+      .appendHeader("x-repeat", "c")
+      .removeHeader("x-repeat", "remove")
+      .setHeader("x-repeat", "a", "updated")
       .effect.pipe(
         Effect.provide(
           fetchLayer(
@@ -304,6 +307,7 @@ describe("createRequest", () => {
               expect(request.headers.get("authorization")).toBe("Bearer token");
               expect(request.headers.get("x-one")).toBe("1");
               expect(request.headers.has("x-remove")).toBe(false);
+              expect(request.headers.get("x-repeat")).toBe("updated, c");
               return Response.json([]);
             }),
           ),
@@ -374,13 +378,13 @@ describe("createRequest", () => {
 
   it("removes inherited headers and URL params from an endpoint definition", async () => {
     const getPublicUsers = createApi("https://example.test", {
-      headers: { authorization: "Bearer token", "x-keep": "api" },
-      urlParams: { apiKey: "secret", locale: "sv" },
+      headers: { authorization: "Bearer token", "x-keep": "api", "x-values": ["keep", "remove"] },
+      urlParams: { apiKey: "secret", locale: "sv", tag: ["keep", "remove"] },
     }).createRequest({
       method: "GET",
       path: "/users",
-      removeHeaders: ["authorization"],
-      removeUrlParams: ["apiKey"],
+      removeHeaders: ["authorization", { name: "x-values", value: "remove" }],
+      removeUrlParams: ["apiKey", { name: "tag", value: "remove" }],
       headers: { "x-endpoint": "public" },
       urlParams: { locale: "en" },
       responses: [response({ _tag: "ok", status: 200 }, Schema.Array(User))],
@@ -391,10 +395,11 @@ describe("createRequest", () => {
         fetchLayer(
           mockFetch(async (request) => {
             const url = new URL(request.url);
-            expect(Object.fromEntries(url.searchParams)).toEqual({ locale: "en" });
+            expect(Object.fromEntries(url.searchParams)).toEqual({ tag: "keep", locale: "en" });
             expect(request.headers.has("authorization")).toBe(false);
             expect(request.headers.get("x-keep")).toBe("api");
             expect(request.headers.get("x-endpoint")).toBe("public");
+            expect(request.headers.get("x-values")).toBe("keep");
             return Response.json([]);
           }),
         ),
@@ -681,6 +686,30 @@ describe("createRequest", () => {
     expectTypeOf(result.headers["x-response-shape"]).toEqualTypeOf<"thin">();
     expect(result.headers["x-response-shape"]).toBe("thin");
     expect(result.headers["X-Response-Shape"]).toBeUndefined();
+  });
+
+  it("retains Fetch Set-Cookie values through response cookie metadata", async () => {
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+    const responseHeaders = new globalThis.Headers({ "content-type": "application/json" });
+    responseHeaders.append("set-cookie", "session=one; Path=/");
+    responseHeaders.append("set-cookie", "preference=compact; Path=/");
+
+    const result = await getUser().effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async () => new Response(JSON.stringify({ id: 1, name: "Ada" }), { headers: responseHeaders })),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(result.headerEntries.filter(([name]) => name === "set-cookie")).toHaveLength(2);
+    expect(result.cookies.cookies.session?.value).toBe("one");
+    expect(result.cookies.cookies.preference?.value).toBe("compact");
   });
 
   it("preserves tie order when replacing a rule and lets a new plan rule take precedence", async () => {

@@ -1,4 +1,5 @@
 import {
+  Cookies,
   FetchHttpClient,
   Headers,
   HttpBody,
@@ -41,6 +42,133 @@ export type QueryParamsInput =
 
 type QueryParams = ReadonlyArray<readonly [string, QueryParamValue]>;
 
+export type QueryParamRemoval = string | { readonly name: string; readonly value?: QueryParamValue };
+
+export type HeaderInput = Headers.Input;
+export type HeaderEntries = ReadonlyArray<readonly [name: string, value: string]>;
+export type HeaderRemoval = string | { readonly name: string; readonly value?: string };
+
+export const HeaderEntriesTypeId: unique symbol = Symbol.for(
+  "viell-effect-schema-http/HeaderEntries",
+) as typeof HeaderEntriesTypeId;
+
+interface HeaderEntriesCarrier {
+  readonly [HeaderEntriesTypeId]?: HeaderEntries;
+}
+
+const headerEntriesFromInput = (input: HeaderInput | undefined): HeaderEntries => {
+  if (input === undefined) return [];
+  if (Symbol.iterator in input) {
+    return Array.from(input, ([name, value]) => [name.toLowerCase(), value] as const);
+  }
+
+  return Object.entries(input).flatMap(([name, value]) => {
+    if (value === undefined) return [];
+    return Array.isArray(value)
+      ? value.map((item) => [name.toLowerCase(), item] as const)
+      : [[name.toLowerCase(), value as string] as const];
+  });
+};
+
+export const attachHeaderEntries = <Message extends object>(message: Message, input: HeaderInput): Message => {
+  Object.defineProperty(message, HeaderEntriesTypeId, {
+    configurable: true,
+    value: headerEntriesFromInput(input),
+  });
+  return message;
+};
+
+export const getHeaderEntries = (message: {
+  readonly headers: Headers.Headers;
+  readonly cookies?: unknown;
+}): HeaderEntries => {
+  const attached = (message as HeaderEntriesCarrier)[HeaderEntriesTypeId];
+  if (attached !== undefined) return attached;
+
+  const entries = headerEntriesFromInput(message.headers);
+  if (!Cookies.isCookies(message.cookies)) return entries;
+  const setCookie = Cookies.toSetCookieHeaders(message.cookies);
+  return setCookie.length === 0
+    ? entries
+    : [
+        ...entries.filter(([name]) => name !== "set-cookie"),
+        ...setCookie.map((value) => ["set-cookie", value] as const),
+      ];
+};
+
+const normalizeHeaderEntries = (entries: HeaderEntries): Headers.Headers => {
+  const grouped: Record<string, Array<string>> = {};
+  for (const [name, value] of entries) (grouped[name] ??= []).push(value);
+  return Headers.fromInput(grouped);
+};
+
+const reconcileHeaderEntries = (entries: HeaderEntries, headers: Headers.Headers): HeaderEntries => {
+  const normalized = normalizeHeaderEntries(entries);
+  const names = new Set<string>();
+  const reconciled: Array<readonly [string, string]> = [];
+
+  for (const [name] of entries) {
+    if (names.has(name)) continue;
+    names.add(name);
+    const value = headers[name];
+    if (value === undefined) continue;
+    if (normalized[name] === value) {
+      reconciled.push(...entries.filter(([candidate]) => candidate === name));
+    } else {
+      reconciled.push([name, value]);
+    }
+  }
+
+  for (const [name, value] of Object.entries(headers)) {
+    if (!names.has(name)) reconciled.push([name, value]);
+  }
+
+  return reconciled;
+};
+
+const setHeaderEntries = (entries: HeaderEntries, input: HeaderInput): HeaderEntries => {
+  const incoming = headerEntriesFromInput(input);
+  const names = new Set(incoming.map(([name]) => name));
+  return [...incoming, ...entries.filter(([name]) => !names.has(name))];
+};
+
+const appendHeaderEntry = (entries: HeaderEntries, name: string, value: string): HeaderEntries => [
+  ...entries,
+  [name.toLowerCase(), value],
+];
+
+const replaceHeaderEntryValue = (
+  entries: HeaderEntries,
+  name: string,
+  currentValue: string,
+  replacementValue: string,
+): HeaderEntries => {
+  const canonicalName = name.toLowerCase();
+  return entries.map((entry) =>
+    entry[0] === canonicalName && entry[1] === currentValue ? ([canonicalName, replacementValue] as const) : entry,
+  );
+};
+
+const removeHeaderEntry = (entries: HeaderEntries, name: string, value?: string): HeaderEntries => {
+  const canonicalName = name.toLowerCase();
+  return entries.filter(
+    ([candidateName, candidateValue]) =>
+      candidateName !== canonicalName || (value !== undefined && candidateValue !== value),
+  );
+};
+
+const removeHeaderEntries = (
+  entries: HeaderEntries,
+  removals: ReadonlyArray<HeaderRemoval> | undefined,
+): HeaderEntries =>
+  (removals ?? []).reduce(
+    (current, removal) =>
+      typeof removal === "string"
+        ? removeHeaderEntry(current, removal)
+        : removeHeaderEntry(current, removal.name, removal.value),
+    entries,
+  );
+
 export interface RequestBodyCodec<Input = unknown> {
   readonly name: string;
   readonly encode: (
@@ -81,7 +209,7 @@ export const RequestBody = {
 } as const;
 
 export type StatusPredicate = (status: number) => boolean;
-export type HeaderPredicate = (value: string | undefined) => boolean;
+export type HeaderPredicate = (value: string | undefined, values: ReadonlyArray<string>) => boolean;
 export type StatusMatcher = number | StatusPredicate;
 export type HeaderMatcher = string | HeaderPredicate;
 
@@ -258,6 +386,8 @@ export interface ResponseEnvelope<Matcher extends ResponseMatcher, Body> {
   readonly _tag: Matcher["_tag"];
   readonly status: MatchedStatus<Matcher>;
   readonly headers: Headers.Headers & MatchedHeaders<Matcher>;
+  readonly headerEntries: HeaderEntries;
+  readonly cookies: Cookies.Cookies;
   readonly body: Body;
   readonly matched: Matcher;
 }
@@ -465,7 +595,7 @@ export interface RetryPolicy {
 }
 
 export interface RequestOptions {
-  readonly headers?: Headers.Input;
+  readonly headers?: HeaderInput;
   readonly urlParams?: QueryParamsInput;
   readonly responseCodec?: DefaultResponseBodyCodec;
   readonly cache?: CachePolicy;
@@ -500,8 +630,8 @@ export interface ApiExtensionOptions<
   Defaults extends ReadonlyArray<AnyResponseRule> = readonly [],
 > extends ApiOptions<Defaults> {
   readonly baseUrl?: string;
-  readonly removeHeaders?: ReadonlyArray<string>;
-  readonly removeUrlParams?: ReadonlyArray<string>;
+  readonly removeHeaders?: ReadonlyArray<HeaderRemoval>;
+  readonly removeUrlParams?: ReadonlyArray<QueryParamRemoval>;
 }
 
 export interface RequestDefinition<
@@ -513,8 +643,8 @@ export interface RequestDefinition<
 > extends RequestOptions {
   readonly method: Method;
   readonly path: Path;
-  readonly removeHeaders?: ReadonlyArray<string>;
-  readonly removeUrlParams?: ReadonlyArray<string>;
+  readonly removeHeaders?: ReadonlyArray<HeaderRemoval>;
+  readonly removeUrlParams?: ReadonlyArray<QueryParamRemoval>;
   readonly body?: Uppercase<Method> extends "GET" | "HEAD" ? never : Body;
   readonly bodyCodec?: Uppercase<Method> extends "GET" | "HEAD"
     ? never
@@ -552,6 +682,16 @@ interface UrlParamRemover<Output> {
   (key: string, value: QueryParamValue): Output;
 }
 
+interface HeaderRemover<Output> {
+  (name: string): Output;
+  (name: string, value: string): Output;
+}
+
+interface HeaderSetter<Output> {
+  (name: string, value: string): Output;
+  (name: string, currentValue: string, replacementValue: string): Output;
+}
+
 export interface RequestPlan<
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
@@ -564,9 +704,10 @@ export interface RequestPlan<
   readonly setUrlParams: (params: QueryParamsInput) => RequestPlan<Body, Rules, BodyReady>;
   readonly appendUrlParam: (key: string, value: QueryParamValue) => RequestPlan<Body, Rules, BodyReady>;
   readonly removeUrlParam: UrlParamRemover<RequestPlan<Body, Rules, BodyReady>>;
-  readonly setHeader: (name: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
-  readonly setHeaders: (headers: Headers.Input) => RequestPlan<Body, Rules, BodyReady>;
-  readonly removeHeader: (name: string) => RequestPlan<Body, Rules, BodyReady>;
+  readonly setHeader: HeaderSetter<RequestPlan<Body, Rules, BodyReady>>;
+  readonly setHeaders: (headers: HeaderInput) => RequestPlan<Body, Rules, BodyReady>;
+  readonly appendHeader: (name: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
+  readonly removeHeader: HeaderRemover<RequestPlan<Body, Rules, BodyReady>>;
   readonly setCache: (cache: CachePolicy | undefined) => RequestPlan<Body, Rules, BodyReady>;
   readonly setResponseCodec: (codec: DefaultResponseBodyCodec) => RequestPlan<Body, Rules, BodyReady>;
   readonly setBaseUrl: (baseUrl: string | undefined) => RequestPlan<Body, Rules, BodyReady>;
@@ -668,26 +809,34 @@ export function removeUrlParam(key: string, value?: QueryParamValue): PlanTransf
   return (plan) => (value === undefined ? plan.removeUrlParam(key) : plan.removeUrlParam(key, value));
 }
 
-export const setHeader =
-  (name: string, value: string) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
-    plan.setHeader(name, value);
+export function setHeader(name: string, value: string): PlanTransform;
+export function setHeader(name: string, currentValue: string, replacementValue: string): PlanTransform;
+export function setHeader(name: string, currentValue: string, replacementValue?: string): PlanTransform {
+  return (plan) =>
+    replacementValue === undefined
+      ? plan.setHeader(name, currentValue)
+      : plan.setHeader(name, currentValue, replacementValue);
+}
 
 export const setHeaders =
-  (headers: Headers.Input) =>
+  (headers: HeaderInput) =>
   <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
     plan: RequestPlan<Body, Rules, BodyReady>,
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.setHeaders(headers);
 
-export const removeHeader =
-  (name: string) =>
+export const appendHeader =
+  (name: string, value: string) =>
   <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
     plan: RequestPlan<Body, Rules, BodyReady>,
   ): RequestPlan<Body, Rules, BodyReady> =>
-    plan.removeHeader(name);
+    plan.appendHeader(name, value);
+
+export function removeHeader(name: string): PlanTransform;
+export function removeHeader(name: string, value: string): PlanTransform;
+export function removeHeader(name: string, value?: string): PlanTransform {
+  return (plan) => (value === undefined ? plan.removeHeader(name) : plan.removeHeader(name, value));
+}
 
 export const setCache =
   (cache: CachePolicy | undefined) =>
@@ -793,8 +942,8 @@ export const mapEndpoint: {
 interface InternalDefinition<Body extends AnySchema | undefined> extends RequestOptions {
   readonly method: RequestMethod;
   readonly path: string;
-  readonly removeHeaders?: ReadonlyArray<string>;
-  readonly removeUrlParams?: ReadonlyArray<string>;
+  readonly removeHeaders?: ReadonlyArray<HeaderRemoval>;
+  readonly removeUrlParams?: ReadonlyArray<QueryParamRemoval>;
   readonly body?: Body;
   readonly bodyCodec?: RequestBodyCodec<never>;
   readonly defaultBody?: unknown;
@@ -807,7 +956,7 @@ interface PlanState {
   readonly body: unknown;
   readonly hasBody: boolean;
   readonly bodyCodec: RequestBodyCodec<never>;
-  readonly headers: Headers.Headers;
+  readonly headers: HeaderEntries;
   readonly urlParams: QueryParams;
   readonly responseCodec: DefaultResponseBodyCodec;
   readonly cache: CachePolicy | undefined;
@@ -826,9 +975,10 @@ interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly setUrlParams: (params: QueryParamsInput) => unknown;
   readonly appendUrlParam: (key: string, value: QueryParamValue) => unknown;
   readonly removeUrlParam: UrlParamRemover<unknown>;
-  readonly setHeader: (name: string, value: string) => unknown;
-  readonly setHeaders: (headers: Headers.Input) => unknown;
-  readonly removeHeader: (name: string) => unknown;
+  readonly setHeader: HeaderSetter<unknown>;
+  readonly setHeaders: (headers: HeaderInput) => unknown;
+  readonly appendHeader: (name: string, value: string) => unknown;
+  readonly removeHeader: HeaderRemover<unknown>;
   readonly setCache: (cache: CachePolicy | undefined) => unknown;
   readonly setResponseCodec: (codec: DefaultResponseBodyCodec) => unknown;
   readonly setBaseUrl: (baseUrl: string | undefined) => unknown;
@@ -1028,8 +1178,16 @@ const appendQueryParam = (params: QueryParams, key: string, value: QueryParamVal
 const removeQueryParam = (params: QueryParams, key: string): QueryParams =>
   params.filter(([candidate]) => candidate !== key);
 
-const removeQueryParams = (params: QueryParams, keys: ReadonlyArray<string> | undefined): QueryParams =>
-  keys === undefined ? params : params.filter(([candidate]) => !keys.includes(candidate));
+const removeQueryParams = (params: QueryParams, removals: ReadonlyArray<QueryParamRemoval> | undefined): QueryParams =>
+  (removals ?? []).reduce(
+    (current, removal) =>
+      typeof removal === "string"
+        ? removeQueryParam(current, removal)
+        : removal.value === undefined
+          ? removeQueryParam(current, removal.name)
+          : removeQueryParamValue(current, removal.name, removal.value),
+    params,
+  );
 
 const removeQueryParamValue = (params: QueryParams, key: string, value: QueryParamValue): QueryParams =>
   params.filter(([candidate, candidateValue]) => candidate !== key || candidateValue !== value);
@@ -1105,14 +1263,23 @@ const fillPath = (path: string, pathArguments: ReadonlyArray<unknown>): string =
     .replaceAll("\\:", ":");
 };
 
-const matches = (rule: AnyResponseRule, status: number, headers: Headers.Headers): boolean => {
+const matches = (
+  rule: AnyResponseRule,
+  status: number,
+  headers: Headers.Headers,
+  headerEntries: HeaderEntries,
+): boolean => {
   const statusMatches =
     typeof rule.match.status === "number" ? rule.match.status === status : rule.match.status(status);
   return (
     statusMatches &&
     Object.entries(rule.match.headers ?? {}).every(([name, matcher]) => {
-      const value = headers[name.toLowerCase()];
-      return typeof matcher === "string" ? value === matcher : matcher(value);
+      const canonicalName = name.toLowerCase();
+      const value = headers[canonicalName];
+      const values = headerEntries
+        .filter(([candidate]) => candidate === canonicalName)
+        .map(([, candidateValue]) => candidateValue);
+      return typeof matcher === "string" ? value === matcher : matcher(value, values);
     })
   );
 };
@@ -1149,13 +1316,14 @@ const findResponseRule = (
   rules: ReadonlyArray<AnyResponseRule>,
   status: number,
   headers: Headers.Headers,
+  headerEntries: HeaderEntries,
 ): AnyResponseRule | undefined => {
   let selected: AnyResponseRule | undefined;
   let selectedSpecificity = -1;
 
   for (const rule of rules) {
     const ruleSpecificity = specificity(rule);
-    if (matches(rule, status, headers) && ruleSpecificity > selectedSpecificity) {
+    if (matches(rule, status, headers, headerEntries) && ruleSpecificity > selectedSpecificity) {
       selected = rule;
       selectedSpecificity = ruleSpecificity;
     }
@@ -1202,7 +1370,7 @@ const makePlan = <
           let request = HttpClientRequest.make(definition.method as HttpMethod.HttpMethod)(
             setUrlQuery(joinUrl(state.baseUrl, definition.path), state.urlParams),
           );
-          request = HttpClientRequest.setHeaders(request, state.headers);
+          request = HttpClientRequest.setHeaders(request, normalizeHeaderEntries(state.headers));
 
           if (!Headers.has(request.headers, "accept")) {
             request = HttpClientRequest.setHeader(request, "accept", state.responseCodec.accept ?? "application/json");
@@ -1223,6 +1391,7 @@ const makePlan = <
           }
 
           for (const transform of state.requestTransforms) request = transform(request);
+          attachHeaderEntries(request, reconcileHeaderEntries(state.headers, request.headers));
 
           const normalizedMethod = request.method.toUpperCase();
           if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && request.body._tag !== "Empty") {
@@ -1238,7 +1407,8 @@ const makePlan = <
             UnhandledResponse | HttpClientError.ResponseError | ResponseDecodeError,
             unknown
           > => {
-            const rule = findResponseRule(rules, raw.status, raw.headers);
+            const headerEntries = getHeaderEntries(raw);
+            const rule = findResponseRule(rules, raw.status, raw.headers, headerEntries);
             if (rule === undefined) return Effect.fail(new UnhandledResponse({ response: raw }));
 
             return Effect.map(decodeResponse(rule, raw, state.responseCodec), (body) => {
@@ -1246,6 +1416,8 @@ const makePlan = <
                 _tag: rule.match._tag,
                 status: raw.status,
                 headers: raw.headers,
+                headerEntries,
+                cookies: raw.cookies,
                 body,
                 matched: rule.match,
               } satisfies ResponseEnvelope<ResponseMatcher, unknown>;
@@ -1285,9 +1457,16 @@ const makePlan = <
             ? removeQueryParam(state.urlParams, key)
             : removeQueryParamValue(state.urlParams, key, value),
       }),
-    setHeader: (name, value) => update({ headers: Headers.set(state.headers, name, value) }),
-    setHeaders: (headers) => update({ headers: Headers.setAll(state.headers, headers) }),
-    removeHeader: (name) => update({ headers: Headers.remove(state.headers, name) }),
+    setHeader: (name: string, currentValue: string, replacementValue?: string) =>
+      update({
+        headers:
+          replacementValue === undefined
+            ? setHeaderEntries(state.headers, [[name, currentValue]])
+            : replaceHeaderEntryValue(state.headers, name, currentValue, replacementValue),
+      }),
+    setHeaders: (headers) => update({ headers: setHeaderEntries(state.headers, headers) }),
+    appendHeader: (name, value) => update({ headers: appendHeaderEntry(state.headers, name, value) }),
+    removeHeader: (name: string, value?: string) => update({ headers: removeHeaderEntry(state.headers, name, value) }),
     setCache: (cache) => update({ cache }),
     setResponseCodec: (responseCodec) => update({ responseCodec }),
     setBaseUrl: (baseUrl) => update({ baseUrl }),
@@ -1335,11 +1514,11 @@ const createRequestInternal = <
 ): Endpoint<Path, Body, Rules, BodyReady> => {
   const endpoint = (...pathArguments: PathArguments<Path>) => {
     const filled = splitPathUrlParams(fillPath(definition.path, pathArguments));
-    const baseHeaders = Headers.remove(
-      Headers.fromInput(definition.baseOptions?.headers),
-      definition.removeHeaders ?? [],
+    const baseHeaders = removeHeaderEntries(
+      headerEntriesFromInput(definition.baseOptions?.headers),
+      definition.removeHeaders,
     );
-    const headers = Headers.setAll(baseHeaders, definition.headers ?? {});
+    const headers = setHeaderEntries(baseHeaders, definition.headers ?? {});
     const baseParams = removeQueryParams(
       queryParamsFromInput(definition.baseOptions?.urlParams ?? {}),
       definition.removeUrlParams,
@@ -1430,8 +1609,8 @@ export const createApi = <const Defaults extends ReadonlyArray<AnyResponseRule> 
       const responses = mergeResponseRules(options.responses ?? [], overrides.responses ?? []);
 
       return createApi<MergeResponseRules<Defaults, Overrides>>(overrides.baseUrl ?? baseUrl, {
-        headers: Headers.setAll(
-          Headers.remove(Headers.fromInput(options.headers), overrides.removeHeaders ?? []),
+        headers: setHeaderEntries(
+          removeHeaderEntries(headerEntriesFromInput(options.headers), overrides.removeHeaders),
           overrides.headers ?? {},
         ),
         urlParams: setQueryParams(

@@ -95,6 +95,8 @@ type ResponseEnvelope = {
   readonly _tag: "ok";
   readonly status: 200;
   readonly headers: Headers;
+  readonly headerEntries: ReadonlyArray<readonly [string, string]>;
+  readonly cookies: Cookies;
   readonly body: ReadonlyArray<User>;
   readonly matched: { readonly _tag: "ok"; readonly status: 200 };
 };
@@ -113,13 +115,14 @@ const description = Match.value(result).pipe(
 );
 ```
 
-`matched` preserves the complete selected matcher, and exact matcher headers are reflected in the header type. A mapped
-envelope does not retain the original `HttpClientResponse`: its body has already been consumed and the response would
-not be safely replayable from a request gate. `_tag`, `status`, and `matched` are deliberately redundant: `_tag` is the
-Effect-compatible discriminant, `status` is the actual status (and remains a literal for exact status matchers), and
-`matched` explains why the rule was selected. Effect's `Match` is useful for consuming the result but not for defining
-the response table: its runtime cases erase the schema and context information the request factory needs to retain in
-its generics.
+`matched` preserves the complete selected matcher, and exact matcher headers are reflected in the normalized `headers`
+type. `headerEntries` preserves independently repeated field values when the provider supplies them, while `cookies`
+retains Effect's separately parsed `Set-Cookie` representation. A mapped envelope does not retain the original
+`HttpClientResponse`: its body has already been consumed and the response would not be safely replayable from a request
+gate. `_tag`, `status`, and `matched` are deliberately redundant: `_tag` is the Effect-compatible discriminant,
+`status` is the actual status (and remains a literal for exact status matchers), and `matched` explains why the rule was
+selected. Effect's `Match` is useful for consuming the result but not for defining the response table: its runtime
+cases erase the schema and context information the request factory needs to retain in its generics.
 
 `UnhandledResponse` retains the untouched `HttpClientResponse`, including its unconsumed body, instead of copying only
 status and headers. Ownership of that live body transfers to the caller, which must consume or cancel it when recovering
@@ -149,9 +152,11 @@ codecs so the envelope accurately describes whether `body`, `files`, or both exi
   alternate host.
 - API extensions and endpoint definitions accept plural `removeHeaders` and `removeUrlParams` lists for deleting
   inherited declarative defaults. Removal happens before declarations at the same scope, so an extension or endpoint
-  can intentionally re-add a removed name. A query-parameter removal deletes every repeated value for that name.
-  Plan combinators remain singular `removeHeader(name)` and `removeUrlParam(name[, value])` operations. These
-  declarative removals do not undo values introduced later by a request transform.
+  can intentionally re-add a removed name. A name-only query-parameter removal deletes every repeated value for that
+  name.
+  Plan combinators remain singular `removeHeader(name[, value])` and `removeUrlParam(name[, value])` operations. A
+  declarative `{ name, value }` entry performs the same targeted removal. These declarative removals do not undo values
+  introduced later by a request transform.
 
 This replacement model keeps the common thin-object case precise: replacing the `200` schema removes the original
 `200` body type, while inherited `404` and endpoint-specific `410` envelopes remain in the union.
@@ -232,9 +237,24 @@ Singular and plural query setters replace the named values they receive while re
 defaults; append operations support repeated parameters. The singular setters also operate on selected values:
 `setUrlParam(key, current, replacement)` replaces every exact match in place, while `removeUrlParam(key, value)` removes
 every exact match. They do nothing when the selected value is absent. Their two- and one-argument forms respectively
-replace or remove every value for a key. This finer-grained behavior is intentionally absent from plural operations,
-where it would make merging ambiguous. Headers likewise have singular, plural, and removal setters. `mapRequest` and
-`mapClient` provide ordered plan-level escape hatches after API and endpoint transforms.
+replace or remove every value for a key. Plural declarative removal lists accept either a key or `{ name, value }` for
+targeted removal without adding overload ambiguity.
+
+Request headers retain one entry per supplied value in the plan. `setHeader(name, value)` replaces every value for one
+name, `setHeader(name, current, replacement)` replaces every exact match in place, `setHeaders` replaces the names
+present in its input, `appendHeader` adds another value, and `removeHeader(name[, value])` removes either the whole
+field or every exact matching value. Arrays and repeated iterable entries are therefore not flattened while composing
+API, endpoint, and plan defaults. `mapRequest` and `mapClient` provide ordered plan-level escape hatches after API and
+endpoint transforms; when a request transform changes a normalized field, that field becomes the transform's single
+value.
+
+Effect's request and response `Headers` types normalize each name to one string. Before execution, the library supplies
+that representation for ordinary clients and also attaches the uncombined entries. A repeat-aware provider reads them
+with `getHeaderEntries(request)` and should preserve that metadata through any preprocessing; constructing it with
+`HttpClient.makeWith` is the direct path. Such a provider attaches raw response field lines with
+`attachHeaderEntries(response, entries)`. Response header predicates receive both the normalized string and the entry
+array. The default Fetch provider may combine repeated request fields, so APIs requiring separate physical field lines
+need a provider that explicitly supports them. This is a provider capability limitation, not a plan-model limitation.
 
 ## Retry and cache policy
 
