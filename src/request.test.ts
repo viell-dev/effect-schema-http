@@ -723,6 +723,40 @@ describe("createRequest", () => {
     );
   });
 
+  it("distinguishes a JSON null value from empty and malformed JSON bodies", async () => {
+    const getNull = createRequest({
+      method: "GET",
+      path: "https://example.test/value",
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Null)],
+    });
+    const decode = (body: string) =>
+      getNull().effect.pipe(
+        Effect.either,
+        Effect.provide(fetchLayer(mockFetch(async () => new Response(body, { status: 200 })))),
+        Effect.runPromise,
+      );
+
+    const jsonNull = await decode("null");
+    const empty = await decode("");
+    const whitespace = await decode(" \n\t");
+    const malformed = await decode("nul");
+
+    expect(Either.isRight(jsonNull)).toBe(true);
+    if (Either.isRight(jsonNull)) expect(jsonNull.right.body).toBeNull();
+    for (const result of [empty, whitespace]) {
+      expect(Either.isLeft(result)).toBe(true);
+      if (Either.isLeft(result)) {
+        expect(result.left).toBeInstanceOf(HttpClientError.ResponseError);
+        if (result.left instanceof HttpClientError.ResponseError) expect(result.left.reason).toBe("EmptyBody");
+      }
+    }
+    expect(Either.isLeft(malformed)).toBe(true);
+    if (Either.isLeft(malformed)) {
+      expect(malformed.left).toBeInstanceOf(HttpClientError.ResponseError);
+      if (malformed.left instanceof HttpClientError.ResponseError) expect(malformed.left.reason).toBe("Decode");
+    }
+  });
+
   it("inherits and overrides the response reader independently of response schemas", async () => {
     const api = createApi("https://example.test", { responseCodec: ResponseBody.text });
     const getTextParsedUser = api.createRequest({

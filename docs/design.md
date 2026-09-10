@@ -194,18 +194,23 @@ or fail while transforming it to its encoded representation. `RequestBodyEncodeE
 so far and the original schema or HTTP-body cause. These failures occur when the plan Effect is evaluated, before the
 HTTP client is called.
 
-Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default and
-uses the transport's JSON reader. `ResponseBody.text` reads the body as a string before schema decoding, so a schema can
-parse JSON itself or decode XML, YAML, or a domain-specific text format. The default reader can be set at API, endpoint,
-or plan scope; an explicit response-rule codec takes precedence. Custom codecs are accepted in every default scope, so
-an API-wide parser can produce ordinary or branded intermediate objects for its endpoint schemas. Keeping parsing in a
-schema is equally supported: `ResponseBody.text` followed by a composed `*FromString` schema is the same pipeline with
-the parsing boundary moved into Effect Schema.
+Response body handling uses codec values rather than a growing string union. `ResponseBody.json` is the default. It
+strictly parses the response text as JSON: the token `null` decodes to JavaScript `null`, while a zero-length,
+whitespace-only, or malformed payload fails with an `HttpClientError.ResponseError`. `ResponseBody.text` reads the body
+as a string before schema decoding, so a schema can parse JSON itself or decode XML, YAML, or a domain-specific text
+format. The default reader can be set at API, endpoint, or plan scope; an explicit response-rule codec takes precedence.
+Custom codecs are accepted in every default scope, so an API-wide parser can produce ordinary or branded intermediate
+objects for its endpoint schemas. Keeping parsing in a schema is equally supported: `ResponseBody.text` followed by a
+composed `*FromString` schema is the same pipeline with the parsing boundary moved into Effect Schema.
 
 `ResponseBody.none` drains the incoming body and then decodes `undefined`. It marks itself as ineligible for default
 use, keeping body disposal explicit on a response rule whose schema input accepts `undefined`. Custom codecs are
 default-capable without a marker; a codec can set `canBeDefault: false` to require the same explicit per-rule use.
 Additional byte, form, multipart, or streaming codecs can be added without changing the rule shape.
+
+Responses that are defined to have no body, including `204`, `205`, `304`, and responses to `HEAD`, should select
+`ResponseBody.none` explicitly. The request's `Accept` header is a negotiation preference, not a substitute for choosing
+the correct response codec.
 
 The effective default codec also supplies the request's content-negotiation hint: JSON sends
 `Accept: application/json`, text sends `Accept: text/*`, and a custom codec uses its optional `accept` value or falls

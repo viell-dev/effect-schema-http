@@ -105,10 +105,30 @@ export interface ResponseBodyCodec<Input = unknown, CanBeDefault extends boolean
   ) => Effect.Effect<Input, HttpClientError.ResponseError>;
 }
 
+const responseBodyError = (
+  response: HttpClientResponse.HttpClientResponse,
+  reason: "Decode" | "EmptyBody",
+  cause?: unknown,
+) =>
+  new HttpClientError.ResponseError({
+    request: response.request,
+    response,
+    reason,
+    cause,
+  });
+
 const jsonBodyCodec = {
   name: "json" as const,
   accept: "application/json",
-  decode: (raw: HttpClientResponse.HttpClientResponse) => raw.json,
+  decode: (raw: HttpClientResponse.HttpClientResponse) =>
+    Effect.flatMap(raw.text, (text) =>
+      text.trim() === ""
+        ? Effect.fail(responseBodyError(raw, "EmptyBody"))
+        : Effect.try({
+            try: () => JSON.parse(text) as unknown,
+            catch: (cause) => responseBodyError(raw, "Decode", cause),
+          }),
+    ),
 } satisfies ResponseBodyCodec<unknown>;
 
 const textBodyCodec = {

@@ -3,7 +3,7 @@
 A design and implementation review of `viell-effect-schema-http` at commit `ea5f3ab`, covering `src/request.ts`
 (1074 lines), `src/requestGate.ts` (168 lines), the export surface in `src/main.ts`, the test suite, and the claims made
 in [`README.md`](../README.md) and [`design.md`](design.md). Remediation notes track subsequent fixes on
-`sketch-request-builder`; the current suite has 57 tests across six files.
+`sketch-request-builder`; the current suite has 58 tests across six files.
 
 Baseline on entry: `pnpm test` passes (43 tests across 5 files), `pnpm typecheck` is clean. Every finding below was
 verified with a throwaway probe (type-level probes read back through deliberate `TS2322` assignment errors, runtime
@@ -492,13 +492,17 @@ A per-rule codec deliberately does not affect the outbound header because respon
 content negotiation. Text-backed schemas that parse JSON or another application media type should therefore set an
 explicit `Accept` header, as should unusual APIs whose custom codec does not declare its media type.
 
-### 4.6 Empty bodies under the JSON codec decode as `null`, not as a failure
+### 4.6 ~~Empty bodies under the JSON codec decode as `null`, not as a failure~~ — fixed
 
-`HttpClientResponse.json` maps an empty body to `null` rather than failing. So a `204` matched by a rule whose schema
-accepts `null` succeeds without `ResponseBody.none`, while the same rule with `Schema.Void` fails with a
-`ResponseDecodeError` that points at the schema rather than at the missing body. Not wrong, but it means
-`ResponseBody.none` is an ergonomics feature rather than a correctness requirement, and the doc's framing ("drains the
-incoming body and then decodes `undefined`") suggests otherwise. Worth one sentence.
+At review time, `HttpClientResponse.json` mapped an empty body to `null` rather than failing. So a `204` matched by a
+rule whose schema accepted `null` succeeded without `ResponseBody.none`, while the same rule with `Schema.Void` failed
+with a `ResponseDecodeError` that pointed at the schema rather than at the missing body. This blurred a real wire-level
+distinction: JSON `null` is the token `null`; an absent or whitespace-only body is not a JSON document.
+
+`ResponseBody.json` now reads the response text and parses it strictly. A literal `null` still reaches the schema as
+JavaScript `null`, while zero-length and whitespace-only bodies fail with an `HttpClientError.ResponseError` whose
+reason is `EmptyBody`; malformed non-empty JSON uses reason `Decode`. Rules for `204`, `205`, `304`, and `HEAD`
+responses should use `ResponseBody.none` explicitly. Tests pin all three JSON cases.
 
 ### 4.7 `api.extend` cannot change the base URL
 
