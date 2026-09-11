@@ -70,7 +70,8 @@ server discards all data. Adding a real database was out of scope for what this 
 | Admin diagnostics | `GET /api/admin/diagnostics` | `UnhandledResponse` with `unhandledResponseBody: "retain"` |
 | Admin user directory | `GET /api/admin/users` | plain JSON, driven through `makeRequestGate`, with computed query params that omit empty filters |
 | Vendor search | `GET /api/search` | header pagination, scalar-or-array fields, stringly-typed values, `429`, and `200` with an empty body |
-| The v1 comment endpoint | `POST /api/v1/comments` | always `200` with the outcome in the body — the one case response rules cannot discriminate |
+| The v1 comment endpoint | `POST /api/v1/comments` | always `200` with the outcome in the body — a `Schema.Union` used for a bad reason |
+| Worker calendar | `GET /api/calendar`, `GET /api/calendar/:entryId` | a `_tag`-discriminated `Schema.Union` of three legitimate shapes, matched exhaustively |
 | Authentication | every endpoint except the three public ones | a computed `authorization` header declared once on the API, removed by `extendApi` for login/register |
 | Edge cache bypass | `GET /api/posts`, `GET /api/blogs/:username/feed.atom` | `setCache` plus a computed cache-buster, applied per call site through a `RequestPlanTransform` |
 | Conflicting edits | `PUT /api/posts/:slug` | a mapped `409` opens a dialog, then replays the **same retained plan** through a `RequestPlanTransform` |
@@ -107,8 +108,8 @@ now. The interesting column is the last one: what the client had to do about it.
 
 | The oddity | Where | What a tidy API would have done | What the client needed |
 | --- | --- | --- | --- |
-| Every response is `200`, outcome in a body field | `POST /api/v1/comments` | status codes | **a genuine limitation** — see below |
-| A request that must differ per retry attempt | `POST /api/admin/search/reindex` | request ids, or nothing | **a genuine limitation** — see below |
+| Every response is `200`, outcome in a body field | `POST /api/v1/comments` | status codes | a `Schema.Union` body — the intended mechanism, used for a bad reason |
+| A request that must differ per retry attempt | `POST /api/admin/search/reindex` | request ids, or nothing | **the one genuine limitation** — see below |
 | No results is `200` with an empty body, not `[]` | `GET /api/search` | `[]` | a second rule matched on `content-length: 0` with `ResponseBody.none` |
 | `tags` is a string for one, an array for several | `GET /api/search` | always an array | `Schema.Union` normalised to an array |
 | Numbers and booleans serialized as strings | `GET /api/search` | real JSON types | `Schema.NumberFromString`, a `"1"`/`"0"` transform |
@@ -134,25 +135,38 @@ this project already makes of it: client-side routing, which is why every link i
 points at `#/posts/<slug>`. A representation selector has to be a query parameter or a header,
 which is what `GET /api/posts/:slug/export` uses.
 
-**Only two of those needed anything the library could not simply be configured to do**, and both
-are worth stating precisely rather than as complaints:
+**Exactly one of those needed something the library could not be configured to do.** An earlier
+draft of this document claimed two, and the first was a misreading worth correcting in place,
+because it is the kind of mistake a consumer makes on first contact with the response model:
 
-1. **Rule selection cannot see the response body.** It happens on status and headers, before
-   decoding — which is what makes it fast and total, and it is the right trade. But an endpoint
-   that answers `200` for both success and failure cannot be split into two rules, so both
-   outcomes share one rule with a `Schema.Union` body and the caller narrows twice: once on the
-   envelope tag, then on the body's own field. Nothing is unsafe and the union is still
-   exhaustive; what is lost is the uniformity that lets one function render every other endpoint's
-   errors.
+1. **A body-shaped union is the design, not a shortfall.** Rules match status and headers, never
+   the body, and that is deliberate — selection happens before the body is read, so a rule is
+   chosen without consuming a one-shot stream and nothing is buffered merely to decide how to
+   decode it. A response whose payload varies while its envelope does not is therefore a *schema*
+   question, and `Schema.Union` is the intended answer. The `200`-with-an-`error`-field endpoint
+   needs that mechanism for a bad reason, but the mechanism itself is not a workaround, and the
+   two layers compose rather than compete: `Match.tag` over the envelope asks what kind of
+   response arrived, `Match.tag` over `body` asks what kind of value it carries, each exhaustive.
+   The genuine cost is narrower than "a limitation": that one endpoint's failures cannot be
+   rendered by the same function as everyone else's, because it never sends a shared error shape.
+
+   The calendar (`GET /api/calendar`) exists in this project to make the point standing on its own
+   feet. It is a correct, modern endpoint, and it still answers with a mixed list of three shapes
+   — events, repeating events, and assignments projected from service orders — because a worker's
+   calendar genuinely contains three different things. Flattening them into one struct with
+   `recurrence?`, `customer?` and `address?` all optional would be strictly worse: the compiler
+   would no longer know that an assignment always has an address and an event never does.
+
 2. **A request cannot vary per retry attempt.** Encoding runs once before the retry loop and every
-   attempt replays it — again correct, since a credential must not change mid-retry — so an
-   echoed, incrementing attempt counter needs `setRetries(0)` and a loop over the plan instead,
-   giving up `Retry-After` handling and the jittered schedule to get it.
+   attempt replays it — correct, since a credential must not change mid-retry — so an echoed,
+   incrementing attempt counter needs `setRetries(0)` and a loop over the plan instead, giving up
+   `Retry-After` handling and the jittered schedule to get it. This one is a real trade, and the
+   library's design notes now track it as an open question rather than settled behaviour.
 
 Everything else on that list is a declaration or a schema. That is the actual finding of this
 project: the library's failure mode under a badly-behaved API is *more configuration*, not
-workarounds — and where it genuinely cannot help, it is because of a deliberate trade that is
-documented, not an oversight.
+workarounds — and the single place it genuinely cannot help is a documented trade, not an
+oversight.
 
 ## Running it
 
@@ -178,8 +192,8 @@ The feed and the Atom feeds are served through an emulated reverse proxy with a 
 (`packages/server/src/edgeCache.ts`); responses carry `X-Cache` and `Age`, and the feed pages
 display both. `EDGE_CACHE_TTL_MS=0` disables it.
 
-Tests: `pnpm --filter @realworld/domain run test` (32 tests) and
-`pnpm --filter @realworld/server run test` (32 tests) run under Vitest. The web package has no
+Tests: `pnpm --filter @realworld/domain run test` (37 tests) and
+`pnpm --filter @realworld/server run test` (35 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
 `playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
 in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
@@ -340,6 +354,14 @@ a time.
   pipeable endpoint. Every one of the twenty endpoints in `packages/web/src/api.ts` was declared
   this way — across five different response/request codecs — and it stayed easy to read even with
   five shared error rules inherited by every one of them.
+- **The two discrimination layers compose, and knowing which is which is the whole trick.**
+  Response rules discriminate the *envelope* on status and headers; schemas discriminate the
+  *body*. This project needed both, sometimes on the same call: the v1 comment endpoint is matched
+  first on its envelope tag and then on the body's `status` field, and the calendar is one envelope
+  tag wrapping a three-member union matched exhaustively. Getting this backwards — expecting a rule
+  to inspect a payload — is the first-contact mistake, and the docs now say plainly why rules
+  cannot: selection happens before the body is read, so a rule is chosen without consuming a
+  one-shot stream.
 - **Response unions as ordinary success values pay off most when a status is a *question*, not a
   failure.** The conflict flow is the case that made this concrete. A `409` from `PUT
   /api/posts/:slug` is not an error condition to be caught and re-parsed — it is a typed value
