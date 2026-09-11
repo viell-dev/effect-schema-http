@@ -7,7 +7,7 @@
  * `Atom` feed uses for XML, just one layer further down (bytes, not even declared as text).
  */
 import { ParseResult, Schema } from "effect";
-import { NonNegativeInt } from "./primitives.js";
+import { Filename, MimeType, NonNegativeInt } from "./primitives.js";
 
 export const AdminStats = Schema.Struct({
   users: NonNegativeInt,
@@ -44,3 +44,30 @@ export const RefreshCacheInput = Schema.Struct({
 export type RefreshCacheInput = typeof RefreshCacheInput.Type;
 
 export const CacheRefreshed = Schema.Void;
+
+/**
+ * Search reindexing: the one endpoint here that is genuinely flaky by design. The search cluster
+ * is warm-standby, so the first calls after a cold start answer `503` with a `Retry-After` header
+ * until it is ready. That makes it the natural place to exercise the `repo` library's retry
+ * policy, whose transient classification already covers `503`, and whose `respectRetryAfter`
+ * treats that header as a minimum delay over the configured schedule.
+ */
+export const ReindexAccepted = Schema.Struct({
+  indexed: NonNegativeInt,
+  attempts: NonNegativeInt,
+});
+export type ReindexAccepted = typeof ReindexAccepted.Type;
+
+/**
+ * A bundle of one attachment's metadata and bytes in a single multipart response — the shape a
+ * long-dead internal tool asked for, and the only endpoint here whose *response* is form data.
+ * The client decodes it with `ResponseBody.formData` and `Schema.instanceOf(FormData)`, then pulls
+ * the `metadata` part through this schema; the bytes ride along in the `file` part without ever
+ * being base64'd into JSON.
+ */
+export const BundleMetadata = Schema.Struct({
+  filename: Filename,
+  contentType: MimeType,
+  size: NonNegativeInt,
+});
+export type BundleMetadata = typeof BundleMetadata.Type;
