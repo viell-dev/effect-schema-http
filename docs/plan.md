@@ -125,22 +125,22 @@ all plausible — these are things that exist in production right now.
 - [x] Wire in all historical quirks (HTTP 200 always, SOAP fault code 0 for success, size unit
   mismatch, etc.)
 - [x] Test with `curl`
-- [ ] Commit: "File Server (Python/stdlib) — SOAP service with legacy quirks"
+- [x] Commit: "File Server (Python/stdlib) — SOAP service with legacy quirks"
 
 ### Phase 3: API Server (Java/JDK HttpServer)
 
-- [ ] Initialize Java project in `services/api-server/` (plain javac or Gradle, JDK HttpServer,
+- [x] Initialize Java project in `services/api-server/` (plain javac or Gradle, JDK HttpServer,
   Jackson for JSON)
-- [ ] Implement in-memory store for projects, tasks, and comments
-- [ ] Implement auth middleware that calls ID Server's `/introspect` and translates Bearer→Token
-- [ ] Implement CRUD endpoints for projects (`GET`, `POST`, `PATCH`, `DELETE`)
-- [ ] Implement CRUD endpoints for tasks (nested under projects)
-- [ ] Implement comments endpoint with the `200`-not-`201` quirk
-- [ ] Implement search endpoint with the single-object-vs-array quirk
-- [ ] Implement file attachment proxying through the File Server
-- [ ] Wire in all historical quirks (epoch-ms timestamps, error shape split, pagination off-by-one,
+- [x] Implement in-memory store for projects, tasks, and comments
+- [x] Implement auth middleware that calls ID Server's `/introspect` and translates Bearer→Token
+- [x] Implement CRUD endpoints for projects (`GET`, `POST`, `PATCH`, `DELETE`)
+- [x] Implement CRUD endpoints for tasks (nested under projects)
+- [x] Implement comments endpoint with the `200`-not-`201` quirk
+- [x] Implement search endpoint with the single-object-vs-array quirk
+- [x] Implement file attachment proxying through the File Server
+- [x] Wire in all historical quirks (epoch-ms timestamps, error shape split, pagination off-by-one,
   `PATCH` returns old state, status int-vs-string, etc.)
-- [ ] Test with `curl`
+- [x] Test with `curl`
 - [ ] Commit: "API Server (Java/JDK HttpServer) — REST API with legacy quirks"
 
 ### Phase 4: TypeScript/Effect Client
