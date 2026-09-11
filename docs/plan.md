@@ -154,13 +154,13 @@ all plausible — these are things that exist in production right now.
 - [x] Implement auth flow: register → login → store token → refresh cycle
 - [x] Implement a basic UI: project list, task board, file upload/download, user profile
 - [x] Wire file operations through both direct File Server calls and API Server proxy
-- [ ] Commit: "TypeScript/Effect client — all three services wired"
+- [x] Commit: "TypeScript/Effect client — all three services wired"
 
 ### Phase 5: Integration & Polish
 
-- [ ] Write a `docker-compose.yml` or a `start-all.sh` script to launch all four processes
-- [ ] Verify end-to-end: register, login, create project, create task, attach file, search,
+- [x] Write a `docker-compose.yml` or a `start-all.sh` script to launch all four processes
+- [x] Verify end-to-end: register, login, create project, create task, attach file, search,
   refresh token, hit rate limit, trigger every quirk
-- [ ] Write a comprehensive `README.md` in the style of test-llm1 (architecture, quirk table,
+- [x] Write a comprehensive `README.md` in the style of test-llm1 (architecture, quirk table,
   what the client needed for each)
 - [ ] Final commit: "Integration complete — all services running with client"

@@ -414,6 +414,17 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
 
         if action == "UploadFile":
             self._send_soap(handle_upload(action_elem, owner))
+        elif action == "DownloadFile":
+            soap_resp, file_bytes, content_type = handle_download(action_elem)
+            if file_bytes is not None:
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(file_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(file_bytes)
+            else:
+                self._send_soap(soap_resp)
         elif action == "ListFiles":
             self._send_soap(handle_list(action_elem, owner))
         elif action == "GetFileMetadata":

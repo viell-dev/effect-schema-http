@@ -101,9 +101,23 @@ export const downloadFileRequest = fileApi.createRequest({
 });
 
 /**
- * Helper to download a file by fileId via GET with SOAP body.
+ * Helper to download a file by fileId via SOAP POST.
  */
 export const downloadFile = (fileId: string) => {
+  const soapXml = makeSoapRequestXml(`
+    <fs:DownloadFile>
+      <fs:FileId>${fileId}</fs:FileId>
+    </fs:DownloadFile>
+  `);
+  return downloadFileRequest().setBody(soapXml);
+};
+
+/**
+ * Quirk demonstration: Attempting to send an HTTP GET carrying a body.
+ * viell-effect-schema-http strictly enforces HTTP semantics and fails with
+ * RequestBodyNotAllowed before dispatching across the network.
+ */
+export const attemptDownloadFileViaGet = (fileId: string) => {
   const soapXml = makeSoapRequestXml(`
     <fs:DownloadFile>
       <fs:FileId>${fileId}</fs:FileId>
