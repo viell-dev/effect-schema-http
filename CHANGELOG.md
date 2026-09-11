@@ -17,6 +17,10 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 
 ### Changed
 
+- Documented that a request body codec owns the content type and replaces a declared `content-type` header.
+- Documented how to discriminate a response body from a service that does not transmit a discriminant.
+- Documented `mapClient` as the seam for values derived from the encoded request, such as a body signature.
+- Documented that repeated response header field lines are also provider-dependent, and browser-impossible.
 - Documented local beta consumption, execution boundaries, body ownership, and gate semantics.
 - Documented the schema each body codec pairs with, backed by a typechecked example and runtime coverage.
 - Documented the Fetch client's `traceparent`/`b3` propagation, its CORS consequences, and how to disable it.
@@ -24,6 +28,9 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 
 ### Added
 
+- Server-backed coverage of conventions from services this library does not control: codec-owned content types,
+  `Retry-After` as an HTTP-date, an unregistered status outside the transient set, an arbitrary method with a `207`,
+  an untagged error payload, and a signature computed from the encoded body.
 - Lazy, immutable, pipeable HTTP request plans backed by Effect Platform `HttpClient`.
 - Schema-based request encoding and tag-discriminated response decoding.
 - API defaults, sub-API extension, path parameters, and call-site overrides.

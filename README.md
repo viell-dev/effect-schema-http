@@ -168,6 +168,20 @@ const getEntry = api.createRequest({
 The two levels compose rather than compete. `Match.tag` on the envelope answers "what kind of _response_ is this",
 and `Match.tag` on `body` answers "what kind of _value_ is this", each exhaustive in its own right. Reach for a rule
 when the transport distinguishes the cases, and for a union when only the payload does.
+
+A rule's `_tag` belongs to the client and is never transmitted. A _body_ schema's discriminant is a different thing: it
+has to come from somewhere. `Schema.TaggedError` and `Schema.TaggedClass` put `_tag` on the encoded side, so they decode
+only a payload that actually carries one — ideal when the server encodes the same class, and impossible when it is a
+service written in another language that has never heard of Effect. For those, keep the encoded shape the service
+really sends and attach the discriminant during decoding:
+
+```ts
+const ConflictBody = Schema.Struct({ error: Schema.String, error_description: Schema.String }).pipe(
+  Schema.attachPropertySignature("_tag", "Conflict"),
+);
+```
+
+Encoding strips the tag again, so the same schema can send a value back to a service that would not recognize it.
 Keep tags literal and declare reusable rule lists with `as const` for precise replacement inference. Ordinary rule
 arrays retain a conservative union of possible responses when composed.
 
@@ -291,6 +305,29 @@ A helper that only applies one setter needs no wrapper: `setHeader("x-tenant", t
 `appendHeader("accept-language", locale)` are already values of this type. Transformations that change response rules
 or supply a body change the plan's type parameters and cannot use it; compose those per endpoint with `mapEndpoint`.
 
+### Values derived from the encoded request
+
+A computed header cannot depend on the request body: it takes no arguments, and it resolves while the request is being
+materialized, before the body schema has encoded anything. `mapRequest` runs after encoding and does receive the built
+request, but it is synchronous. When a value needs the encoded body _and_ an effect — the common case being a signature
+over the payload, since `crypto.subtle` is asynchronous — use `mapClient`, which wraps the client and therefore runs
+after encoding and again on every attempt:
+
+```ts
+import { HttpClient, HttpClientRequest } from "@effect/platform";
+
+const signed: RequestPlanTransform = (plan) =>
+  plan.mapClient(
+    HttpClient.mapRequestEffect((request) =>
+      Effect.map(sign(request.body), (signature) => HttpClientRequest.setHeader(request, "x-signature", signature)),
+    ),
+  );
+```
+
+Per-attempt resolution is the point rather than a detail: a signature with a validity window has to be recomputed for a
+retry that waited, which is exactly what a computed header cannot do. It also means the transform's position in the
+pipeline does not matter — it sees the finished request regardless of where it was applied.
+
 ## Body codecs
 
 Response codecs read the transport body before its response schema decodes the resulting value:
@@ -312,6 +349,13 @@ Request codecs receive the schema's **encoded** value, so the same pairings appl
 | `RequestBody.uint8Array(type?)`  | `Uint8Array`               | `Schema.Uint8ArrayFromSelf`, or a transformation from it |
 | `RequestBody.urlParams`          | Record of coercible values | `Schema.Struct` of strings, numbers, booleans, or arrays |
 | `RequestBody.formData`           | `FormData`                 | `Schema.instanceOf(FormData)`                            |
+
+A request body codec also owns the request's **content type**. Encoding runs after the declarative layer is
+materialized, so the codec's media type replaces a declared `content-type` header rather than deferring to it:
+`RequestBody.text()` sends `text/plain` unless it is given another type, `RequestBody.urlParams` sends
+`application/x-www-form-urlencoded`, and `RequestBody.formData` removes the header entirely so the transport can
+generate a boundary. Set the type through the codec — `RequestBody.text("application/soap+xml")` — not through a
+header, and change it per call site with `.setRequestBodyCodec(...)`.
 
 `Schema.instanceOf(FormData)` and `Schema.Uint8ArrayFromSelf` are identity schemas: their `Type` and `Encoded` are the
 same value the codec already handles, so the caller's own `FormData` or `Uint8Array` reaches the transport untouched.
@@ -410,6 +454,13 @@ can pass a signal through `Effect.runPromise(effect, { signal })`.
 Effect Platform normalizes headers. Plans retain repeated header entries separately, but the default Fetch provider may
 combine them on the wire. APIs that require repeated physical header field lines need a provider that reads
 `getHeaderEntries(request)` and preserves that representation.
+
+The same applies in the other direction: a response envelope's `headerEntries` can only be as faithful as the provider
+that produced it, and Fetch combines repeated response fields before Effect Platform sees them. A service that emits
+four `X-Scope` lines is therefore indistinguishable from one that emits a single comma-joined value, except for
+`Set-Cookie`, which the platform parses separately into `envelope.cookies`. In a browser there is no way around this —
+`Headers` combines entries before `fetch` is called — so an API that depends on repeated field lines is a Node-only API
+whatever client it is used from.
 
 ### Browsers and CORS
 
