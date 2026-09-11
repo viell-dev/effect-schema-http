@@ -28,6 +28,8 @@ from io import BytesIO
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+import legacy
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -335,7 +337,9 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, SOAPAction")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PROPFIND")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Expose-Headers", "*")
         self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
@@ -357,6 +361,23 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/wsdl":
             self._serve_wsdl()
+            return
+
+        # Quirk: every SOAP toolkit fetches a contract with "?wsdl" as a bare query
+        # key, and the 2016 port only handled the path form. The bare key was added
+        # later, and only the bare key: "?wsdl=" is a different request as far as
+        # this dispatcher is concerned, and answers a fault. That distinction is
+        # real in the original .NET stack too.
+        if self.path in ("/?wsdl", "?wsdl"):
+            self._serve_wsdl()
+            return
+        if self.path.startswith("/?wsdl="):
+            self._send_soap(make_soap_fault(
+                9, "the contract is requested as ?wsdl with no value, not ?wsdl="))
+            return
+
+        if self.path.startswith("/bundle"):
+            self._serve_bundle()
             return
 
         # Read the body even on GET (the quirk)
@@ -387,6 +408,12 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
+        # The 2019 multipart upload endpoint, which shares a port with SOAP and
+        # nothing else.
+        if self.path.startswith("/upload"):
+            self._handle_multipart_upload(body)
+            return
+
         if not body:
             self._send_soap(make_soap_fault(1, "SOAP envelope required"))
             return
@@ -394,6 +421,28 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
         action, action_elem = parse_soap_action(body)
         if action is None or action_elem is None:
             self._send_soap(make_soap_fault(1, "Invalid SOAP envelope"))
+            return
+
+        # Quirk: SOAP 1.1 requires a quoted SOAPAction header, and the ESB in front
+        # of this service routes on it. An unquoted value reaches the wrong queue,
+        # so it is refused here rather than accepted and mislaid.
+        action_error = legacy.check_soap_action(self.headers, action)
+        if action_error is not None:
+            self._send_soap(make_soap_fault(7, action_error))
+            return
+
+        # Quirk: PurgeFiles was written in 2020 by someone who had read the spec.
+        # It answers a real soap:Fault with HTTP 500 — correct, and unlike every
+        # other action on this service.
+        if action == "PurgeFiles":
+            document = legacy.soap_fault_500(
+                "Server", "Purge is disabled; raise a change request with the archive team")
+            self.send_response(500)
+            self.send_header("Content-Type", "text/xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(document)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(document)
             return
 
         # Actions that require authentication
@@ -428,11 +477,150 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
         elif action == "ListFiles":
             self._send_soap(handle_list(action_elem, owner))
         elif action == "GetFileMetadata":
+            # Quirk: the archive consumer wants the Latin-1 document, which is what
+            # the .NET original wrote. SOAP 1.2 callers get it; SOAP 1.1 callers get
+            # the ordinary envelope, because that is the order the two were added.
+            if legacy.soap12_action(self.headers) == "GetFileMetadata":
+                file_id = extract_text(action_elem, "FileId") or ""
+                record = files.get(file_id)
+                if record is None:
+                    self._send_soap(make_soap_fault(2, f"File not found: {file_id}"))
+                    return
+                document = legacy.metadata_document_latin1(record)
+                self.send_response(200)
+                # Quirk: no charset. RFC 2616 said text/* defaults to ISO-8859-1;
+                # RFC 7231 removed that default and every modern client now guesses
+                # UTF-8 and mangles the archivist's name.
+                self.send_header("Content-Type", "text/xml")
+                self.send_header("Content-Length", str(len(document)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(document)
+                return
             self._send_soap(handle_metadata(action_elem))
         elif action == "DeleteFile":
             self._send_soap(handle_delete(action_elem, owner))
         else:
             self._send_soap(make_soap_fault(1, f"Unknown action: {action}"))
+
+    def do_PROPFIND(self):
+        """Handle WebDAV PROPFIND on /dav/.
+
+        Quirk: the document management system speaks WebDAV and someone made it work
+        in an afternoon in 2014. It answers 207 Multi-Status, which is an ordinary
+        status that most clients have never been asked to handle.
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > 0:
+            self.rfile.read(content_length)
+
+        if not self.path.startswith("/dav"):
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
+        document = legacy.propfind_document(list(files.values()))
+        self.send_response(207, "Multi-Status")
+        self.send_header("Content-Type", "application/xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(document)))
+        self.send_header("DAV", "1, 2")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(document)
+
+    def _handle_multipart_upload(self, body: bytes):
+        """The 2019 REST-shaped upload endpoint.
+
+        Quirk: it is the only thing on this service that speaks JSON, answers 201,
+        and sets Location. It also does not check the SOAPAction header, because its
+        author had never heard of it.
+        """
+        token = self._extract_token()
+        if not token or introspect_token(token) is None:
+            payload = json.dumps({"error": "authorization required"}).encode("utf-8")
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        owner = introspect_token(token).get("username", "unknown")
+        parts = legacy.parse_multipart(self.headers.get("Content-Type", ""), body)
+        if "file" not in parts:
+            payload = json.dumps({"error": "a 'file' part is required"}).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        filename, data = parts["file"]
+        label = parts.get("label", (None, b""))[1].decode("utf-8") or filename or "upload.bin"
+        now = datetime.now(timezone.utc)
+        file_id = str(uuid.uuid4())
+        files[file_id] = {
+            "id": file_id,
+            "name": label,
+            "content_type": "application/octet-stream",
+            "size": len(data),
+            "data": data,
+            "owner": owner,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        payload = legacy.upload_receipt(files[file_id])
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Location", f"/bundle?id={file_id}")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "Location")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _serve_bundle(self):
+        """Metadata and bytes in one multipart/form-data response.
+
+        The document viewer makes exactly one request per document and cannot be
+        changed, so the 2019 endpoint answers with both parts at once.
+        """
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        file_id = ""
+        for pair in query.split("&"):
+            if pair.startswith("id="):
+                file_id = pair[3:]
+        record = files.get(file_id)
+        if record is None:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
+        metadata = json.dumps({
+            "fileId": record["id"],
+            "fileName": record["name"],
+            "sizeBytes": record["size"],
+            "lastModified": format_us_date(record["updated_at"]),
+        }).encode("utf-8")
+
+        content_type, payload = legacy.build_multipart([
+            ("metadata", None, "application/json", metadata),
+            ("content", record["name"], record["content_type"], record["data"]),
+        ])
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _extract_token(self) -> str | None:
         """Extract access token from Authorization header."""

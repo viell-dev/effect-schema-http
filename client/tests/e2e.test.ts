@@ -1,3 +1,4 @@
+import { DateTime } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   createComment,
@@ -13,7 +14,7 @@ import {
 import { attemptDownloadFileViaGet, downloadFile, getWsdl, listFiles, uploadFile } from "../src/services/fileClient.js";
 import { getUserInfo, register, requestToken } from "../src/services/idClient.js";
 import { setSession } from "../src/session.js";
-import { call, callFailure, servicesUp } from "./support.js";
+import { call, callFailure, expectTag, servicesUp } from "./support.js";
 
 /**
  * The original end-to-end path across all three of the first-pass services.
@@ -115,15 +116,18 @@ describe.runIf(await servicesUp([4100, 4200, 4300]))("end to end across three se
 
   it("uploads to the Python SOAP service, which reports success inside a 200", async () => {
     const ok = await call(uploadFile("e2e.txt", "text/plain", btoa("Hello from the multi-service test!")), "ok");
-    expect(ok.body.fileId).toBeTruthy();
-    fileId = ok.body.fileId;
+    // The transport said 200 either way; only the body knows whether it worked.
+    const result = expectTag(ok.body, "ok");
+    expect(result.value.fileId).toBeTruthy();
+    fileId = result.value.fileId;
   });
 
   it("lists files across the three shapes the .NET serializer used to emit", async () => {
     const ok = await call(listFiles(), "ok");
-    const mine = ok.body.find((file) => file.id === fileId);
+    const files = expectTag(ok.body, "ok").value;
+    const mine = files.find((file) => file.id === fileId);
     expect(mine?.name).toBe("e2e.txt");
-    expect(mine?.lastModified).toBeInstanceOf(Date);
+    expect(DateTime.isDateTime(mine!.lastModified)).toBe(true);
   });
 
   it("downloads the bytes directly and through the Java proxy", async () => {
@@ -146,7 +150,7 @@ describe.runIf(await servicesUp([4100, 4200, 4300]))("end to end across three se
     expect(ok.body.status).toBe("uploaded");
   });
 
-  it("serves the WSDL whose size limit disagrees with its own error message", async () => {
+  it("serves the WSDL for a bare ?wsdl key, which is the only form it accepts", async () => {
     const ok = await call(getWsdl(), "ok");
     expect(ok.body).toContain("urn:filestore:2011");
   });
