@@ -141,19 +141,19 @@ all plausible — these are things that exist in production right now.
 - [x] Wire in all historical quirks (epoch-ms timestamps, error shape split, pagination off-by-one,
   `PATCH` returns old state, status int-vs-string, etc.)
 - [x] Test with `curl`
-- [ ] Commit: "API Server (Java/JDK HttpServer) — REST API with legacy quirks"
+- [x] Commit: "API Server (Java/JDK HttpServer) — REST API with legacy quirks"
 
 ### Phase 4: TypeScript/Effect Client
 
-- [ ] Initialize client project in `client/` (Vite + TypeScript, Effect, the vendored library)
-- [ ] Define API declarations for ID Server endpoints using `createApi`/`createRequest`
-- [ ] Define API declarations for File Server SOAP endpoints (XML request/response bodies)
-- [ ] Define API declarations for API Server endpoints
-- [ ] Implement schema transforms for all quirks (date formats, casing, epoch-ms, SOAP parsing,
+- [x] Initialize client project in `client/` (Vite + TypeScript, Effect, the vendored library)
+- [x] Define API declarations for ID Server endpoints using `createApi`/`createRequest`
+- [x] Define API declarations for File Server SOAP endpoints (XML request/response bodies)
+- [x] Define API declarations for API Server endpoints
+- [x] Implement schema transforms for all quirks (date formats, casing, epoch-ms, SOAP parsing,
   error unions, etc.)
-- [ ] Implement auth flow: register → login → store token → refresh cycle
-- [ ] Implement a basic UI: project list, task board, file upload/download, user profile
-- [ ] Wire file operations through both direct File Server calls and API Server proxy
+- [x] Implement auth flow: register → login → store token → refresh cycle
+- [x] Implement a basic UI: project list, task board, file upload/download, user profile
+- [x] Wire file operations through both direct File Server calls and API Server proxy
 - [ ] Commit: "TypeScript/Effect client — all three services wired"
 
 ### Phase 5: Integration & Polish
