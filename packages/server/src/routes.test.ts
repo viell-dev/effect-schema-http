@@ -498,10 +498,11 @@ describe("export, reindex, and bundles", () => {
       });
       const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
 
-      const first = yield* routes.adminReindex(header);
-      const second = yield* routes.adminReindex(header);
-      const third = yield* routes.adminReindex(header);
-      const asAnonymous = yield* routes.adminReindex(undefined);
+      // The client counts its own attempts and the server echoes the value back untouched.
+      const first = yield* routes.adminReindex(header, "1");
+      const second = yield* routes.adminReindex(header, "2");
+      const third = yield* routes.adminReindex(header, "3");
+      const asAnonymous = yield* routes.adminReindex(undefined, "1");
 
       return { first, second, third, asAnonymous };
     }).pipe(Effect.provide(Store.Default));
@@ -519,6 +520,38 @@ describe("export, reindex, and bundles", () => {
     expect(first.headers?.["retry-after"]).toBe("1");
     expect(jsonBody(third)).toMatchObject({ attempts: 3 });
     expect(asAnonymous.status).toBe(401);
+
+    // Every response, success or not, identifies which attempt it answers.
+    expect([first, second, third].map((response) => response.headers?.["x-attempt"])).toEqual(["1", "2", "3"]);
+  });
+
+  it("warms up again after a cache refresh bounces the cluster", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+
+      yield* routes.adminReindex(header, "1");
+      yield* routes.adminReindex(header, "2");
+      const accepted = yield* routes.adminReindex(header, "3");
+
+      yield* routes.adminRefreshCache(header, {});
+      const afterBounce = yield* routes.adminReindex(header, "1");
+
+      return { accepted, afterBounce };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { accepted, afterBounce } = await Effect.runPromise(
+      program as Effect.Effect<{ accepted: RouteResponse; afterBounce: RouteResponse }>,
+    );
+
+    expect(accepted.status).toBe(202);
+    // A reindex straight after a purge has to warm the cluster up all over again.
+    expect(afterBounce.status).toBe(503);
   });
 
   it("bundles one attachment's metadata and bytes into a multipart response", async () => {

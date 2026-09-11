@@ -296,6 +296,9 @@ export class Store extends Effect.Service<Store>()("Store", {
         return [reindexAttempts, { ...state, reindexAttempts }] as const;
       });
 
+    /** Bouncing the cluster puts it back into warm-standby, so it needs poking again. */
+    const resetReindexAttempts = () => Ref.update(ref, (state) => ({ ...state, reindexAttempts: 0 }));
+
     const refreshCache = () =>
       Effect.gen(function* () {
         const now = DateTime.unsafeNow();
@@ -328,6 +331,7 @@ export class Store extends Effect.Service<Store>()("Store", {
       deleteAttachment,
       countStats,
       recordReindexAttempt,
+      resetReindexAttempts,
       refreshCache,
     } as const;
   }),

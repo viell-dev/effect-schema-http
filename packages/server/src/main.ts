@@ -230,7 +230,7 @@ const routeTable: ReadonlyArray<Route> = [
     method: "POST",
     pattern: /^\/api\/admin\/search\/reindex$/,
     bodyMode: "none",
-    handle: (_p, _q, auth) => run(routes.adminReindex(auth)),
+    handle: (_p, _q, auth, _body, header) => run(routes.adminReindex(auth, header("x-attempt"))),
   },
   {
     // JSON from the modern subsystem, or the old watchdog's plain-text dump when it is unhealthy.

@@ -2,8 +2,9 @@ import { DateTime, Effect, Match } from "effect";
 import { toEffect, UnhandledResponse } from "viell-effect-schema-http";
 import { h, mount } from "../dom.js";
 import { renderNav } from "../components/nav.js";
+import { renderReindexPanel } from "../components/reindexPanel.js";
 import { renderUsersDirectory } from "../components/usersDirectory.js";
-import { adminDiagnostics, adminRefreshCache, adminReindex, adminStats } from "../api.js";
+import { adminDiagnostics, adminRefreshCache, adminStats } from "../api.js";
 import { run } from "../runtime.js";
 import { domainErrorMessage } from "../errors.js";
 import { getSession } from "../session.js";
@@ -82,52 +83,6 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
         h("button", { type: "submit" }, "Refresh"),
       );
 
-      /**
-       * The retry path. The endpoint declares `retry: { times: 3 }` (see `api.ts`), the server
-       * answers `503` with a `Retry-After` until its warm-standby search cluster is up, and the
-       * library rides through that without this handler seeing the intermediate failures at all:
-       * `503` is already in its transient classification, so what arrives here is the `202` — with
-       * an `attempts` count from the server proving how many requests it actually took.
-       *
-       * `warmingUp` is still declared as a response rule, because retries are finite: if the
-       * cluster never comes up, the last `503` is a perfectly ordinary mapped success value rather
-       * than an `UnhandledResponse`.
-       */
-      const reindexStatus = h("p", { class: "hint hidden" });
-      const reindexButton = h(
-        "button",
-        {
-          type: "button",
-          onclick: () => {
-            reindexStatus.classList.remove("hidden");
-            reindexStatus.textContent = "Reindexing (the cluster may need a few attempts)…";
-            void run(adminReindex().pipe(toEffect))
-              .then((reindexResult) => {
-                const message = domainErrorMessage(reindexResult);
-                if (message) {
-                  reindexStatus.textContent = message;
-                  return;
-                }
-                Match.value(reindexResult).pipe(
-                  Match.tag("accepted", ({ body }) => {
-                    reindexStatus.textContent = `Indexed ${body.indexed} posts after ${body.attempts} server-side attempts.`;
-                  }),
-                  Match.tag("warmingUp", ({ body }) => {
-                    reindexStatus.textContent = `Gave up while retrying: ${body.message}`;
-                  }),
-                  Match.orElse(() => {
-                    reindexStatus.textContent = "Unexpected response from the server.";
-                  }),
-                );
-              })
-              .catch((error: unknown) => {
-                console.error("reindex failed", error);
-                reindexStatus.textContent = "Could not reach the server. Is it running?";
-              });
-          },
-        },
-        "Reindex search",
-      );
 
       /**
        * The unmapped-response path. `adminDiagnostics` maps only the modern subsystem's JSON, and
@@ -219,13 +174,7 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
           h("dd", {}, new Date(DateTime.toEpochMillis(stats.generatedAt)).toLocaleString()),
         ),
         refreshForm,
-        h(
-          "section",
-          { class: "card form" },
-          h("h2", {}, "Search index"),
-          reindexStatus,
-          reindexButton,
-        ),
+        renderReindexPanel(),
         h(
           "section",
           { class: "card form" },

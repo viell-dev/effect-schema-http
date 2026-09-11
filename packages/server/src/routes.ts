@@ -522,8 +522,10 @@ export const adminRefreshCache = (authHeader: string | undefined, json: unknown)
     const store = yield* Store;
     yield* store.refreshCache();
     // The command an operator actually reaches for when the feed looks stale: purging the proxy
-    // is the half that matters, since the store itself has nothing to warm.
+    // is the half that matters, since the store itself has nothing to warm. It also bounces the
+    // search cluster, which is why a reindex right after a purge has to warm up again.
     edgeCacheClear();
+    yield* store.resetReindexAttempts();
     if (input.reason) {
       // A real deployment would write this to an audit log; this demo just proves the reason
       // made it from the client's form field, through validation, to the server.
@@ -647,16 +649,22 @@ export const exportPost = (slugParam: string, authHeader: string | undefined, ac
  */
 const REINDEX_WARMUP_ATTEMPTS = 2;
 
-export const adminReindex = (authHeader: string | undefined) =>
+export const adminReindex = (authHeader: string | undefined, clientAttempt: string | undefined) =>
   Effect.gen(function* () {
     yield* requireAdmin(authHeader);
     const store = yield* Store;
     const attempts = yield* store.recordReindexAttempt();
+    // Echoed back verbatim, and that is the entire feature on this side. The server attaches no
+    // meaning to the value: it does not parse it, count it, validate it, or act on it. It is the
+    // caller's own bookkeeping, reflected so the caller can match a response to the attempt that
+    // produced it. All the semantics live in the client.
+    const echo = clientAttempt === undefined ? {} : { "x-attempt": clientAttempt };
+
     if (attempts <= REINDEX_WARMUP_ATTEMPTS) {
       return {
         kind: "json",
         status: 503,
-        headers: { "retry-after": "1" },
+        headers: { ...echo, "retry-after": "1" },
         body: { message: "search cluster is still warming up" },
       } satisfies RouteResponse;
     }
@@ -665,7 +673,7 @@ export const adminReindex = (authHeader: string | undefined) =>
       indexed: NonNegativeInt.make(counts.posts),
       attempts: NonNegativeInt.make(attempts),
     }).pipe(Effect.orDie);
-    return { kind: "json", status: 202, body } satisfies RouteResponse;
+    return { kind: "json", status: 202, headers: echo, body } satisfies RouteResponse;
   }).pipe(Effect.catchAll(domainErrorToResponse));
 
 // -- Attachment bundles ----------------------------------------------------------------------------
