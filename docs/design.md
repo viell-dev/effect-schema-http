@@ -282,6 +282,29 @@ every exact match. They do nothing when the selected value is absent. Their two-
 replace or remove every value for a key. Plural declarative removal lists accept either a key or `{ name, value }` for
 targeted removal without adding overload ambiguity.
 
+Header and query-parameter values are each either static or computed. A plain value is fixed at declaration; a
+function of type `() => string | undefined` (or `() => QueryParamValue | undefined` for parameters) is called once per
+plan evaluation while the request is materialized, and `undefined` omits the field. This exists because the most
+common API-wide default — an `authorization` header — is not knowable when the API is declared: the session begins
+later, changes on refresh, and ends on sign-out. Without computed values the only dynamic seam is `transformRequest`,
+which runs after the declarative layer is materialized and therefore cannot be removed by `removeHeaders`, an endpoint
+override, or a plan-level `removeHeader`. A computed value keeps the dynamic part inside the declarative layer, so
+"authenticate by default, opt out where it does not apply" is expressible as configuration rather than as an
+interceptor with a hand-maintained exclusion list.
+
+Resolution is deliberately positioned: it happens after every default, override, and removal has composed, and before
+the first request transform. A field that a declaration removed is therefore never computed, and a value resolving to
+`undefined` never reaches the request. It also happens once per evaluation rather than once per attempt, because
+encoding precedes the retry loop and attempts reuse the encoded request — a credential cannot change between attempts
+of one operation. The functions run outside the Effect runtime and must be pure and cheap; anything fallible,
+interruptible, or asynchronous belongs in a request transform, a client transform, or the application's own state
+management. Targeted operations that select an existing value — `removeHeader(name, value)`,
+`setHeader(name, current, replacement)`, and the query-parameter equivalents — match static values only, since a
+computed entry has no value to compare until it runs; such entries are removed or replaced by name. Internally this
+splits the canonical entry representation in two: declarations and plan state hold possibly computed entries, while
+`HeaderEntries` — the representation providers see through `getHeaderEntries` and `attachHeaderEntries` — remains
+materialized strings.
+
 Request headers retain one entry per supplied value in the plan. `setHeader(name, value)` replaces every value for one
 name, `setHeader(name, current, replacement)` replaces every exact match in place, `setHeaders` replaces the names
 present in its input, `appendHeader` adds another value, and `removeHeader(name[, value])` removes either the whole

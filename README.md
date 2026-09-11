@@ -182,6 +182,52 @@ Query values distinguish a bare key from an empty value: `true` produces `?previ
 Append operations support repeated query parameters and headers. Targeted setter and remover overloads operate on one
 exact existing value.
 
+### Static and computed values
+
+A header or query-parameter value is either a plain value, which is fixed when it is declared, or a function, which is
+called once per plan evaluation while the request is materialized. Returning `undefined` omits the field or parameter
+entirely:
+
+```ts
+const api = createApi("https://api.example.com", {
+  headers: { authorization: () => (session.token === undefined ? undefined : `Bearer ${session.token}`) },
+  urlParams: { preview: () => (settings.previewMode ? true : undefined) },
+});
+```
+
+This is what makes an API-wide authentication default workable: the value is read from live application state at send
+time rather than captured when the API was declared, so one API object survives signing in, refreshing, and signing
+out, and a plan retained across those events sends the current token rather than a stale one.
+
+Crucially, a computed value is still an ordinary **declared** header. It participates in the normal composition rules,
+so an API-wide default can be taken away by the layers below it:
+
+```ts
+const publicApi = api.pipe(extendApi({ removeHeaders: ["authorization"] }));
+
+const login = api.createRequest({ method: "POST", path: "/login", removeHeaders: ["authorization"], ... });
+const probe = getUser({ userId }).removeHeader("authorization");
+```
+
+A field removed by any of those is never computed at all. This is the difference between a computed value and a
+request transform: `transformRequest` runs _after_ the declarative layer is materialized, so nothing can remove what it
+adds. Reach for a transform when the change genuinely needs the built request; use a computed value when it is a
+header or parameter whose value simply is not known yet.
+
+Rules worth knowing:
+
+- **Plain values are for static data only.** Anything that varies over the life of the API belongs in a function.
+- **Functions must be pure and cheap.** They run outside the Effect runtime, so they cannot fail, retry, or be
+  interrupted; use a request transform, `mapClient`, or a gate for anything effectful.
+- **Resolution happens once per evaluation, not per attempt.** Request encoding runs before the retry loop, so every
+  retry attempt reuses the value computed for that evaluation — a token cannot change mid-retry.
+- **Targeted operations match static values only.** `removeHeader(name, value)`,
+  `setHeader(name, current, replacement)`, and their query-parameter equivalents select an existing value, which a
+  function does not have until it runs. Remove or replace a computed entry by name.
+- **Request gates key on their input, not on headers.** A cached success is reused even if a computed value would now
+  produce something different; call `refresh` or `invalidate` when a credential change should invalidate what a gate
+  remembers.
+
 ### Reusable cross-endpoint setters
 
 A plan's `Body`, `Rules`, and `BodyReady` type parameters differ per endpoint, so a helper written against one

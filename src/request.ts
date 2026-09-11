@@ -43,28 +43,71 @@ type AnySchema = Schema.Schema.Any;
 /** An HTTP method token. Arbitrary extension methods are supported. */
 export type RequestMethod = string;
 
-/** A query parameter value; `true` serializes as a bare parameter without `=`. */
+/** A materialized query parameter value; `true` serializes as a bare parameter without `=`. */
 export type QueryParamValue = string | true;
 
-/** Accepted query parameter collections, including repeated values. */
+/**
+ * A static query parameter value, or a function computing one while the request is materialized.
+ *
+ * @remarks
+ * A plain value is static and is fixed when it is declared. A function is called once per plan evaluation, just before
+ * the request is built, so it can read application state that did not exist at declaration time. Returning `undefined`
+ * omits the parameter entirely, which makes "include this filter only when it is set" a declaration rather than a
+ * branch at the call site.
+ *
+ * The function must be pure and cheap: it runs outside the Effect runtime, its result is fixed for the whole
+ * evaluation including every retry attempt, and it may run while a plan is being reused. Use a request transform for
+ * anything effectful.
+ *
+ * @public
+ */
+export type QueryParamValueInput = QueryParamValue | (() => QueryParamValue | undefined);
+
+/** Accepted query parameter collections, including repeated and computed values. */
 export type QueryParamsInput =
-  | Readonly<Record<string, QueryParamValue | ReadonlyArray<QueryParamValue> | undefined>>
-  | Iterable<readonly [string, QueryParamValue]>
+  | Readonly<Record<string, QueryParamValueInput | ReadonlyArray<QueryParamValueInput> | undefined>>
+  | Iterable<readonly [string, QueryParamValueInput]>
   | URLSearchParams;
 
-/** Canonical ordered query parameter representation. */
+/** Canonical ordered query parameters as declared, before computed values are resolved. */
+type DeclaredQueryParams = ReadonlyArray<readonly [string, QueryParamValueInput]>;
+
+/** Canonical ordered query parameters after computed values are resolved. */
 type QueryParams = ReadonlyArray<readonly [string, QueryParamValue]>;
 
-/** Removes every value by name, or one exact name/value pair. */
+/** Removes every value by name, or one exact name/value pair. Only static values can be matched by value. */
 export type QueryParamRemoval = string | { readonly name: string; readonly value?: QueryParamValue };
 
-/** Header inputs accepted by Effect Platform. */
-export type HeaderInput = Headers.Input;
+/**
+ * A static header field value, or a function computing one while the request is materialized.
+ *
+ * @remarks
+ * Behaves exactly like {@link QueryParamValueInput}: a plain string is static, a function is called once per plan
+ * evaluation just before the request is built, and returning `undefined` omits the field. This is what lets an
+ * API-wide `authorization` default read the current session instead of whatever was signed in when the API was
+ * declared, while remaining an ordinary declared header that endpoint `removeHeaders`, sub-API extension, and
+ * plan-level `removeHeader` can still take away.
+ *
+ * The function must be pure and cheap: it runs outside the Effect runtime, its result is fixed for the whole
+ * evaluation including every retry attempt, and it may run while a plan is being reused. Use a request transform for
+ * anything effectful.
+ *
+ * @public
+ */
+export type HeaderValueInput = string | (() => string | undefined);
 
-/** Ordered HTTP header fields that preserve repeated field lines. */
+/** Header inputs accepted by declarations and setters, including repeated and computed values. */
+export type HeaderInput =
+  | Readonly<Record<string, HeaderValueInput | ReadonlyArray<HeaderValueInput> | undefined>>
+  | Iterable<readonly [string, HeaderValueInput]>;
+
+/** Ordered HTTP header fields as declared, before computed values are resolved. */
+type DeclaredHeaderEntries = ReadonlyArray<readonly [name: string, value: HeaderValueInput]>;
+
+/** Ordered HTTP header fields that preserve repeated field lines. Always materialized values. */
 export type HeaderEntries = ReadonlyArray<readonly [name: string, value: string]>;
 
-/** Removes every field by name, or one exact name/value pair. */
+/** Removes every field by name, or one exact name/value pair. Only static values can be matched by value. */
 export type HeaderRemoval = string | { readonly name: string; readonly value?: string };
 
 /** Symbol used by providers to retain repeated header field lines on a message. */
@@ -77,8 +120,8 @@ interface HeaderEntriesCarrier {
   readonly [HeaderEntriesTypeId]?: HeaderEntries;
 }
 
-/** Converts supported header input into canonical lower-case entries. */
-const headerEntriesFromInput = (input: HeaderInput | undefined): HeaderEntries => {
+/** Converts supported header input into canonical lower-case entries, retaining computed values unresolved. */
+const headerEntriesFromInput = (input: HeaderInput | undefined): DeclaredHeaderEntries => {
   if (input === undefined) return [];
   if (Symbol.iterator in input) {
     return Array.from(input, ([name, value]) => [name.toLowerCase(), value] as const);
@@ -88,9 +131,23 @@ const headerEntriesFromInput = (input: HeaderInput | undefined): HeaderEntries =
     if (value === undefined) return [];
     return Array.isArray(value)
       ? value.map((item) => [name.toLowerCase(), item] as const)
-      : [[name.toLowerCase(), value as string] as const];
+      : [[name.toLowerCase(), value as HeaderValueInput] as const];
   });
 };
+
+/**
+ * Calls every computed header value once and drops the fields whose value resolved to `undefined`.
+ *
+ * @remarks
+ * Runs while the request is materialized, after all declarative composition and before request transforms, so a field
+ * removed by a declaration is never computed at all.
+ */
+const resolveHeaderEntries = (entries: DeclaredHeaderEntries): HeaderEntries =>
+  entries.flatMap(([name, value]) => {
+    if (typeof value !== "function") return [[name, value] as const];
+    const resolved = value();
+    return resolved === undefined ? [] : [[name, resolved] as const];
+  });
 
 /**
  * Attaches lossless ordered header entries to a request or response object.
@@ -107,7 +164,8 @@ const headerEntriesFromInput = (input: HeaderInput | undefined): HeaderEntries =
 export const attachHeaderEntries = <Message extends object>(message: Message, input: HeaderInput): Message => {
   Object.defineProperty(message, HeaderEntriesTypeId, {
     configurable: true,
-    value: headerEntriesFromInput(input),
+    // Provider-supplied fields are already materialized; a computed value here is resolved immediately.
+    value: resolveHeaderEntries(headerEntriesFromInput(input)),
   });
   return message;
 };
@@ -126,7 +184,7 @@ export const getHeaderEntries = (message: {
   const attached = (message as HeaderEntriesCarrier)[HeaderEntriesTypeId];
   if (attached !== undefined) return attached;
 
-  const entries = headerEntriesFromInput(message.headers);
+  const entries = resolveHeaderEntries(headerEntriesFromInput(message.headers));
   if (!Cookies.isCookies(message.cookies)) return entries;
   const setCookie = Cookies.toSetCookieHeaders(message.cookies);
   return setCookie.length === 0
@@ -170,33 +228,35 @@ const reconcileHeaderEntries = (entries: HeaderEntries, headers: Headers.Headers
 };
 
 /** Replaces all existing values for names present in the incoming input. */
-const setHeaderEntries = (entries: HeaderEntries, input: HeaderInput): HeaderEntries => {
+const setHeaderEntries = (entries: DeclaredHeaderEntries, input: HeaderInput): DeclaredHeaderEntries => {
   const incoming = headerEntriesFromInput(input);
   const names = new Set(incoming.map(([name]) => name));
   return [...incoming, ...entries.filter(([name]) => !names.has(name))];
 };
 
 /** Appends one header field without replacing existing values. */
-const appendHeaderEntry = (entries: HeaderEntries, name: string, value: string): HeaderEntries => [
-  ...entries,
-  [name.toLowerCase(), value],
-];
+const appendHeaderEntry = (
+  entries: DeclaredHeaderEntries,
+  name: string,
+  value: HeaderValueInput,
+): DeclaredHeaderEntries => [...entries, [name.toLowerCase(), value]];
 
 /** Replaces every exact occurrence of one header name/value pair. */
 const replaceHeaderEntryValue = (
-  entries: HeaderEntries,
+  entries: DeclaredHeaderEntries,
   name: string,
   currentValue: string,
-  replacementValue: string,
-): HeaderEntries => {
+  replacementValue: HeaderValueInput,
+): DeclaredHeaderEntries => {
   const canonicalName = name.toLowerCase();
+  // A computed value has no value to match until it runs, so targeted replacement never selects one.
   return entries.map((entry) =>
     entry[0] === canonicalName && entry[1] === currentValue ? ([canonicalName, replacementValue] as const) : entry,
   );
 };
 
-/** Removes all fields by name, or only fields having an exact value. */
-const removeHeaderEntry = (entries: HeaderEntries, name: string, value?: string): HeaderEntries => {
+/** Removes all fields by name, or only fields having an exact static value. */
+const removeHeaderEntry = (entries: DeclaredHeaderEntries, name: string, value?: string): DeclaredHeaderEntries => {
   const canonicalName = name.toLowerCase();
   return entries.filter(
     ([candidateName, candidateValue]) =>
@@ -206,9 +266,9 @@ const removeHeaderEntry = (entries: HeaderEntries, name: string, value?: string)
 
 /** Applies ordered header removals. */
 const removeHeaderEntries = (
-  entries: HeaderEntries,
+  entries: DeclaredHeaderEntries,
   removals: ReadonlyArray<HeaderRemoval> | undefined,
-): HeaderEntries =>
+): DeclaredHeaderEntries =>
   (removals ?? []).reduce(
     (current, removal) =>
       typeof removal === "string"
@@ -959,10 +1019,10 @@ type RequestBodyCodecSetter<
   ? (codec: RequestBodyCodec<Schema.Schema.Encoded<Body>>) => RequestPlan<Body, Rules, BodyReady>
   : never;
 
-/** Overloads for replacing all values or one exact query parameter value. */
+/** Overloads for replacing all values or one exact static query parameter value. */
 interface UrlParamSetter<Output> {
-  (key: string, value: QueryParamValue): Output;
-  (key: string, currentValue: QueryParamValue, replacementValue: QueryParamValue): Output;
+  (key: string, value: QueryParamValueInput): Output;
+  (key: string, currentValue: QueryParamValue, replacementValue: QueryParamValueInput): Output;
 }
 
 /** Overloads for removing all values or one exact query parameter value. */
@@ -977,10 +1037,10 @@ interface HeaderRemover<Output> {
   (name: string, value: string): Output;
 }
 
-/** Overloads for replacing all values or one exact header field value. */
+/** Overloads for replacing all values or one exact static header field value. */
 interface HeaderSetter<Output> {
-  (name: string, value: string): Output;
-  (name: string, currentValue: string, replacementValue: string): Output;
+  (name: string, value: HeaderValueInput): Output;
+  (name: string, currentValue: string, replacementValue: HeaderValueInput): Output;
 }
 
 /**
@@ -1012,7 +1072,7 @@ export interface RequestPlan<
   /** Replaces all values for every key present in the input. */
   readonly setUrlParams: (params: QueryParamsInput) => RequestPlan<Body, Rules, BodyReady>;
   /** Appends one query parameter without replacing existing values. */
-  readonly appendUrlParam: (key: string, value: QueryParamValue) => RequestPlan<Body, Rules, BodyReady>;
+  readonly appendUrlParam: (key: string, value: QueryParamValueInput) => RequestPlan<Body, Rules, BodyReady>;
   /** Removes all values for a key, or only an exact key/value pair. */
   readonly removeUrlParam: UrlParamRemover<RequestPlan<Body, Rules, BodyReady>>;
   /** Replaces all values for a header name, or replaces matching field values only. */
@@ -1020,7 +1080,7 @@ export interface RequestPlan<
   /** Replaces all values for every header name present in the input. */
   readonly setHeaders: (headers: HeaderInput) => RequestPlan<Body, Rules, BodyReady>;
   /** Appends one header field without replacing existing values. */
-  readonly appendHeader: (name: string, value: string) => RequestPlan<Body, Rules, BodyReady>;
+  readonly appendHeader: (name: string, value: HeaderValueInput) => RequestPlan<Body, Rules, BodyReady>;
   /** Removes all fields for a name, or only an exact name/value pair. */
   readonly removeHeader: HeaderRemover<RequestPlan<Body, Rules, BodyReady>>;
   /** Replaces or clears request caching behavior. */
@@ -1135,21 +1195,22 @@ export type RequestPlanTransform = <
 ) => RequestPlan<Body, Rules, BodyReady>;
 
 /** Pipeable form of {@link RequestPlan.setUrlParam}. */
-export function setUrlParam(key: string, value: QueryParamValue): RequestPlanTransform;
+export function setUrlParam(key: string, value: QueryParamValueInput): RequestPlanTransform;
 export function setUrlParam(
   key: string,
   currentValue: QueryParamValue,
-  replacementValue: QueryParamValue,
+  replacementValue: QueryParamValueInput,
 ): RequestPlanTransform;
 export function setUrlParam(
   key: string,
-  currentValue: QueryParamValue,
-  replacementValue?: QueryParamValue,
+  currentValue: QueryParamValueInput,
+  replacementValue?: QueryParamValueInput,
 ): RequestPlanTransform {
   return (plan) =>
     replacementValue === undefined
       ? plan.setUrlParam(key, currentValue)
-      : plan.setUrlParam(key, currentValue, replacementValue);
+      : // The three-argument form selects an existing value, which only a static one can be.
+        plan.setUrlParam(key, currentValue as QueryParamValue, replacementValue);
 }
 
 /** Pipeable form of {@link RequestPlan.setUrlParams}. */
@@ -1160,7 +1221,7 @@ export const setUrlParams =
 
 /** Pipeable form of {@link RequestPlan.appendUrlParam}. */
 export const appendUrlParam =
-  (key: string, value: QueryParamValue): RequestPlanTransform =>
+  (key: string, value: QueryParamValueInput): RequestPlanTransform =>
   (plan) =>
     plan.appendUrlParam(key, value);
 
@@ -1172,13 +1233,18 @@ export function removeUrlParam(key: string, value?: QueryParamValue): RequestPla
 }
 
 /** Pipeable form of {@link RequestPlan.setHeader}. */
-export function setHeader(name: string, value: string): RequestPlanTransform;
-export function setHeader(name: string, currentValue: string, replacementValue: string): RequestPlanTransform;
-export function setHeader(name: string, currentValue: string, replacementValue?: string): RequestPlanTransform {
+export function setHeader(name: string, value: HeaderValueInput): RequestPlanTransform;
+export function setHeader(name: string, currentValue: string, replacementValue: HeaderValueInput): RequestPlanTransform;
+export function setHeader(
+  name: string,
+  currentValue: HeaderValueInput,
+  replacementValue?: HeaderValueInput,
+): RequestPlanTransform {
   return (plan) =>
     replacementValue === undefined
       ? plan.setHeader(name, currentValue)
-      : plan.setHeader(name, currentValue, replacementValue);
+      : // The three-argument form selects an existing value, which only a static one can be.
+        plan.setHeader(name, currentValue as string, replacementValue);
 }
 
 /** Pipeable form of {@link RequestPlan.setHeaders}. */
@@ -1189,7 +1255,7 @@ export const setHeaders =
 
 /** Pipeable form of {@link RequestPlan.appendHeader}. */
 export const appendHeader =
-  (name: string, value: string): RequestPlanTransform =>
+  (name: string, value: HeaderValueInput): RequestPlanTransform =>
   (plan) =>
     plan.appendHeader(name, value);
 
@@ -1325,8 +1391,8 @@ interface PlanState {
   readonly body: unknown;
   readonly hasBody: boolean;
   readonly bodyCodec: RequestBodyCodec<never>;
-  readonly headers: HeaderEntries;
-  readonly urlParams: QueryParams;
+  readonly headers: DeclaredHeaderEntries;
+  readonly urlParams: DeclaredQueryParams;
   readonly responseCodec: DefaultResponseBodyCodec;
   readonly unhandledResponseBody: UnhandledResponseBodyPolicy;
   readonly cache: CachePolicy | undefined;
@@ -1343,11 +1409,11 @@ interface InternalRequestPlan extends Pipeable.Pipeable {
   readonly setRequestBodyCodec: (codec: RequestBodyCodec<never>) => unknown;
   readonly setUrlParam: UrlParamSetter<unknown>;
   readonly setUrlParams: (params: QueryParamsInput) => unknown;
-  readonly appendUrlParam: (key: string, value: QueryParamValue) => unknown;
+  readonly appendUrlParam: (key: string, value: QueryParamValueInput) => unknown;
   readonly removeUrlParam: UrlParamRemover<unknown>;
   readonly setHeader: HeaderSetter<unknown>;
   readonly setHeaders: (headers: HeaderInput) => unknown;
-  readonly appendHeader: (name: string, value: string) => unknown;
+  readonly appendHeader: (name: string, value: HeaderValueInput) => unknown;
   readonly removeHeader: HeaderRemover<unknown>;
   readonly setCache: (cache: CachePolicy | undefined) => unknown;
   readonly setResponseCodec: (codec: DefaultResponseBodyCodec) => unknown;
@@ -1509,7 +1575,7 @@ const joinUrl = (baseUrl: string | undefined, path: string): string => {
   return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 };
 
-const queryParamsFromInput = (input: QueryParamsInput): QueryParams => {
+const queryParamsFromInput = (input: QueryParamsInput): DeclaredQueryParams => {
   if (Symbol.iterator in input) {
     return Array.from(input, ([key, value]) => [key, value] as const);
   }
@@ -1518,38 +1584,57 @@ const queryParamsFromInput = (input: QueryParamsInput): QueryParams => {
     if (value === undefined) return [];
     return Array.isArray(value)
       ? value.map((item) => [key, item] as const)
-      : [[key, value as QueryParamValue] as const];
+      : [[key, value as QueryParamValueInput] as const];
   });
 };
 
-const setQueryParam = (params: QueryParams, key: string, value: QueryParamValue): QueryParams => [
+/**
+ * Calls every computed parameter value once and drops the parameters whose value resolved to `undefined`.
+ *
+ * @remarks
+ * Runs while the request is materialized, after all declarative composition and before request transforms, so a
+ * parameter removed by a declaration is never computed at all.
+ */
+const resolveQueryParams = (params: DeclaredQueryParams): QueryParams =>
+  params.flatMap(([key, value]) => {
+    if (typeof value !== "function") return [[key, value] as const];
+    const resolved = value();
+    return resolved === undefined ? [] : [[key, resolved] as const];
+  });
+
+const setQueryParam = (params: DeclaredQueryParams, key: string, value: QueryParamValueInput): DeclaredQueryParams => [
   ...params.filter(([candidate]) => candidate !== key),
   [key, value],
 ];
 
 const replaceQueryParamValue = (
-  params: QueryParams,
+  params: DeclaredQueryParams,
   key: string,
   currentValue: QueryParamValue,
-  replacementValue: QueryParamValue,
-): QueryParams =>
+  replacementValue: QueryParamValueInput,
+): DeclaredQueryParams =>
+  // A computed value has no value to match until it runs, so targeted replacement never selects one.
   params.map((entry) => (entry[0] === key && entry[1] === currentValue ? ([key, replacementValue] as const) : entry));
 
-const setQueryParams = (params: QueryParams, input: QueryParamsInput): QueryParams => {
+const setQueryParams = (params: DeclaredQueryParams, input: QueryParamsInput): DeclaredQueryParams => {
   const incoming = queryParamsFromInput(input);
   const keys = new Set(incoming.map(([key]) => key));
   return [...incoming, ...params.filter(([key]) => !keys.has(key))];
 };
 
-const appendQueryParam = (params: QueryParams, key: string, value: QueryParamValue): QueryParams => [
-  ...params,
-  [key, value],
-];
+const appendQueryParam = (
+  params: DeclaredQueryParams,
+  key: string,
+  value: QueryParamValueInput,
+): DeclaredQueryParams => [...params, [key, value]];
 
-const removeQueryParam = (params: QueryParams, key: string): QueryParams =>
+const removeQueryParam = (params: DeclaredQueryParams, key: string): DeclaredQueryParams =>
   params.filter(([candidate]) => candidate !== key);
 
-const removeQueryParams = (params: QueryParams, removals: ReadonlyArray<QueryParamRemoval> | undefined): QueryParams =>
+const removeQueryParams = (
+  params: DeclaredQueryParams,
+  removals: ReadonlyArray<QueryParamRemoval> | undefined,
+): DeclaredQueryParams =>
   (removals ?? []).reduce(
     (current, removal) =>
       typeof removal === "string"
@@ -1560,7 +1645,8 @@ const removeQueryParams = (params: QueryParams, removals: ReadonlyArray<QueryPar
     params,
   );
 
-const removeQueryParamValue = (params: QueryParams, key: string, value: QueryParamValue): QueryParams =>
+/** Removes only parameters carrying an exact static value. */
+const removeQueryParamValue = (params: DeclaredQueryParams, key: string, value: QueryParamValue): DeclaredQueryParams =>
   params.filter(([candidate, candidateValue]) => candidate !== key || candidateValue !== value);
 
 const encodeQueryParam = ([key, value]: readonly [string, QueryParamValue]): string => {
@@ -1587,7 +1673,7 @@ const parsePathQuery = (query: string): QueryParams =>
     return [[key, part.includes("=") ? value : true] as const];
   });
 
-const splitPathUrlParams = (path: string): { readonly path: string; readonly urlParams: QueryParams } => {
+const splitPathUrlParams = (path: string): { readonly path: string; readonly urlParams: DeclaredQueryParams } => {
   const fragmentIndex = path.indexOf("#");
   const beforeFragment = fragmentIndex === -1 ? path : path.slice(0, fragmentIndex);
   const fragment = fragmentIndex === -1 ? "" : path.slice(fragmentIndex);
@@ -1738,10 +1824,17 @@ const makePlan = <
           }),
         )
       : Effect.gen(function* () {
+          // Computed headers and query parameters are resolved exactly here: once per plan evaluation, after every
+          // declarative default, override, and removal has been applied, and before any request transform runs. A
+          // field that a declaration removed is therefore never computed, and a value that resolves to `undefined`
+          // is omitted from the request entirely.
+          const requestHeaders = resolveHeaderEntries(state.headers);
+          const urlParams = resolveQueryParams(state.urlParams);
+
           let request = HttpClientRequest.make(definition.method as HttpMethod.HttpMethod)(
-            setUrlQuery(joinUrl(state.baseUrl, definition.path), state.urlParams),
+            setUrlQuery(joinUrl(state.baseUrl, definition.path), urlParams),
           );
-          request = HttpClientRequest.setHeaders(request, normalizeHeaderEntries(state.headers));
+          request = HttpClientRequest.setHeaders(request, normalizeHeaderEntries(requestHeaders));
 
           if (!Headers.has(request.headers, "accept")) {
             request = HttpClientRequest.setHeader(request, "accept", state.responseCodec.accept ?? "application/json");
@@ -1762,7 +1855,7 @@ const makePlan = <
           }
 
           for (const transform of state.requestTransforms) request = transform(request);
-          attachHeaderEntries(request, reconcileHeaderEntries(state.headers, request.headers));
+          attachHeaderEntries(request, reconcileHeaderEntries(requestHeaders, request.headers));
 
           const normalizedMethod = request.method.toUpperCase();
           if ((normalizedMethod === "GET" || normalizedMethod === "HEAD") && request.body._tag !== "Empty") {
@@ -1817,12 +1910,12 @@ const makePlan = <
     pipe: pipeSelf,
     setBody: (body: unknown) => makePlan<Body, Rules, true>(definition, rules, { ...state, body, hasBody: true }),
     setRequestBodyCodec: (bodyCodec: RequestBodyCodec<never>) => update({ bodyCodec }),
-    setUrlParam: (key: string, currentValue: QueryParamValue, replacementValue?: QueryParamValue) =>
+    setUrlParam: (key: string, currentValue: QueryParamValueInput, replacementValue?: QueryParamValueInput) =>
       update({
         urlParams:
           replacementValue === undefined
             ? setQueryParam(state.urlParams, key, currentValue)
-            : replaceQueryParamValue(state.urlParams, key, currentValue, replacementValue),
+            : replaceQueryParamValue(state.urlParams, key, currentValue as QueryParamValue, replacementValue),
       }),
     setUrlParams: (params) => update({ urlParams: setQueryParams(state.urlParams, params) }),
     appendUrlParam: (key, value) => update({ urlParams: appendQueryParam(state.urlParams, key, value) }),
@@ -1833,12 +1926,12 @@ const makePlan = <
             ? removeQueryParam(state.urlParams, key)
             : removeQueryParamValue(state.urlParams, key, value),
       }),
-    setHeader: (name: string, currentValue: string, replacementValue?: string) =>
+    setHeader: (name: string, currentValue: HeaderValueInput, replacementValue?: HeaderValueInput) =>
       update({
         headers:
           replacementValue === undefined
             ? setHeaderEntries(state.headers, [[name, currentValue]])
-            : replaceHeaderEntryValue(state.headers, name, currentValue, replacementValue),
+            : replaceHeaderEntryValue(state.headers, name, currentValue as string, replacementValue),
       }),
     setHeaders: (headers) => update({ headers: setHeaderEntries(state.headers, headers) }),
     appendHeader: (name, value) => update({ headers: appendHeaderEntry(state.headers, name, value) }),

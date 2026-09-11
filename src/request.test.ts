@@ -252,6 +252,161 @@ describe("createRequest", () => {
     expect(requests[1]?.headers.get("b3")).toBeNull();
   });
 
+  it("resolves computed headers and query parameters when the request is materialized", async () => {
+    const requests: Array<Request> = [];
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return Response.json({ id: 1, name: "Ada" });
+      }),
+    );
+
+    // Application state that does not exist when the API is declared.
+    let token: string | undefined;
+    let preview = false;
+    let tokenReads = 0;
+
+    const api = createApi("https://example.test", {
+      headers: {
+        authorization: () => {
+          tokenReads += 1;
+          return token === undefined ? undefined : `Bearer ${token}`;
+        },
+      },
+      urlParams: { preview: () => (preview ? true : undefined) },
+    });
+    const getUser = api.createRequest({
+      method: "GET",
+      path: "/users/:userId",
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+
+    // One retained plan, evaluated three times across a sign-in and a state change.
+    const plan = getUser({ userId: "1" });
+
+    await plan.effect.pipe(Effect.provide(layer), Effect.runPromise);
+    token = "first";
+    await plan.effect.pipe(Effect.provide(layer), Effect.runPromise);
+    token = "second";
+    preview = true;
+    await plan.effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(requests.map((request) => request.headers.get("authorization"))).toEqual([
+      // Signed out: the field is omitted rather than sent empty.
+      null,
+      "Bearer first",
+      "Bearer second",
+    ]);
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/users/1",
+      "https://example.test/users/1",
+      "https://example.test/users/1?preview",
+    ]);
+    expect(tokenReads).toBe(3);
+  });
+
+  it("lets declarations remove a computed default before it is ever computed", async () => {
+    const requests: Array<Request> = [];
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return Response.json({ id: 1, name: "Ada" });
+      }),
+    );
+
+    let computed = 0;
+    const authorization = () => {
+      computed += 1;
+      return "Bearer live";
+    };
+
+    const api = createApi("https://example.test", { headers: { authorization }, urlParams: { trace: () => "on" } });
+    const getMe = api.createRequest({ method: "GET", path: "/me", responses: [] });
+    const login = api.createRequest({
+      method: "GET",
+      path: "/login",
+      removeHeaders: ["authorization"],
+      removeUrlParams: ["trace"],
+      responses: [],
+    });
+    const publicApi = api.pipe(extendApi({ removeHeaders: ["authorization"] }));
+    const register = publicApi.createRequest({ method: "GET", path: "/register", responses: [] });
+
+    await Effect.all([
+      getMe().effect.pipe(Effect.ignore),
+      login().effect.pipe(Effect.ignore),
+      register().effect.pipe(Effect.ignore),
+      // Plan-level removal works on a computed entry too.
+      getMe().removeHeader("authorization").effect.pipe(Effect.ignore),
+    ]).pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(requests.map((request) => request.headers.get("authorization"))).toEqual(["Bearer live", null, null, null]);
+    expect(requests.map((request) => new URL(request.url).search)).toEqual(["?trace=on", "", "?trace=on", "?trace=on"]);
+    // Removed before resolution: of the four requests, only the one that kept the field computed it.
+    expect(computed).toBe(1);
+  });
+
+  it("computes a value once per evaluation rather than once per retry attempt", async () => {
+    let computed = 0;
+    let attempts = 0;
+    const plan = createRequest({
+      method: "GET",
+      path: "https://example.test/flaky",
+      headers: {
+        "x-attempt-token": () => {
+          computed += 1;
+          return `token-${computed}`;
+        },
+      },
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    })().setRetry({ times: 2, schedule: Schedule.recurs(2) });
+
+    const seen: Array<string | null> = [];
+    await plan.effect.pipe(
+      Effect.provide(
+        fetchLayer(
+          mockFetch(async (request) => {
+            attempts += 1;
+            seen.push(request.headers.get("x-attempt-token"));
+            return attempts < 3 ? new Response("", { status: 503 }) : Response.json({ id: 1, name: "Ada" });
+          }),
+        ),
+      ),
+      Effect.runPromise,
+    );
+
+    expect(attempts).toBe(3);
+    // Encoding happens once, before the retry loop, so every attempt reuses the same resolved value.
+    expect(seen).toEqual(["token-1", "token-1", "token-1"]);
+    expect(computed).toBe(1);
+  });
+
+  it("matches only static values in targeted header and query operations", async () => {
+    const requests: Array<Request> = [];
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return Response.json({ id: 1, name: "Ada" });
+      }),
+    );
+    const endpoint = createRequest({
+      method: "GET",
+      path: "https://example.test/items",
+      headers: { "x-mode": () => "computed" },
+      urlParams: { filter: () => "computed" },
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+
+    await endpoint()
+      // Neither targeted operation can select a value that does not exist yet.
+      .removeHeader("x-mode", "computed")
+      .removeUrlParam("filter", "computed")
+      .effect.pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(requests[0]?.headers.get("x-mode")).toBe("computed");
+    expect(new URL(requests[0]!.url).search).toBe("?filter=computed");
+  });
+
   it("constructs a fresh Effect only when a plan effect is read", () => {
     const getUser = createRequest({
       method: "GET",

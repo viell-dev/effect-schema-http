@@ -28,6 +28,8 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 - Schema-based request encoding and tag-discriminated response decoding.
 - API defaults, sub-API extension, path parameters, and call-site overrides.
 - `RequestPlanTransform`, the public type for plan setters shared across endpoints.
+- Computed header and query-parameter values (`() => value | undefined`) resolved when a request is
+  materialized, so live application state can drive declared defaults and `undefined` omits the field.
 - JSON, text, byte, form-data, and explicit no-body response codecs.
 - Retry schedules, timeouts, cache controls, response matching, and repeated-field support.
 - Single-entry request gates with in-flight de-duplication, refresh, reload, cancellation, and invalidation.
