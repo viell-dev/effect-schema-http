@@ -214,48 +214,59 @@ Unchanged: **always commit after completing a task.**
 
 ### ID Server (Rust)
 
-- [ ] RFC 6749-correct form-encoded `/token` grant alongside the JSON one
-- [ ] `/revoke` answering `200` with a genuinely empty body
-- [ ] `HEAD /userinfo` as a cheap validity probe with facts only in headers
-- [ ] `/jwks.json` behind an emulated edge cache that ignores `Cache-Control`
-- [ ] Legacy `?access_token=` query-parameter authentication
-- [ ] An endpoint requiring repeated `X-Scope` request header field lines
-- [ ] A strictly-increasing nonce endpoint that cannot survive a replayed retry
-- [ ] `/.well-known/openid-configuration` discovery document
+- [x] RFC 6749-correct form-encoded `/token` grant alongside the JSON one
+- [x] `/revoke` answering `200` with a genuinely empty body
+- [x] `HEAD /userinfo` as a cheap validity probe with facts only in headers
+- [x] `/jwks.json` behind an emulated edge cache that ignores `Cache-Control`
+- [x] Legacy `?access_token=` query-parameter authentication
+- [x] An endpoint requiring repeated `X-Scope` request header field lines
+- [x] A strictly-increasing nonce endpoint that cannot survive a replayed retry
+- [x] `/.well-known/openid-configuration` discovery document
 
 ### File Server (Python)
 
-- [ ] `?wsdl` accepted only as a bare query key, never as `?wsdl=`
-- [ ] `SOAPAction` required and required to be quoted
-- [ ] SOAP 1.2 content type (`application/soap+xml;action=...`) for one action
-- [ ] One action that answers a real `soap:Fault` with HTTP 500
-- [ ] An XML document actually encoded in ISO-8859-1
-- [ ] `PROPFIND` returning `207 Multi-Status`
-- [ ] Multipart upload and a multipart/form-data bundle download
+- [x] `?wsdl` accepted only as a bare query key, never as `?wsdl=`
+- [x] `SOAPAction` required and required to be quoted
+- [x] SOAP 1.2 content type (`application/soap+xml;action=...`) for one action
+- [x] One action that answers a real `soap:Fault` with HTTP 500
+- [x] An XML document actually encoded in ISO-8859-1
+- [x] `PROPFIND` returning `207 Multi-Status`
+- [x] Multipart upload and a multipart/form-data bundle download
 
 ### API Server (Java)
 
-- [ ] `ETag`/`If-None-Match` with a `304` and `If-Match` with a `412`
-- [ ] `Link` header pagination with the documented off-by-one
-- [ ] 64-bit ids that lose precision through `JSON.parse`
-- [ ] `/Date(…)/` ASP.NET timestamps on a legacy endpoint
-- [ ] OData v2 `{"d":{"results":[…]}}` envelope with `__metadata`
-- [ ] Column-oriented grid report (`{columns, rows}` with positional rows)
-- [ ] Batch endpoint with per-item statuses
-- [ ] `202 Accepted` + `Location` polling job
-- [ ] `X-HTTP-Method-Override` tunnelling
-- [ ] A legacy billing record with `Y`/`N` booleans, sentinel dates, `-1` for unlimited,
+- [x] `ETag`/`If-None-Match` with a `304` and `If-Match` with a `412`
+- [x] `Link` header pagination with the documented off-by-one
+- [x] 64-bit ids that lose precision through `JSON.parse`
+- [x] `/Date(…)/` ASP.NET timestamps on a legacy endpoint
+- [x] OData v2 `{"d":{"results":[…]}}` envelope with `__metadata`
+- [x] Column-oriented grid report (`{columns, rows}` with positional rows)
+- [x] Batch endpoint with per-item statuses
+- [x] `202 Accepted` + `Location` polling job
+- [x] `X-HTTP-Method-Override` tunnelling
+- [x] A legacy billing record with `Y`/`N` booleans, sentinel dates, `-1` for unlimited,
       money as a formatted string, and four different spellings of "no value"
-- [ ] Errors signalled by a header on a `200`
-- [ ] XML representation selected by `Accept` and by a `.xml` suffix
+- [x] Errors signalled by a header on a `200`
+- [x] XML representation selected by `Accept` and by a `.xml` suffix
 
 ## Client work
 
-- [ ] A translation layer (`src/integration/`) that decodes one service's value and encodes it into
+- [x] A translation layer (`src/integration/`) that decodes one service's value and encodes it into
       another's independently-defined schema, with alignment tests
-- [ ] A cross-service saga: identity → project → attachment → notification → report
-- [ ] Request gates over the search box
-- [ ] Reusable `RequestPlanTransform`s and `extendApi`/`mapEndpoint` composition
-- [ ] A custom `HttpClient` provider preserving repeated header field lines
-- [ ] UI coverage for everything above
-- [ ] A final `README.md` in the style of `test-llm1`'s
+- [x] A cross-service saga: identity → project → attachment → notification → report
+- [x] Request gates over the search box
+- [x] Reusable `RequestPlanTransform`s and `extendApi`/`mapEndpoint` composition
+- [x] A custom `HttpClient` provider preserving repeated header field lines
+- [x] UI coverage for everything above
+- [x] A final `README.md` in the style of `test-llm1`'s
+
+## Outcome
+
+All of the above was built, plus coverage of the library's remaining exported surface
+(raw byte bodies, retained unmapped responses, base-URL replacement, repeated query
+parameters, and the two compile-time guards) and a `node:http` provider that preserves
+repeated header field lines.
+
+127 tests across nine files; `pnpm typecheck` covers `src` and `tests` and passes. Four
+findings were reported upstream and are now documented in the library, with server-backed
+tests pinning each. See the repository README for the full writeup.
