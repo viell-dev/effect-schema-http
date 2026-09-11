@@ -178,6 +178,11 @@ const thinUsers = getUsers()
   .setRetries(3);
 ```
 
+A fragment in a path is kept in the URL and query parameters are placed before it, but **no HTTP client sends a
+fragment** — it is stripped before the request leaves. A path declared as `/users/:userId#thin` reaches the server as
+`/users/u-1`, so an API cannot use a fragment to select a representation; use a query parameter or a header. A `#`
+inside a path or query _value_ is percent-encoded and cannot truncate the URL.
+
 Query values distinguish a bare key from an empty value: `true` produces `?preview`, while `""` produces `?preview=`.
 Append operations support repeated query parameters and headers. Targeted setter and remover overloads operate on one
 exact existing value.

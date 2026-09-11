@@ -61,6 +61,16 @@ A backslash escapes a literal colon that would otherwise look like a placeholder
 path: "/users/:userId\\:archive"; // getUser({ userId }) sends /users/<encoded-id>:archive
 ```
 
+A URL fragment is retained in the plan's URL string and query parameters are inserted before it, so a path declared as
+`/users/:userId#thin` with an added parameter produces `/users/u-1?expand=profile#thin` rather than burying the query
+inside the fragment. That placement is the only thing the library can usefully do with a fragment, because **no HTTP
+client transmits one**: RFC 3986 keeps the fragment out of the request target, and a server-backed test confirms the
+server receives `/users/u-1?expand=profile` with the fragment gone. An API therefore cannot give a fragment meaning —
+a `#thin` convention selecting a thinner representation could never reach the endpoint meant to honour it, and a query
+parameter or a header is the only workable spelling. A `#` appearing inside a path parameter or query value is
+percent-encoded as `%23` and stays in the path or query, so a value containing one cannot truncate the URL. This is
+unlike the dot-segment case, where encoding alone is not sufficient.
+
 An API base URL is a literal prefix rather than a WHATWG URL-resolution base: `https://example.test/v1` plus `/users`
 produces `https://example.test/v1/users`. An absolute endpoint path cannot be combined with a base URL and fails as a
 configuration defect instead of producing a concatenated URL. Query parameters written in `path` are normalized into
@@ -439,7 +449,7 @@ Three layers catch different failures:
 3. Integration tests under `tests/` run a disposable server on an ephemeral loopback port and use the real Fetch client.
    They exercise standard and extension methods, path interpolation, schema transformations and brands, JSON and text
    readers, XML request and response bodies, recursive JSON, transformed empty responses, request gates, ordinary
-   request interruption, and mapped non-2xx responses without depending on an external service.
+   request interruption, URL fragment handling, and mapped non-2xx responses without depending on an external service.
 
 Run them separately with `pnpm test:unit` and `pnpm test:integration`, or together with `pnpm test`.
 
