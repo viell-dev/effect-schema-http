@@ -45,8 +45,10 @@ pnpm add /path/to/effect-schema-http/viell-effect-schema-http-0.1.0-beta.1.tgz '
 not distinguish local builds. The package is marked private to prevent registry publication during this phase.
 
 The output is ESM-only and declares a Node.js 20 runtime baseline; the development tools require a newer Node.js
-version. Browser and alternative-runtime support has not been verified. See [review findings](docs/report.md) for
-remaining compatibility checks.
+version. A consuming project has since driven a packed tarball through Chromium with `FetchHttpClient`, covering every
+body codec, retries, request gates, and mapped non-2xx responses; Node.js 20 itself, other browsers, alternative
+runtimes, and official non-Fetch clients remain unverified. See [review findings](docs/report.md) for remaining
+compatibility checks.
 
 ## Quick start
 
