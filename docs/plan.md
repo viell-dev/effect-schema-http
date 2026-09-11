@@ -164,3 +164,98 @@ all plausible — these are things that exist in production right now.
 - [x] Write a comprehensive `README.md` in the style of test-llm1 (architecture, quirk table,
   what the client needed for each)
 - [x] Final commit: "Integration complete — all services running with client"
+
+---
+
+# Expansion Plan (second pass)
+
+The first pass built three services and wired a client to them. Reviewing it against `test-llm1`'s
+coverage report and the library's own surface showed large untouched areas: request gates, retries,
+four of the five request codecs, three of the five response codecs, `extendApi`, `mapEndpoint`,
+`RequestPlanTransform`, `setCache`, `setTimeout`, `UnhandledResponse` retention, repeated header
+entries, arbitrary HTTP methods, and — most importantly for this repository's stated purpose — any
+real **cross-service data flow** where a value decoded from one service's schema has to be encoded
+into another service's independently-defined schema.
+
+This pass adds two more services (bringing the total to five languages), deepens the three existing
+ones, and builds an explicit translation layer between them.
+
+## Working Convention
+
+Unchanged: **always commit after completing a task.**
+
+## New services
+
+| Service | Port | Language | Persona |
+| --- | --- | --- | --- |
+| Report Gateway | 4400 | Perl 5 (raw sockets, CGI-style) | "The 1999 reporting gateway nobody dares touch" |
+| Notify Service | 4500 | Ruby (WEBrick) | "The 2011 Rails-era notification bolt-on" |
+
+### Report Gateway (Perl) — the 1999 layer
+
+- XML-RPC (`POST /cgi-bin/rpc.pl`): `<methodCall>`/`<methodResponse>`/`<fault>`, `<i4>`,
+  `<dateTime.iso8601>` in the original no-separator form, `<base64>`, `<struct>`, `<array>`.
+  Always HTTP 200, including faults.
+- Fixed-width COBOL-style record export in **ISO-8859-1** with no charset in the content type.
+- CSV export with a UTF-8 BOM, CRLF line endings and `;` delimiters (Excel-DE convention).
+- Session obtained by putting credentials in a **query string**, then carried as `?session=`.
+- Errors signalled by an `X-Error-Code` header on a `200`.
+
+### Notify Service (Ruby) — the 2011 layer
+
+- HMAC-SHA256 request signing over method, path, timestamp and body.
+- CSRF double-submit cookie plus `X-CSRF-Token`.
+- `DELETE` blocked by "the corporate proxy"; tunnelled with `X-HTTP-Method-Override`.
+- JSONP (`callback(...)`) and XSSI-prefixed JSON (`)]}',\n`).
+- Long-poll endpoint for timeout behaviour.
+- Rate limiting with the non-standard `420 Enhance Your Calm`.
+
+## Deepening the existing services
+
+### ID Server (Rust)
+
+- [ ] RFC 6749-correct form-encoded `/token` grant alongside the JSON one
+- [ ] `/revoke` answering `200` with a genuinely empty body
+- [ ] `HEAD /userinfo` as a cheap validity probe with facts only in headers
+- [ ] `/jwks.json` behind an emulated edge cache that ignores `Cache-Control`
+- [ ] Legacy `?access_token=` query-parameter authentication
+- [ ] An endpoint requiring repeated `X-Scope` request header field lines
+- [ ] A strictly-increasing nonce endpoint that cannot survive a replayed retry
+- [ ] `/.well-known/openid-configuration` discovery document
+
+### File Server (Python)
+
+- [ ] `?wsdl` accepted only as a bare query key, never as `?wsdl=`
+- [ ] `SOAPAction` required and required to be quoted
+- [ ] SOAP 1.2 content type (`application/soap+xml;action=...`) for one action
+- [ ] One action that answers a real `soap:Fault` with HTTP 500
+- [ ] An XML document actually encoded in ISO-8859-1
+- [ ] `PROPFIND` returning `207 Multi-Status`
+- [ ] Multipart upload and a multipart/form-data bundle download
+
+### API Server (Java)
+
+- [ ] `ETag`/`If-None-Match` with a `304` and `If-Match` with a `412`
+- [ ] `Link` header pagination with the documented off-by-one
+- [ ] 64-bit ids that lose precision through `JSON.parse`
+- [ ] `/Date(…)/` ASP.NET timestamps on a legacy endpoint
+- [ ] OData v2 `{"d":{"results":[…]}}` envelope with `__metadata`
+- [ ] Column-oriented grid report (`{columns, rows}` with positional rows)
+- [ ] Batch endpoint with per-item statuses
+- [ ] `202 Accepted` + `Location` polling job
+- [ ] `X-HTTP-Method-Override` tunnelling
+- [ ] A legacy billing record with `Y`/`N` booleans, sentinel dates, `-1` for unlimited,
+      money as a formatted string, and four different spellings of "no value"
+- [ ] Errors signalled by a header on a `200`
+- [ ] XML representation selected by `Accept` and by a `.xml` suffix
+
+## Client work
+
+- [ ] A translation layer (`src/integration/`) that decodes one service's value and encodes it into
+      another's independently-defined schema, with alignment tests
+- [ ] A cross-service saga: identity → project → attachment → notification → report
+- [ ] Request gates over the search box
+- [ ] Reusable `RequestPlanTransform`s and `extendApi`/`mapEndpoint` composition
+- [ ] A custom `HttpClient` provider preserving repeated header field lines
+- [ ] UI coverage for everything above
+- [ ] A final `README.md` in the style of `test-llm1`'s
