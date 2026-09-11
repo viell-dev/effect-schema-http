@@ -12,6 +12,16 @@ import { Schema } from "effect";
 import { PostId, UserId } from "./ids.js";
 import { NonNegativeInt, Slug, Username } from "./primitives.js";
 
+/**
+ * Added long after this blog started, when posts needed to be filterable.
+ *
+ * A literal union is a *closed* set, which makes adding a member a breaking change for
+ * every client that has not been redeployed — unlike adding a field, which is not. That
+ * asymmetry is not obvious and is pinned in `evolution.test.ts`.
+ */
+export const PostCategory = Schema.Literal("engineering", "operations", "announcement", "uncategorised");
+export type PostCategory = typeof PostCategory.Type;
+
 export const PostVisibility = Schema.Literal("public", "draft", "private");
 export type PostVisibility = typeof PostVisibility.Type;
 
@@ -37,6 +47,10 @@ export class Post extends Schema.Class<Post>("Post")({
   title: PostTitle,
   body: PostBody,
   visibility: PostVisibility,
+  // Stored for every post since the column was added; rows written before it existed were
+  // back-filled as "uncategorised", which is why the default is a real value rather than
+  // a null.
+  category: PostCategory,
   revision: PostRevision,
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,

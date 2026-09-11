@@ -4,7 +4,7 @@
  * (e.g. registration takes a plaintext `Password`; nothing about `Account` should).
  */
 import { Schema } from "effect";
-import { PostBody, PostTitle, PostView, PostVisibility } from "./post.js";
+import { PostBody, PostCategory, PostTitle, PostView, PostVisibility } from "./post.js";
 import { Bio, DisplayName, Email, NonZeroPositiveInt, Password, Username } from "./primitives.js";
 import { CommentBody, CommentView } from "./comment.js";
 import { Profile } from "./user.js";
@@ -23,6 +23,14 @@ export const CreatePostInput = Schema.Struct({
   title: PostTitle,
   body: PostBody,
   visibility: PostVisibility,
+  /**
+   * Added with categories, and optional *with a default* rather than required — which is
+   * what makes the change safe in both directions at once. A client compiled before
+   * categories existed sends no field and the server fills one in; a client compiled
+   * after sends one and the server uses it. Neither end has to know which version the
+   * other is running.
+   */
+  category: Schema.optionalWith(PostCategory, { default: (): PostCategory => "uncategorised" }),
 });
 export type CreatePostInput = typeof CreatePostInput.Type;
 
@@ -30,6 +38,7 @@ export const UpdatePostInput = Schema.Struct({
   title: Schema.optional(PostTitle),
   body: Schema.optional(PostBody),
   visibility: Schema.optional(PostVisibility),
+  category: Schema.optional(PostCategory),
 });
 export type UpdatePostInput = typeof UpdatePostInput.Type;
 

@@ -14,4 +14,5 @@ export * from "./search.js";
 export * from "./calendar.js";
 export * from "./export.js";
 export * from "./adminUsers.js";
+export * from "./evolution.js";
 export * from "./api.js";

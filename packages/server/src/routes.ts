@@ -53,6 +53,9 @@ import {
   PostId,
   PostRevision,
   PostView,
+  PostViewV2,
+  SCHEMA_VERSION_HEADER,
+  type SchemaVersion,
   ReindexAccepted,
   type RepeatingEvent,
   type SingleEvent,
@@ -76,7 +79,7 @@ import { domainErrorToResponse, type DomainError, type RouteResponse } from "./h
 import { optionalSession, requireAdmin, requireSession } from "./session.js";
 import { slugify } from "./slugify.js";
 import { Store } from "./store.js";
-import { postToView } from "./views.js";
+import { postToView, postToViewV2 } from "./views.js";
 
 const respondWith =
   <A, I>(schema: Schema.Schema<A, I>, status: number) =>
@@ -85,6 +88,25 @@ const respondWith =
       Effect.flatMap((value) =>
         Schema.encode(schema)(value).pipe(
           Effect.map((body): RouteResponse => ({ kind: "json", status, body })),
+          Effect.orDie,
+        ),
+      ),
+      Effect.catchAll(domainErrorToResponse),
+    );
+
+/** `respondWith`, plus the header naming the schema version the body was encoded with. */
+const respondWithVersion =
+  <A, I>(schema: Schema.Schema<A, I>, status: number, version: SchemaVersion) =>
+  (effect: Effect.Effect<A, DomainError, Store>): Effect.Effect<RouteResponse, never, Store> =>
+    effect.pipe(
+      Effect.flatMap((value) =>
+        Schema.encode(schema)(value).pipe(
+          Effect.map((body): RouteResponse => ({
+            kind: "json",
+            status,
+            body,
+            headers: { [SCHEMA_VERSION_HEADER]: version },
+          })),
           Effect.orDie,
         ),
       ),
@@ -241,6 +263,7 @@ export const createPost = (authHeader: string | undefined, json: unknown) =>
       title: input.title,
       body: input.body,
       visibility: input.visibility,
+      category: input.category,
       revision: PostRevision.make(1),
       createdAt: now,
       updatedAt: now,
@@ -249,15 +272,35 @@ export const createPost = (authHeader: string | undefined, json: unknown) =>
     return yield* postToView(post);
   }).pipe(respondWith(PostView, 201));
 
-export const getPost = (slugParam: string, authHeader: string | undefined) =>
-  Effect.gen(function* () {
+/**
+ * Fetch one post, in whichever version of the view the caller asked for.
+ *
+ * Categories were added to `PostView` after this blog had been running for a while, and
+ * this is the one place in the project where the shared-schema model has to cope with a
+ * deploy: a browser tab opened before the release is still running code compiled against
+ * the older definition, and it will keep running it until someone reloads.
+ *
+ * The negotiation is a header rather than a path or a payload field, for a reason that is
+ * specific to this library: a response *rule* can match on a header, so the client picks
+ * its decoder before the body is read and the two versions never become a union that some
+ * later reader has to narrow. The response echoes the version it actually sent, because a
+ * client that asked for 2 and got 1 (an old server behind a load balancer, mid-rollout)
+ * needs to know that from the envelope rather than by inspecting the payload.
+ */
+export const getPost = (slugParam: string, authHeader: string | undefined, acceptVersion?: string | undefined) => {
+  const load = Effect.gen(function* () {
     const slug = yield* decodeBody(Slug, slugParam);
     const viewerId = yield* optionalSession(authHeader);
     const store = yield* Store;
     const post = yield* store.getPostBySlug(slug);
     if (!visibleToViewer(post, viewerId)) return yield* Effect.fail(new NotFoundError({ resource: "Post", id: slugParam }));
-    return yield* postToView(post);
-  }).pipe(respondWith(PostView, 200));
+    return post;
+  });
+
+  return acceptVersion?.trim() === "2"
+    ? load.pipe(Effect.flatMap(postToViewV2), respondWithVersion(PostViewV2, 200, "2"))
+    : load.pipe(Effect.flatMap(postToView), respondWithVersion(PostView, 200, "1"));
+};
 
 /**
  * Optimistic concurrency, bolted on years after the fact and therefore carried in headers rather
@@ -605,6 +648,9 @@ export const importAtom = (usernameParam: string, authHeader: string | undefined
           // An Atom entry carries no body, only a link back to wherever it came from.
           body: PostBody.make(`Imported from ${entry.link}`),
           visibility: "public",
+          // An Atom entry has no category this importer understands, and the back-fill
+          // value is the honest answer rather than a guess from the title.
+          category: "uncategorised",
           revision: PostRevision.make(1),
           createdAt: entry.updated,
           updatedAt: now,

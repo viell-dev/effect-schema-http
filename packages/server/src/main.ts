@@ -1,5 +1,7 @@
+import { pathToFileURL } from "node:url";
 import * as http from "node:http";
 import { Effect, Layer } from "effect";
+import { ACCEPT_VERSION_HEADER } from "@realworld/domain";
 import * as routes from "./routes.js";
 import { edgeCacheKey, edgeCacheLookup, edgeCacheStore } from "./edgeCache.js";
 import { Store } from "./store.js";
@@ -167,7 +169,7 @@ const routeTable: ReadonlyArray<Route> = [
     method: "GET",
     pattern: /^\/api\/posts\/([^/]+)$/,
     bodyMode: "none",
-    handle: ([slug], _q, auth) => run(routes.getPost(slug!, auth)),
+    handle: ([slug], _q, auth, _body, header) => run(routes.getPost(slug!, auth, header(ACCEPT_VERSION_HEADER))),
   },
   {
     method: "PUT",
@@ -285,7 +287,15 @@ const baseCorsHeaders = {
   "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
 };
 
-const server = http.createServer((req, res) => {
+/**
+ * Builds the HTTP server without binding a port.
+ *
+ * Split out so a test can listen on an ephemeral port and drive the real thing through
+ * the real client, rather than calling route handlers directly. Everything below this
+ * line is unchanged; only the `listen` call moved.
+ */
+export const createHttpServer = (): http.Server =>
+  http.createServer((req, res) => {
   const start = Date.now();
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
@@ -397,8 +407,13 @@ const server = http.createServer((req, res) => {
       console.error("unhandled server error", error);
       respond({ kind: "json", status: 500, body: { message: "internal server error" } });
     });
-});
+  });
 
-server.listen(PORT, () => {
-  console.log(`realworld demo server listening on http://localhost:${PORT}`);
-});
+/** Starts the server when this module is the process entry point. */
+const isEntryPoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isEntryPoint) {
+  createHttpServer().listen(PORT, () => {
+    console.log(`realworld demo server listening on http://localhost:${PORT}`);
+  });
+}
