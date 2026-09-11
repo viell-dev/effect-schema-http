@@ -155,6 +155,19 @@ and otherwise reports a response-stream failure to an explicit caller; automatic
 `UnhandledResponse` if cleanup itself fails. `ResponseDecodeError` also retains response metadata and the schema cause,
 although its body has already been consumed. Mapped `ResponseBody.none` responses are drained by the library.
 
+Rule selection reads status and headers, never the body. This is a deliberate boundary rather than a missing feature:
+the body is a one-shot stream, so choosing a rule by inspecting it would mean buffering every response before knowing
+how — or whether — to decode it, and would make rule selection fallible in a way matching cannot currently be. The
+consequence is that the envelope union and the body union are separate, composable layers. A response whose status and
+headers are fixed but whose payload legitimately varies belongs in a `Schema.Union`, and that is the intended
+expression of it, not a fallback: a calendar entry that may be a single event, a repeating event, or an appointment
+inferred from an unrelated resource is one `200` rule whose schema is a three-member union, each member carrying its
+own `_tag` and each exhaustively matchable. `Match.tag` over the envelope asks what kind of response arrived;
+`Match.tag` over `body` asks what kind of value it carries. An API that instead collapses success and failure into one
+status with an `ok`/`error` field in the body is served by the same mechanism, but that is a defect in the API rather
+than a case the model is built for — the transport-level outcome and the payload's variance are different questions,
+and such an API has answered only one of them.
+
 Files and multipart responses are intentionally not invented as a field yet. They should be introduced through body
 codecs so the envelope accurately describes whether `body`, `files`, or both exist for that response rule.
 

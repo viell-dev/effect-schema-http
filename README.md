@@ -136,6 +136,30 @@ const getDocument = api.createRequest({
 
 More header conditions are more specific; with equal header specificity, exact statuses beat status predicates.
 Declaration order breaks any remaining tie. Tags must be unique within each declaration.
+
+### Rules discriminate the envelope; schemas discriminate the body
+
+Rules match on status and headers only. That is deliberate: selection happens before the body is read, so a rule can
+be chosen without consuming a one-shot stream, and no response is buffered just to decide how to decode it.
+
+A response whose _shape_ varies while its status and headers do not is therefore a schema concern, and
+`Schema.Union` is the intended answer rather than a workaround. This is ordinary in well-designed APIs — a calendar
+entry may be a single event, a repeating event, or an appointment inferred from another resource entirely, all of
+them a perfectly correct `200`:
+
+```ts
+const CalendarEntry = Schema.Union(SingleEvent, RepeatingEvent, AssignmentEntry); // each with its own `_tag`
+
+const getEntry = api.createRequest({
+  method: "GET",
+  path: "/calendar/:entryId",
+  responses: [response({ _tag: "ok", status: 200 }, CalendarEntry)],
+});
+```
+
+The two levels compose rather than compete. `Match.tag` on the envelope answers "what kind of _response_ is this",
+and `Match.tag` on `body` answers "what kind of _value_ is this", each exhaustive in its own right. Reach for a rule
+when the transport distinguishes the cases, and for a union when only the payload does.
 Keep tags literal and declare reusable rule lists with `as const` for precise replacement inference. Ordinary rule
 arrays retain a conservative union of possible responses when composed.
 
