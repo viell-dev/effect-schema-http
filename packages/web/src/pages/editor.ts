@@ -1,4 +1,4 @@
-import { DateTime, Match } from "effect";
+import { Match } from "effect";
 import { toEffect } from "viell-effect-schema-http";
 import { CreatePostInput, type PostVisibility, UpdatePostInput } from "@realworld/domain";
 import { h, mount } from "../dom.js";
@@ -53,7 +53,7 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
       return;
     }
     initial = { title: existing.body.title, body: existing.body.body, visibility: existing.body.visibility };
-    loadedRevision = DateTime.formatIso(existing.body.updatedAt);
+    loadedRevision = String(existing.body.revision);
   }
 
   const errorBox = h("p", { class: "error hidden" });

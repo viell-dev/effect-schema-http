@@ -44,6 +44,7 @@ import {
   PostExport,
   PostExportFromMarkdown,
   PostId,
+  PostRevision,
   PostView,
   ReindexAccepted,
   RefreshCacheInput,
@@ -229,6 +230,7 @@ export const createPost = (authHeader: string | undefined, json: unknown) =>
       title: input.title,
       body: input.body,
       visibility: input.visibility,
+      revision: PostRevision.make(1),
       createdAt: now,
       updatedAt: now,
     });
@@ -251,10 +253,12 @@ export const getPost = (slugParam: string, authHeader: string | undefined) =>
  * than in `UpdatePostInput`: changing the request body's shape would have broken the clients that
  * were already posting to this route, so the check went somewhere additive instead.
  *
- * A client that knows about it sends `x-expected-revision` with the `updatedAt` it last saw. If
- * the post has moved on since, the write is refused with the same `ConflictError` every other
- * conflict on this API uses, carrying the time it actually changed. `x-force-update: true`
- * overrides the check — that is the "I've read the warning, overwrite it" path, and it is
+ * A client that knows about it sends `x-expected-revision` with the post's `revision` counter as
+ * it last saw it. If the post has moved on since, the write is refused with the same
+ * `ConflictError` every other conflict on this API uses, naming both revisions. The token is a
+ * counter and not `updatedAt` for a reason the test suite found the hard way: two writes landing
+ * in the same millisecond share a timestamp, and a stale editor then sails through the check.
+ * `x-force-update: true` overrides the check — that is the "I've read the warning, overwrite it" path, and it is
  * deliberately a separate header so the server can tell "didn't check" (no revision sent, old
  * client) apart from "checked and chose to win" (revision sent, force sent).
  */
@@ -273,11 +277,13 @@ export const updatePost = (
     const existing = yield* store.getPostBySlug(slug);
 
     if (expectedRevision !== undefined && forceUpdate !== "true") {
-      const current = DateTime.formatIso(existing.updatedAt);
+      const current = String(existing.revision);
       if (current !== expectedRevision) {
         return yield* Effect.fail(
           new ConflictError({
-            message: `This post was changed by someone else at ${current}. Saving now would overwrite their edit.`,
+            message:
+              `This post is at revision ${current}, but your editor was opened at revision ` +
+              `${expectedRevision}. Saving now would overwrite someone else's edit.`,
           }),
         );
       }
@@ -292,6 +298,7 @@ export const updatePost = (
           title: input.title ?? post.title,
           body: input.body ?? post.body,
           visibility: input.visibility ?? post.visibility,
+          revision: PostRevision.make(post.revision + 1),
           updatedAt: DateTime.unsafeNow(),
         }),
     );
@@ -585,6 +592,7 @@ export const importAtom = (usernameParam: string, authHeader: string | undefined
           // An Atom entry carries no body, only a link back to wherever it came from.
           body: PostBody.make(`Imported from ${entry.link}`),
           visibility: "public",
+          revision: PostRevision.make(1),
           createdAt: entry.updated,
           updatedAt: now,
         }),

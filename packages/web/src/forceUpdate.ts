@@ -1,8 +1,8 @@
 /**
  * Opt in to overwriting a concurrent edit, for one retry of one request.
  *
- * `PUT /api/posts/:slug` carries an `x-expected-revision` field with the `updatedAt` the editor
- * loaded (see `packages/server/src/routes.ts`). If someone else saved in the meantime the write is
+ * `PUT /api/posts/:slug` carries an `x-expected-revision` field with the post's revision counter
+ * as the editor loaded it (see `packages/server/src/routes.ts`). If someone else saved in the meantime the write is
  * refused with a `ConflictError`, and the only thing that can decide what happens next is the
  * person looking at the screen. This is the transform that expresses their answer.
  *

@@ -17,6 +17,7 @@ export const postToView = (post: Post): Effect.Effect<PostView, NotFoundError, S
       title: post.title,
       body: post.body,
       visibility: post.visibility,
+      revision: post.revision,
       commentCount: NonNegativeInt.make(commentCount),
       createdAt: post.createdAt,
       updatedAt: post.updatedAt,

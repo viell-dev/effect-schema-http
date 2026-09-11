@@ -69,6 +69,14 @@ server discards all data. Adding a real database was out of scope for what this 
 | Edge cache bypass | `GET /api/posts`, `GET /api/blogs/:username/feed.atom` | `setCache` plus a computed cache-buster, applied per call site through a `RequestPlanTransform` |
 | Conflicting edits | `PUT /api/posts/:slug` | a mapped `409` opens a dialog, then replays the **same retained plan** through a `RequestPlanTransform` |
 
+Building the conflict check also produced the only genuine bug this project has found in its own
+code, and it is worth recording because the test suite is what caught it. The concurrency token was
+originally the post's `updatedAt`, which read naturally and passed every test — until it didn't:
+two writes landing inside the same millisecond share a timestamp, so a stale editor's save matched
+the check and silently overwrote the other edit. The failure surfaced as an intermittent 200 where
+a 409 was expected. `Post` now carries a `revision` counter instead, which cannot collide, and
+`routes.test.ts` pins the same-millisecond case that exposed it.
+
 The blog/post/comment CRUD underneath all of this is plain JSON in, JSON out — the default codec
 the library needs no configuration for at all.
 
@@ -103,7 +111,7 @@ The feed and the Atom feeds are served through an emulated reverse proxy with a 
 display both. `EDGE_CACHE_TTL_MS=0` disables it.
 
 Tests: `pnpm --filter @realworld/domain run test` (20 tests) and
-`pnpm --filter @realworld/server run test` (25 tests) run under Vitest. The web package has no
+`pnpm --filter @realworld/server run test` (26 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
 `playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
 in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out

@@ -614,7 +614,7 @@ describe("optimistic concurrency on post updates", () => {
         body: "First version.",
         visibility: "public",
       });
-      const revision = (jsonBody(created) as { updatedAt: string }).updatedAt;
+      const revision = String((jsonBody(created) as { revision: number }).revision);
       return { header, revision };
     });
 
@@ -634,7 +634,7 @@ describe("optimistic concurrency on post updates", () => {
       const { header, revision } = yield* setup();
       // Somebody else saves first, moving the post on.
       const theirs = yield* routes.updatePost("hello-world", header, { body: "Their version." }, revision, undefined);
-      const theirRevision = (jsonBody(theirs) as { updatedAt: string }).updatedAt;
+      const theirRevision = String((jsonBody(theirs) as { revision: number }).revision);
       // Our editor still holds the revision from before their save.
       const ours = yield* routes.updatePost("hello-world", header, { body: "Our version." }, revision, undefined);
       const after = yield* routes.getPost("hello-world", header);
@@ -673,5 +673,38 @@ describe("optimistic concurrency on post updates", () => {
     expect(forced.status).toBe(200);
     expect(jsonBody(afterForce)).toMatchObject({ body: "Our version." });
     expect(legacy.status).toBe(200);
+  });
+
+  it("keeps revisions distinct for writes that land in the same millisecond", async () => {
+    const program = Effect.gen(function* () {
+      const { header, revision } = yield* setup();
+      const first = yield* routes.updatePost("hello-world", header, { body: "Second." }, revision, undefined);
+      const firstRevision = String((jsonBody(first) as { revision: number }).revision);
+      const second = yield* routes.updatePost("hello-world", header, { body: "Third." }, firstRevision, undefined);
+
+      // The write our stale editor would have made, using the revision it loaded.
+      const stale = yield* routes.updatePost("hello-world", header, { body: "Stale." }, revision, undefined);
+
+      return {
+        created: revision,
+        first: jsonBody(first) as { revision: number; updatedAt: string },
+        second: jsonBody(second) as { revision: number; updatedAt: string },
+        stale,
+      };
+    }).pipe(Effect.provide(Store.Default));
+
+    const result = await Effect.runPromise(
+      program as Effect.Effect<{
+        created: string;
+        first: { revision: number; updatedAt: string };
+        second: { revision: number; updatedAt: string };
+        stale: RouteResponse;
+      }>,
+    );
+
+    // This is why the token is a counter rather than `updatedAt`: three writes this close together
+    // can share a millisecond, and a timestamp would let the stale write through.
+    expect([result.created, String(result.first.revision), String(result.second.revision)]).toEqual(["1", "2", "3"]);
+    expect(result.stale.status).toBe(409);
   });
 });
