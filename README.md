@@ -27,6 +27,7 @@ packages/
             entities (Account, Post, Comment), wire DTOs, and Schema.TaggedError domain errors.
   server/   Plain node:http + a hand-rolled router over Effect for business logic.
             In-memory Ref-backed store (users, posts, comments). No database.
+            edgeCache.ts emulates the reverse proxy that fronts the feed in production.
   web/      A vanilla TypeScript + Vite SPA. Every server call goes through
             viell-effect-schema-http's createApi/createRequest/response().
 vendor/     The packed viell-effect-schema-http-0.1.0-beta.1 tarball, installed by
@@ -65,6 +66,7 @@ server discards all data. Adding a real database was out of scope for what this 
 | Admin diagnostics | `GET /api/admin/diagnostics` | `UnhandledResponse` with `unhandledResponseBody: "retain"` |
 | Admin user directory | `GET /api/admin/users` | plain JSON, driven through `makeRequestGate`, with computed query params that omit empty filters |
 | Authentication | every endpoint except the three public ones | a computed `authorization` header declared once on the API, removed by `extendApi` for login/register |
+| Edge cache bypass | `GET /api/posts`, `GET /api/blogs/:username/feed.atom` | `setCache` plus a computed cache-buster, applied per call site through a `RequestPlanTransform` |
 
 The blog/post/comment CRUD underneath all of this is plain JSON in, JSON out — the default codec
 the library needs no configuration for at all.
@@ -95,8 +97,12 @@ is ever there to cancel. `RESPONSE_DELAY_MS=400 pnpm --filter @realworld/server 
 route (`RESPONSE_DELAY_PATH`, default `/api/admin/users`) so the users directory's gate behaviour
 is reproducible in a browser — see "Request gates" below.
 
+The feed and the Atom feeds are served through an emulated reverse proxy with a ten-second TTL
+(`packages/server/src/edgeCache.ts`); responses carry `X-Cache` and `Age`, and the feed pages
+display both. `EDGE_CACHE_TTL_MS=0` disables it.
+
 Tests: `pnpm --filter @realworld/domain run test` (20 tests) and
-`pnpm --filter @realworld/server run test` (17 tests) run under Vitest. The web package has no
+`pnpm --filter @realworld/server run test` (22 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
 `playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
 in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
@@ -278,15 +284,30 @@ a time.
   declaration is fully typed from the string literal — a typo'd or missing param is a compile
   error, and a path with no `:params` (like `/api/posts`) correctly makes the endpoint callable
   with zero arguments (`listFeed()`).
-- **Immutable setters compose into small, genuinely reusable combinators.** This project's
-  `withAuth` — a helper attaching the bearer token, applied at every authenticated call site — was
-  the worked example of this, and it went through all three stages the library did: first a guess
-  at a minimal structural type (`{ setHeader }`) because the library had no public name for a
-  cross-endpoint setter; then the exported `RequestPlanTransform`, which also made it pipeable; and
-  finally deleted outright, because computed header values made the helper unnecessary (see the
-  next section). The combinator pattern is still right — `RequestPlanTransform` is the correct tool
-  for a setter that really does belong at call sites — it just turned out that authentication is
-  not one of those.
+- **Immutable setters compose into small, genuinely reusable combinators.** This project's first
+  worked example was `withAuth`, a helper attaching the bearer token at every authenticated call
+  site, and it went through all three stages the library did: a guess at a minimal structural type
+  (`{ setHeader }`) because the library had no public name for a cross-endpoint setter; then the
+  exported `RequestPlanTransform`; then deleted outright, because computed header values turned
+  authentication into an API-wide default (see the next section). That is the honest outcome —
+  auth was never a good fit for an opt-in, because the safe answer is "attached unless a
+  declaration says otherwise".
+
+  `forceFresh` (`packages/web/src/forceFresh.ts`) is what the pattern actually looks like when it
+  fits. Bypassing the caches in front of the feed needs two setters that must travel together —
+  `setCache({ control: "no-cache", fetch: "reload" })` for the browser's own HTTP cache, and a
+  computed cache-busting query parameter for the reverse proxy, which is old enough to ignore
+  request cache directives entirely — and if either is forgotten the refresh silently does
+  nothing. It applies to two endpoints whose response shapes have nothing in common (`listFeed`
+  decodes JSON, `getBlogFeed` decodes XML through `ResponseBody.text`), which is exactly the case
+  `RequestPlanTransform` exists for. And it is genuinely a *call-site* decision: normal navigation
+  should hit the caches, because that is what they are for; only a reader explicitly asking for a
+  refresh has any business going around them.
+
+  The two together are the clearest statement this project can make about the library's defaults
+  model: **if the safe answer is "always", it belongs in the API declaration as a computed value;
+  if the caller has to choose, it belongs in a `RequestPlanTransform`.** Both are one-liners at the
+  point of use, and getting the distinction wrong is what produced `withAuth`.
 - **TSDoc coverage let this whole client layer get built without reading the library's
   implementation.** Per the project's own request, every endpoint, setter, and codec choice below
   was written from `dist/request.d.ts`'s TSDoc and the README alone; `src/request.ts` was never
