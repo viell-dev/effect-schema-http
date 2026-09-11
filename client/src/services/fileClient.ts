@@ -213,6 +213,43 @@ export const uploadMultipart = fileApi.createRequest({
 });
 
 /**
+ * `POST /raw` — the ERP's byte upload, with the file name in the query string.
+ *
+ * `Schema.Uint8ArrayFromSelf` is the identity schema `RequestBody.uint8Array` pairs
+ * with: the caller's own bytes reach the transport untouched, and the codec's argument
+ * sets the media type. The response is a single line of text, because the ERP reads it
+ * with one line-oriented read and always has.
+ */
+export const uploadRawBytes = fileApi.createRequest({
+  method: "POST",
+  path: "/raw",
+  body: Schema.Uint8ArrayFromSelf,
+  bodyCodec: RequestBody.uint8Array("application/octet-stream"),
+  responses: [
+    // `Schema.Trim` transforms; `Schema.trimmed()` only *checks*, and the ERP's
+    // single line ends with a newline.
+    response({ _tag: "created", status: 201 }, Schema.Trim, { codec: ResponseBody.text }),
+    response({ _tag: "unauthorized", status: 401 }, Schema.String, { codec: ResponseBody.text }),
+  ],
+});
+
+/**
+ * The same endpoint with nothing declared for anything but a `200`.
+ *
+ * It exists to exercise what happens when a service answers something nobody modelled.
+ * By default the library drains the unmapped body and fails with `UnhandledResponse`;
+ * `.setUnhandledResponseBody("retain")` hands the live response over instead, and the
+ * caller then owns it and must read or discard it.
+ */
+export const uploadRawUnmodelled = fileApi.createRequest({
+  method: "POST",
+  path: "/raw",
+  body: Schema.Uint8ArrayFromSelf,
+  bodyCodec: RequestBody.uint8Array("application/octet-stream"),
+  responses: [response({ _tag: "ok", status: 200 }, Schema.String, { codec: ResponseBody.text })],
+});
+
+/**
  * `GET /bundle` — metadata and bytes in one multipart response.
  *
  * `ResponseBody.formData` hands over a real `FormData`; `FileBundle` reads the parts out

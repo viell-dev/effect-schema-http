@@ -122,6 +122,18 @@ export const createNotification = notifyApi.createRequest({
   ],
 });
 
+/**
+ * `GET /notifications` — an endpoint that only accepts `POST`.
+ *
+ * Nothing here declares the `405` the service answers, on purpose: this is the shape of
+ * every response nobody modelled, and it is what `UnhandledResponse` is for.
+ */
+export const listNotificationsUnmodelled = notifyApi.createRequest({
+  method: "GET",
+  path: "/notifications",
+  responses: [response({ _tag: "ok", status: 200 }, Schema.Array(Notification))],
+});
+
 /** `GET /notifications/poll` — holds the connection open, which is the point. */
 export const pollNotifications = notifyApi.createRequest({
   method: "GET",

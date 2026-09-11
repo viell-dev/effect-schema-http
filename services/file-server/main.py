@@ -414,6 +414,13 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
             self._handle_multipart_upload(body)
             return
 
+        # The ERP's raw byte upload. It has no envelope, no multipart framing and no
+        # JSON: the file name is a query parameter and the body is the file. It was
+        # written in 2008 against a mainframe FTP replacement and has never changed.
+        if self.path.startswith("/raw"):
+            self._handle_raw_upload(body)
+            return
+
         if not body:
             self._send_soap(make_soap_fault(1, "SOAP envelope required"))
             return
@@ -582,6 +589,53 @@ class SOAPHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Location", f"/bundle?id={file_id}")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Expose-Headers", "Location")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _handle_raw_upload(self, body: bytes):
+        """The ERP's raw byte upload: the body is the file, and nothing else.
+
+        Quirk: it answers `text/plain` with the file id and nothing else, because the
+        ERP reads the response with a single line-oriented read.
+        """
+        token = self._extract_token()
+        if not token or introspect_token(token) is None:
+            self.send_response(401)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "12")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"UNAUTHORIZED")
+            return
+
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        name = "upload.bin"
+        for pair in query.split("&"):
+            if pair.startswith("name="):
+                from urllib.parse import unquote_plus
+
+                name = unquote_plus(pair[5:])
+
+        now = datetime.now(timezone.utc)
+        file_id = str(uuid.uuid4())
+        files[file_id] = {
+            "id": file_id,
+            "name": name,
+            "content_type": self.headers.get("Content-Type", "application/octet-stream"),
+            "size": len(body),
+            "data": body,
+            "owner": introspect_token(token).get("username", "unknown"),
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        payload = f"{file_id}\n".encode("utf-8")
+        self.send_response(201)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("X-File-Size", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "*")
         self.end_headers()
         self.wfile.write(payload)
 
