@@ -7,6 +7,18 @@ import type { RouteResponse } from "./httpError.js";
 const PORT = Number(process.env.PORT ?? 4000);
 const MAX_BODY_BYTES = 6_000_000;
 
+/**
+ * Artificial per-route latency, off unless `RESPONSE_DELAY_MS` is set.
+ *
+ * This store answers in well under a millisecond, which makes request supersession impossible to
+ * observe: two keystrokes typed milliseconds apart never actually overlap on the wire, so nothing
+ * is ever there to cancel. Setting `RESPONSE_DELAY_MS=400` (optionally with `RESPONSE_DELAY_PATH`,
+ * default `/api/admin/users`) makes the users directory's gate behaviour reproducible in a
+ * browser instead of requiring an ad-hoc patch of this file.
+ */
+const RESPONSE_DELAY_MS = Number(process.env.RESPONSE_DELAY_MS ?? 0);
+const RESPONSE_DELAY_PATH = process.env.RESPONSE_DELAY_PATH ?? "/api/admin/users";
+
 const StoreLayer = Store.Default;
 const runtime = Layer.toRuntime(StoreLayer).pipe(Effect.scoped, Effect.runSync);
 
@@ -188,10 +200,12 @@ const server = http.createServer((req, res) => {
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
 
-  // Effect Platform's `FetchHttpClient` propagates tracing context via a `traceparent` request
-  // header by default, which triggers a CORS preflight most fixed allow-lists don't expect.
-  // Reflecting `Access-Control-Request-Headers` (a common permissive dev-server pattern) instead
-  // of hard-coding a list avoids that surprise; see README "Gotchas discovered building this".
+  // Effect Platform's `FetchHttpClient` propagates tracing context via `traceparent` *and* `b3`
+  // request headers by default, which triggers a CORS preflight most fixed allow-lists don't
+  // expect. Reflecting `Access-Control-Request-Headers` (a common permissive dev-server pattern)
+  // instead of hard-coding a list avoids that surprise; the library's README now documents both
+  // header names and the `HttpClient.withTracerPropagation(false)` opt-out under "Browsers and
+  // CORS".
   const requestedHeaders = req.headers["access-control-request-headers"];
   const CORS_HEADERS = {
     ...baseCorsHeaders,
@@ -206,7 +220,7 @@ const server = http.createServer((req, res) => {
 
   const route = routeTable.find((candidate) => candidate.method === method && candidate.pattern.test(url.pathname));
 
-  const respond = (response: RouteResponse) => {
+  const write = (response: RouteResponse) => {
     if (response.kind === "empty") {
       res.writeHead(response.status, CORS_HEADERS);
       res.end();
@@ -221,6 +235,20 @@ const server = http.createServer((req, res) => {
       res.end(response.body);
     }
     console.log(`${method} ${url.pathname} -> ${response.status} (${Date.now() - start}ms)`);
+  };
+
+  const delayed = RESPONSE_DELAY_MS > 0 && url.pathname.startsWith(RESPONSE_DELAY_PATH);
+  const respond = (response: RouteResponse) => {
+    if (!delayed) {
+      write(response);
+      return;
+    }
+    // A client that gave up — an interrupted fetch, i.e. a real `AbortController.abort()` — has
+    // already closed this socket; writing to it would throw rather than prove anything.
+    const timer = setTimeout(() => {
+      if (!res.writableEnded) write(response);
+    }, RESPONSE_DELAY_MS);
+    res.on("close", () => clearTimeout(timer));
   };
 
   if (!route) {

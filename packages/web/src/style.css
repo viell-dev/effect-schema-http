@@ -246,8 +246,19 @@ a {
 
 .filter-row {
   display: flex;
+  align-items: flex-end;
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.filter-row button.secondary {
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
 }
 
 .filter-row label {

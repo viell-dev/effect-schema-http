@@ -8,22 +8,20 @@
  * guarantee (a slow, stale response can't clobber a newer one), not a *cancellation* one — the
  * stale request's underlying `fetch()` keeps running on the wire even after a newer one starts.
  * A live filter box wants the stale network request itself interrupted, not just its result
- * discarded, so this module calls `gate.invalidate` before every `run`. `invalidate` "clears the
- * retained pair, interrupts every request currently owned by that gate" — `FetchHttpClient`
- * translates that Effect interruption into a real `AbortController.abort()`, which is what
- * actually cancels the in-flight HTTP request (confirmed in the browser as a
+ * discarded, so this module's consumer calls `gate.cancel` before every `run`. `cancel`
+ * "interrupts every request currently owned by that gate" while keeping the retained success —
+ * `FetchHttpClient` translates that Effect interruption into a real `AbortController.abort()`,
+ * which is what actually cancels the in-flight HTTP request (confirmed in the browser as a
  * `net::ERR_ABORTED` failed request — see the README's gate section for how that was checked).
  *
- * The trade-off, and a genuine gap in the library's own vocabulary: there is no "interrupt the
- * current flight but keep any already-cached success" primitive. `invalidate` is the only
- * interruption tool, and it clears the cache too. For this UI that's fine — the page keeps its
- * own last-rendered rows on screen regardless of what the gate remembers — but a caller who
- * actually wanted the gate's cross-call caching *and* interruption at once has no single method
- * for that; see the README.
+ * `cancel` is the half of that vocabulary this page wants: `invalidate` would do the same
+ * interruption but also drop the retained rows, which are still the best answer available until
+ * the newer request returns. Keeping them means backspacing to a filter the gate already
+ * answered — `ali` → `alic` → `ali` — resolves from the cache without touching the network at
+ * all, which is the gate's headline reuse behaviour finally doing something in a search box.
  */
 import { Effect } from "effect";
 import { makeRequestGate, toEffect } from "viell-effect-schema-http";
-import type { RequestGate } from "viell-effect-schema-http";
 import { adminListUsers } from "./api.js";
 import { withAuth } from "./withAuth.js";
 
@@ -32,14 +30,17 @@ export interface UserFilters {
   readonly email: string;
 }
 
+/**
+ * The gate's key function, exported so the UI can ask "is this the filter the gate is currently
+ * holding rows for?" without inventing a second, drifting definition of filter equality.
+ */
+export const usersFilterKey = (filters: UserFilters): string => JSON.stringify([filters.name, filters.email]);
+
 const allocateUsersGate = () =>
   makeRequestGate(
     (filters: UserFilters) =>
-      withAuth(adminListUsers())
-        .setUrlParam("name", filters.name)
-        .setUrlParam("email", filters.email)
-        .pipe(toEffect),
-    { key: (filters) => JSON.stringify([filters.name, filters.email]) },
+      adminListUsers().setUrlParam("name", filters.name).setUrlParam("email", filters.email).pipe(withAuth, toEffect),
+    { key: usersFilterKey },
   );
 
 export type UsersGate = Effect.Effect.Success<ReturnType<typeof allocateUsersGate>>;
