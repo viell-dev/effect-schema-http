@@ -38,6 +38,8 @@ interface State {
   readonly comments: Map<CommentId, Comment>;
   readonly attachments: Map<AttachmentId, StoredAttachment>;
   readonly lastCacheRefresh: DateTime.Utc | undefined;
+  /** How many times the search index has been asked to rebuild since this process started. */
+  readonly reindexAttempts: number;
 }
 
 const emptyState: State = {
@@ -50,6 +52,7 @@ const emptyState: State = {
   comments: new Map(),
   attachments: new Map(),
   lastCacheRefresh: undefined,
+  reindexAttempts: 0,
 };
 
 export class Store extends Effect.Service<Store>()("Store", {
@@ -282,6 +285,17 @@ export class Store extends Effect.Service<Store>()("Store", {
         })),
       );
 
+    /**
+     * The search cluster is warm-standby: it answers `503` until it has been poked a couple of
+     * times. Returning the attempt number lets the route decide between `503` and `202` without
+     * keeping mutable state of its own.
+     */
+    const recordReindexAttempt = () =>
+      Ref.modify(ref, (state) => {
+        const reindexAttempts = state.reindexAttempts + 1;
+        return [reindexAttempts, { ...state, reindexAttempts }] as const;
+      });
+
     const refreshCache = () =>
       Effect.gen(function* () {
         const now = DateTime.unsafeNow();
@@ -313,6 +327,7 @@ export class Store extends Effect.Service<Store>()("Store", {
       getAttachment,
       deleteAttachment,
       countStats,
+      recordReindexAttempt,
       refreshCache,
     } as const;
   }),

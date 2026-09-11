@@ -7,11 +7,26 @@ import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, Valida
 
 export type DomainError = ValidationError | UnauthorizedError | ForbiddenError | NotFoundError | ConflictError;
 
+/** Extra response header fields a handler needs beyond the content type, such as `Retry-After`. */
+export type ResponseHeaders = Readonly<Record<string, string>>;
+
 export type RouteResponse =
-  | { readonly kind: "json"; readonly status: number; readonly body: unknown }
-  | { readonly kind: "text"; readonly status: number; readonly contentType: string; readonly body: string }
-  | { readonly kind: "bytes"; readonly status: number; readonly contentType: string; readonly body: Uint8Array }
-  | { readonly kind: "empty"; readonly status: number };
+  | { readonly kind: "json"; readonly status: number; readonly body: unknown; readonly headers?: ResponseHeaders }
+  | {
+      readonly kind: "text";
+      readonly status: number;
+      readonly contentType: string;
+      readonly body: string;
+      readonly headers?: ResponseHeaders;
+    }
+  | {
+      readonly kind: "bytes";
+      readonly status: number;
+      readonly contentType: string;
+      readonly body: Uint8Array;
+      readonly headers?: ResponseHeaders;
+    }
+  | { readonly kind: "empty"; readonly status: number; readonly headers?: ResponseHeaders };
 
 const encode = <A, I>(schema: Schema.Schema<A, I>, value: A, status: number): Effect.Effect<RouteResponse> =>
   Schema.encode(schema)(value).pipe(

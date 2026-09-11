@@ -16,6 +16,7 @@ import {
   AttachmentsResponse,
   AttachmentView,
   AuthResponse,
+  BundleMetadata,
   Bio,
   BlogResponse,
   Comment,
@@ -29,14 +30,20 @@ import {
   FeedResponse,
   Filename,
   ForbiddenError,
+  ImportSummary,
+  LegacyLoginForm,
   LoginInput,
   MimeType,
   NonNegativeInt,
   NotFoundError,
   PageQuery,
   Post,
+  PostBody,
+  PostExport,
+  PostExportFromMarkdown,
   PostId,
   PostView,
+  ReindexAccepted,
   RefreshCacheInput,
   RegisterInput,
   SessionToken,
@@ -483,3 +490,187 @@ export const adminRefreshCache = (authHeader: string | undefined, json: unknown)
     Effect.flatMap(() => empty(205)),
     Effect.catchAll(domainErrorToResponse),
   );
+
+// -- Legacy request formats ---------------------------------------------------------------------
+//
+// Two endpoints kept alive for callers nobody can upgrade: a form-encoded login and an Atom
+// importer. Both take a non-JSON *request* body, which is the mirror image of the feed and stats
+// endpoints above — and in both cases the parsing is a schema's job, not this handler's.
+
+export const legacyLogin = (form: Record<string, string>) =>
+  Effect.gen(function* () {
+    // `LegacyLoginForm` validates the same `Email`/`Password` brands the JSON login uses, plus the
+    // `grant_type` literal this client has always sent, so the two endpoints cannot drift.
+    const input = yield* decodeBody(LegacyLoginForm, form);
+    const store = yield* Store;
+    const account = yield* store.findAccountByEmail(input.email);
+    if (!account) return yield* Effect.fail(new UnauthorizedError({ message: "invalid email or password" }));
+    const valid = yield* verifyPassword(input.password, account.passwordHash);
+    if (!valid) return yield* Effect.fail(new UnauthorizedError({ message: "invalid email or password" }));
+    const token = SessionToken.make(randomUUID());
+    yield* store.createSession(token, account.id);
+    return { token, profile: profileOfAccount(account) };
+  }).pipe(respondWith(AuthResponse, 200));
+
+/**
+ * Imports posts from an Atom document — decoded with `AtomFeedFromString`, the same schema
+ * `getBlogFeed` above uses to *produce* one. The client encodes a domain value into that XML, this
+ * decodes it back: one definition of the format, exercised in both directions across the wire.
+ */
+export const importAtom = (usernameParam: string, authHeader: string | undefined, xml: string) =>
+  Effect.gen(function* () {
+    const userId = yield* requireSession(authHeader);
+    const username = yield* decodeBody(Username, usernameParam);
+    const store = yield* Store;
+    const account = yield* store.findAccountByUsername(username);
+    if (!account) return yield* Effect.fail(new NotFoundError({ resource: "User", id: usernameParam }));
+    if (account.id !== userId) {
+      return yield* Effect.fail(new ForbiddenError({ message: "you can only import into your own blog" }));
+    }
+
+    const feed = yield* decodeBody(AtomFeedFromString, xml);
+    const existing = yield* store.listPostsByAuthor(account.id);
+    const existingTitles = new Set(existing.map((post) => post.title.toLowerCase()));
+
+    const imported: Array<Slug> = [];
+    let skipped = 0;
+    for (const entry of feed.entries) {
+      if (existingTitles.has(entry.title.toLowerCase())) {
+        skipped += 1;
+        continue;
+      }
+      const now = DateTime.unsafeNow();
+      const post = yield* store.insertPost(
+        new Post({
+          id: PostId.make(randomUUID()),
+          authorId: account.id,
+          slug: slugify(entry.title),
+          title: entry.title,
+          // An Atom entry carries no body, only a link back to wherever it came from.
+          body: PostBody.make(`Imported from ${entry.link}`),
+          visibility: "public",
+          createdAt: entry.updated,
+          updatedAt: now,
+        }),
+      );
+      existingTitles.add(post.title.toLowerCase());
+      imported.push(post.slug);
+    }
+
+    return {
+      imported: NonNegativeInt.make(imported.length),
+      skipped: NonNegativeInt.make(skipped),
+      slugs: imported,
+    };
+  }).pipe(respondWith(ImportSummary, 200));
+
+// -- Export -------------------------------------------------------------------------------------
+
+/**
+ * One post, two representations at the same `200`. The client declares both as response rules
+ * distinguished by a `content-type` matcher; this handler only has to answer honestly.
+ */
+export const exportPost = (slugParam: string, authHeader: string | undefined, accept: string | undefined) =>
+  Effect.gen(function* () {
+    const slug = yield* decodeBody(Slug, slugParam);
+    const viewerId = yield* optionalSession(authHeader);
+    const store = yield* Store;
+    const post = yield* store.getPostBySlug(slug);
+    if (!visibleToViewer(post, viewerId)) {
+      return yield* Effect.fail(new NotFoundError({ resource: "Post", id: slugParam }));
+    }
+    const author = yield* store.getAccount(post.authorId);
+    return {
+      slug: post.slug,
+      title: post.title,
+      author: author.username,
+      body: post.body,
+    };
+  }).pipe(
+    (effect) =>
+      (accept ?? "").includes("text/markdown")
+        ? effect.pipe(respondWithText(PostExportFromMarkdown, 200, "text/markdown; charset=utf-8"))
+        : effect.pipe(respondWith(PostExport, 200)),
+  );
+
+// -- Search reindex -------------------------------------------------------------------------------
+
+/**
+ * Deliberately flaky: the warm-standby search cluster answers `503` with a `Retry-After` for its
+ * first two pokes after a cold start, then accepts the job. `503` is one of the statuses the
+ * `repo` library classifies as transient, so a client with a retry policy rides through this
+ * without any special handling — see `packages/web/src/api.ts`.
+ */
+const REINDEX_WARMUP_ATTEMPTS = 2;
+
+export const adminReindex = (authHeader: string | undefined) =>
+  Effect.gen(function* () {
+    yield* requireAdmin(authHeader);
+    const store = yield* Store;
+    const attempts = yield* store.recordReindexAttempt();
+    if (attempts <= REINDEX_WARMUP_ATTEMPTS) {
+      return {
+        kind: "json",
+        status: 503,
+        headers: { "retry-after": "1" },
+        body: { message: "search cluster is still warming up" },
+      } satisfies RouteResponse;
+    }
+    const counts = yield* store.countStats();
+    const body = yield* Schema.encode(ReindexAccepted)({
+      indexed: NonNegativeInt.make(counts.posts),
+      attempts: NonNegativeInt.make(attempts),
+    }).pipe(Effect.orDie);
+    return { kind: "json", status: 202, body } satisfies RouteResponse;
+  }).pipe(Effect.catchAll(domainErrorToResponse));
+
+// -- Attachment bundles ----------------------------------------------------------------------------
+
+/**
+ * Metadata and bytes for one attachment in a single multipart response — the only endpoint here
+ * whose *response* is form data. Node has no multipart serializer, but `new Response(formData)`
+ * has one built in, so the boundary and part framing come from the platform rather than from
+ * string concatenation here.
+ */
+export const attachmentBundle = (
+  slugParam: string,
+  attachmentIdParam: string,
+  authHeader: string | undefined,
+): Effect.Effect<RouteResponse, never, Store> =>
+  Effect.gen(function* () {
+    const slug = yield* decodeBody(Slug, slugParam);
+    const attachmentId = yield* decodeBody(AttachmentId, attachmentIdParam);
+    const viewerId = yield* optionalSession(authHeader);
+    const store = yield* Store;
+    const post = yield* store.getPostBySlug(slug);
+    if (!visibleToViewer(post, viewerId)) {
+      return yield* Effect.fail(new NotFoundError({ resource: "Post", id: slugParam }));
+    }
+    const stored = yield* store.getAttachment(attachmentId);
+    if (stored.meta.postId !== post.id) {
+      return yield* Effect.fail(new NotFoundError({ resource: "Attachment", id: attachmentIdParam }));
+    }
+
+    const metadata = yield* Schema.encode(BundleMetadata)({
+      filename: stored.meta.filename,
+      contentType: stored.meta.contentType,
+      size: stored.meta.size,
+    }).pipe(Effect.orDie);
+
+    const form = new FormData();
+    form.set("metadata", JSON.stringify(metadata));
+    form.set(
+      "file",
+      new Blob([stored.bytes as Uint8Array<ArrayBuffer>], { type: stored.meta.contentType }),
+      stored.meta.filename,
+    );
+
+    const serialized = new Response(form);
+    const bytes = new Uint8Array(yield* Effect.promise(() => serialized.arrayBuffer()));
+    return {
+      kind: "bytes",
+      status: 200,
+      contentType: serialized.headers.get("content-type") ?? "multipart/form-data",
+      body: bytes,
+    } satisfies RouteResponse;
+  }).pipe(Effect.catchAll(domainErrorToResponse));

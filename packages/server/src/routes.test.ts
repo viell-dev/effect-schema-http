@@ -360,3 +360,208 @@ describe("admin", () => {
     expect(asNonAdmin.status).toBe(401);
   });
 });
+
+describe("legacy request formats", () => {
+  it("authenticates through the form-encoded login exactly like the JSON one", async () => {
+    const program = Effect.gen(function* () {
+      yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+
+      // Exactly the flat record `RequestBody.urlParams` produces on the wire.
+      const ok = yield* routes.legacyLogin({
+        email: "ada@example.com",
+        password: "lovelace1",
+        grant_type: "password",
+      });
+      const wrongPassword = yield* routes.legacyLogin({
+        email: "ada@example.com",
+        password: "not-the-password",
+        grant_type: "password",
+      });
+      const wrongGrant = yield* routes.legacyLogin({
+        email: "ada@example.com",
+        password: "lovelace1",
+        grant_type: "client_credentials",
+      });
+
+      return { ok, wrongPassword, wrongGrant };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { ok, wrongPassword, wrongGrant } = await Effect.runPromise(
+      program as Effect.Effect<{ ok: RouteResponse; wrongPassword: RouteResponse; wrongGrant: RouteResponse }>,
+    );
+
+    expect(ok.status).toBe(200);
+    expect(jsonBody(ok)).toMatchObject({ profile: { username: "ada" } });
+    expect(wrongPassword.status).toBe(401);
+    // An unexpected grant type is a schema failure, not an auth failure.
+    expect(wrongGrant.status).toBe(400);
+  });
+
+  it("imports an Atom document the feed endpoint itself could have produced", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+      yield* routes.createPost(header, { title: "Existing post", body: "Already here.", visibility: "public" });
+
+      const xml = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<feed xmlns="http://www.w3.org/2005/Atom">',
+        "  <title>Ada Lovelace</title>",
+        "  <updated>2026-01-02T03:04:05.000Z</updated>",
+        "  <entry>",
+        "    <title>Existing post</title>",
+        '    <link href="http://old.example/1"/>',
+        "    <updated>2026-01-02T03:04:05.000Z</updated>",
+        "  </entry>",
+        "  <entry>",
+        "    <title>Brand new post</title>",
+        '    <link href="http://old.example/2"/>',
+        "    <updated>2026-01-03T03:04:05.000Z</updated>",
+        "  </entry>",
+        "</feed>",
+      ].join("\n");
+
+      const imported = yield* routes.importAtom("ada", header, xml);
+      const malformed = yield* routes.importAtom("ada", header, "<html>not a feed</html>");
+      const unauthenticated = yield* routes.importAtom("ada", undefined, xml);
+      const feed = yield* routes.getBlogFeed("ada");
+
+      return { imported, malformed, unauthenticated, feed };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { imported, malformed, unauthenticated, feed } = await Effect.runPromise(
+      program as Effect.Effect<{
+        imported: RouteResponse;
+        malformed: RouteResponse;
+        unauthenticated: RouteResponse;
+        feed: RouteResponse;
+      }>,
+    );
+
+    expect(imported.status).toBe(200);
+    expect(jsonBody(imported)).toMatchObject({ imported: 1, skipped: 1 });
+    expect(malformed.status).toBe(400);
+    expect(unauthenticated.status).toBe(401);
+    // Round trip: what the importer accepted now comes back out of the feed it mirrors.
+    expect(feed.kind === "text" && feed.body).toContain("Brand new post");
+  });
+});
+
+describe("export, reindex, and bundles", () => {
+  it("answers the same post as JSON or Markdown depending on Accept", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+      yield* routes.createPost(header, { title: "Hello world", body: "First line.", visibility: "public" });
+
+      const asJson = yield* routes.exportPost("hello-world", header, "application/json");
+      const asMarkdown = yield* routes.exportPost("hello-world", header, "text/markdown, text/plain;q=0.9");
+      const missing = yield* routes.exportPost("no-such-post", header, "application/json");
+
+      return { asJson, asMarkdown, missing };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { asJson, asMarkdown, missing } = await Effect.runPromise(
+      program as Effect.Effect<{ asJson: RouteResponse; asMarkdown: RouteResponse; missing: RouteResponse }>,
+    );
+
+    expect(asJson.kind).toBe("json");
+    expect(jsonBody(asJson)).toMatchObject({ slug: "hello-world", author: "ada" });
+    expect(asMarkdown.kind).toBe("text");
+    expect(asMarkdown.kind === "text" && asMarkdown.contentType).toContain("text/markdown");
+    expect(asMarkdown.kind === "text" && asMarkdown.body).toContain("---\nslug: hello-world");
+    expect(missing.status).toBe(404);
+  });
+
+  it("answers 503 with Retry-After until the search cluster has warmed up", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+
+      const first = yield* routes.adminReindex(header);
+      const second = yield* routes.adminReindex(header);
+      const third = yield* routes.adminReindex(header);
+      const asAnonymous = yield* routes.adminReindex(undefined);
+
+      return { first, second, third, asAnonymous };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { first, second, third, asAnonymous } = await Effect.runPromise(
+      program as Effect.Effect<{
+        first: RouteResponse;
+        second: RouteResponse;
+        third: RouteResponse;
+        asAnonymous: RouteResponse;
+      }>,
+    );
+
+    expect([first.status, second.status, third.status]).toEqual([503, 503, 202]);
+    expect(first.headers?.["retry-after"]).toBe("1");
+    expect(jsonBody(third)).toMatchObject({ attempts: 3 });
+    expect(asAnonymous.status).toBe(401);
+  });
+
+  it("bundles one attachment's metadata and bytes into a multipart response", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+      yield* routes.createPost(header, { title: "Hello world", body: "First line.", visibility: "public" });
+
+      const form = new FormData();
+      form.set("file", new Blob(["hello bytes"], { type: "text/plain" }), "note.txt");
+      form.set("caption", "A note");
+      const uploaded = yield* routes.uploadAttachment("hello-world", header, form);
+      const attachmentId = (jsonBody(uploaded) as { id: string }).id;
+
+      const bundle = yield* routes.attachmentBundle("hello-world", attachmentId, header);
+      const missing = yield* routes.attachmentBundle("hello-world", "not-a-uuid", header);
+
+      return { bundle, missing };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { bundle, missing } = await Effect.runPromise(
+      program as Effect.Effect<{ bundle: RouteResponse; missing: RouteResponse }>,
+    );
+
+    expect(bundle.status).toBe(200);
+    if (bundle.kind !== "bytes") throw new Error("expected a byte response");
+    expect(bundle.contentType).toContain("multipart/form-data; boundary=");
+
+    // Parse it back the way the client's `ResponseBody.formData` codec will.
+    const parsed = await new Response(bundle.body as BodyInit, {
+      headers: { "content-type": bundle.contentType },
+    }).formData();
+    expect(JSON.parse(parsed.get("metadata") as string)).toMatchObject({
+      filename: "note.txt",
+      contentType: "text/plain",
+      size: 11,
+    });
+    expect(await (parsed.get("file") as File).text()).toBe("hello bytes");
+    expect(missing.status).toBe(400);
+  });
+});

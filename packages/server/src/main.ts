@@ -62,7 +62,12 @@ const parseFormDataBody = (raw: Buffer, contentType: string): Promise<FormData> 
     body: new Uint8Array(raw),
   }).formData();
 
-type BodyMode = "json" | "formData" | "none";
+/**
+ * How a route wants its request body. `text` and `urlEncoded` exist for the two legacy endpoints
+ * whose callers never spoke JSON; in both cases this layer only turns bytes into the plainest
+ * possible value and leaves every bit of validation to a schema in the handler.
+ */
+type BodyMode = "json" | "formData" | "text" | "urlEncoded" | "none";
 
 interface Route {
   readonly method: string;
@@ -73,6 +78,7 @@ interface Route {
     query: URLSearchParams,
     authHeader: string | undefined,
     body: unknown,
+    accept: string | undefined,
   ) => Promise<RouteResponse>;
 }
 
@@ -83,6 +89,13 @@ const routeTable: ReadonlyArray<Route> = [
     pattern: /^\/api\/users\/login$/,
     bodyMode: "json",
     handle: (_p, _q, _a, json) => run(routes.login(json)),
+  },
+  {
+    // The original mobile client posts `application/x-www-form-urlencoded`, not JSON.
+    method: "POST",
+    pattern: /^\/api\/users\/login\/legacy$/,
+    bodyMode: "urlEncoded",
+    handle: (_p, _q, _a, form) => run(routes.legacyLogin(form as Record<string, string>)),
   },
   { method: "GET", pattern: /^\/api\/user$/, bodyMode: "none", handle: (_p, _q, auth) => run(routes.currentUser(auth)) },
   {
@@ -96,6 +109,13 @@ const routeTable: ReadonlyArray<Route> = [
     pattern: /^\/api\/blogs\/([^/]+)\/feed\.atom$/,
     bodyMode: "none",
     handle: ([username]) => run(routes.getBlogFeed(username!)),
+  },
+  {
+    // The importer's counterpart: the same Atom document, travelling the other way.
+    method: "POST",
+    pattern: /^\/api\/blogs\/([^/]+)\/import\.atom$/,
+    bodyMode: "text",
+    handle: ([username], _q, auth, xml) => run(routes.importAtom(username!, auth, xml as string)),
   },
   {
     method: "GET",
@@ -146,6 +166,13 @@ const routeTable: ReadonlyArray<Route> = [
     handle: ([slug, commentId], _q, auth) => run(routes.deleteComment(slug!, commentId!, auth)),
   },
   {
+    // JSON or Markdown at the same status, chosen by `Accept`.
+    method: "GET",
+    pattern: /^\/api\/posts\/([^/]+)\/export$/,
+    bodyMode: "none",
+    handle: ([slug], _q, auth, _body, accept) => run(routes.exportPost(slug!, auth, accept)),
+  },
+  {
     method: "GET",
     pattern: /^\/api\/posts\/([^/]+)\/attachments$/,
     bodyMode: "none",
@@ -162,6 +189,13 @@ const routeTable: ReadonlyArray<Route> = [
     pattern: /^\/api\/posts\/([^/]+)\/attachments\/([^/]+)$/,
     bodyMode: "none",
     handle: ([slug, attachmentId], _q, auth) => run(routes.getAttachmentBytes(slug!, attachmentId!, auth)),
+  },
+  {
+    // Metadata and bytes in one multipart response.
+    method: "GET",
+    pattern: /^\/api\/posts\/([^/]+)\/attachments\/([^/]+)\/bundle$/,
+    bodyMode: "none",
+    handle: ([slug, attachmentId], _q, auth) => run(routes.attachmentBundle(slug!, attachmentId!, auth)),
   },
   {
     method: "DELETE",
@@ -187,6 +221,13 @@ const routeTable: ReadonlyArray<Route> = [
     pattern: /^\/api\/admin\/cache\/refresh$/,
     bodyMode: "json",
     handle: (_p, _q, auth, json) => run(routes.adminRefreshCache(auth, json)),
+  },
+  {
+    // Answers 503 + Retry-After until the warm-standby search cluster is up.
+    method: "POST",
+    pattern: /^\/api\/admin\/search\/reindex$/,
+    bodyMode: "none",
+    handle: (_p, _q, auth) => run(routes.adminReindex(auth)),
   },
 ];
 
@@ -221,17 +262,24 @@ const server = http.createServer((req, res) => {
   const route = routeTable.find((candidate) => candidate.method === method && candidate.pattern.test(url.pathname));
 
   const write = (response: RouteResponse) => {
+    // A handler may add fields of its own, such as the `Retry-After` the reindex route sends with
+    // its warm-up `503`; they have to be exposed to a cross-origin caller to be readable at all.
+    const extra = response.headers ?? {};
+    const exposed =
+      Object.keys(extra).length === 0 ? {} : { "access-control-expose-headers": Object.keys(extra).join(", ") };
+    const headers = { ...CORS_HEADERS, ...exposed, ...extra };
+
     if (response.kind === "empty") {
-      res.writeHead(response.status, CORS_HEADERS);
+      res.writeHead(response.status, headers);
       res.end();
     } else if (response.kind === "json") {
       const payload = response.body === undefined ? "" : JSON.stringify(response.body);
-      res.writeHead(response.status, { ...CORS_HEADERS, "content-type": "application/json" });
+      res.writeHead(response.status, { ...headers, "content-type": "application/json" });
       res.end(payload);
     } else {
       // "text" and "bytes" both write their body as-is; Node's `res.end` accepts a string or a
       // Buffer/Uint8Array either way.
-      res.writeHead(response.status, { ...CORS_HEADERS, "content-type": response.contentType });
+      res.writeHead(response.status, { ...headers, "content-type": response.contentType });
       res.end(response.body);
     }
     console.log(`${method} ${url.pathname} -> ${response.status} (${Date.now() - start}ms)`);
@@ -259,15 +307,24 @@ const server = http.createServer((req, res) => {
   const params = route.pattern.exec(url.pathname)?.slice(1) ?? [];
   const authHeader = req.headers.authorization;
 
+  const parseBody = (raw: Buffer): unknown | Promise<unknown> => {
+    switch (route.bodyMode) {
+      case "formData":
+        return parseFormDataBody(raw, req.headers["content-type"] ?? "");
+      case "text":
+        return raw.toString("utf8");
+      case "urlEncoded":
+        return Object.fromEntries(new URLSearchParams(raw.toString("utf8")));
+      default:
+        return parseJsonBody(raw);
+    }
+  };
+
   const bodyPromise: Promise<unknown> =
-    route.bodyMode === "none"
-      ? Promise.resolve(undefined)
-      : readRawBody(req).then((raw) =>
-          route.bodyMode === "formData" ? parseFormDataBody(raw, req.headers["content-type"] ?? "") : parseJsonBody(raw),
-        );
+    route.bodyMode === "none" ? Promise.resolve(undefined) : readRawBody(req).then(parseBody);
 
   bodyPromise
-    .then((body) => route.handle(params, url.searchParams, authHeader, body))
+    .then((body) => route.handle(params, url.searchParams, authHeader, body, req.headers.accept))
     .then(respond)
     .catch((error: unknown) => {
       console.error("unhandled server error", error);
