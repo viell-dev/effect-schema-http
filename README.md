@@ -451,6 +451,22 @@ A request Effect requires `HttpClient.HttpClient`; the library never silently ch
 cancellation mechanism. `FetchHttpClient` translates interruption into its internal abort signal, and Promise callers
 can pass a signal through `Effect.runPromise(effect, { signal })`.
 
+Behavior that belongs to the transport rather than to the request has no plan setter, and some of it changes which
+responses a plan can observe. Redirect following is the clearest case: `fetch` follows a `3xx` by default, so a rule
+matching `301` never fires and the library is handed the redirected response instead. Cookie and credential modes work
+the same way. Those options belong to the provider, and `FetchHttpClient` exposes them as a context tag:
+
+```ts
+import { FetchHttpClient } from "@effect/platform";
+
+const moved = plan.effect.pipe(
+  Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual", credentials: "include" }),
+);
+```
+
+Provide it for one Effect, or in a layer for the whole application. `setCache` covers the one Fetch option that also has
+a meaning for other providers; everything else is provider-specific by design.
+
 Effect Platform normalizes headers. Plans retain repeated header entries separately, but the default Fetch provider may
 combine them on the wire. APIs that require repeated physical header field lines need a provider that reads
 `getHeaderEntries(request)` and preserves that representation.
