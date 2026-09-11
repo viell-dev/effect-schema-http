@@ -110,21 +110,21 @@ all plausible — these are things that exist in production right now.
   HTTP-date, etc.)
 - [x] Add CORS middleware with the intentional omission on one endpoint
 - [x] Test with `curl` / write a small integration test
-- [ ] Commit: "ID Server (Rust/Axum) — complete with historical quirks"
+- [x] Commit: "ID Server (Rust/Axum) — complete with historical quirks"
 
 ### Phase 2: File Server (Python/stdlib)
 
-- [ ] Create Python project in `services/file-server/` with a venv and minimal dependencies
+- [x] Create Python project in `services/file-server/` with a venv and minimal dependencies
   (stdlib `http.server` + `xml.etree` — no frameworks)
-- [ ] Implement SOAP envelope parsing with `urn:filestore:2011` namespace
-- [ ] Implement `UploadFile` SOAP action (multipart: SOAP envelope + file bytes, MTOM-style)
-- [ ] Implement `DownloadFile` SOAP action (GET with SOAP header containing file ID)
-- [ ] Implement `ListFiles` SOAP action with the three-shape quirk (empty, single-in-Result, multi)
-- [ ] Implement `GetFileMetadata` SOAP action with US-format dates
-- [ ] Implement token verification by calling ID Server's `/introspect`
-- [ ] Wire in all historical quirks (HTTP 200 always, SOAP fault code 0 for success, size unit
+- [x] Implement SOAP envelope parsing with `urn:filestore:2011` namespace
+- [x] Implement `UploadFile` SOAP action (multipart: SOAP envelope + file bytes, MTOM-style)
+- [x] Implement `DownloadFile` SOAP action (GET with SOAP header containing file ID)
+- [x] Implement `ListFiles` SOAP action with the three-shape quirk (empty, single-in-Result, multi)
+- [x] Implement `GetFileMetadata` SOAP action with US-format dates
+- [x] Implement token verification by calling ID Server's `/introspect`
+- [x] Wire in all historical quirks (HTTP 200 always, SOAP fault code 0 for success, size unit
   mismatch, etc.)
-- [ ] Test with `curl`
+- [x] Test with `curl`
 - [ ] Commit: "File Server (Python/stdlib) — SOAP service with legacy quirks"
 
 ### Phase 3: API Server (Java/JDK HttpServer)
