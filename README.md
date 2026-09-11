@@ -15,6 +15,10 @@ modelled, and an intentionally non-standard `205` status), and the admin user di
 specifically to exercise `makeRequestGate` — a filter-as-you-type datatable, the shape the
 library's own docs use as the gate's motivating example.
 
+The blog itself is scaffolding. What is being modelled is an API that has been running for years:
+see [Why the API is like this](#why-the-api-is-like-this) for the full list of deliberate
+misbehaviour and what each one cost the client.
+
 This is a local, no-remote git repository. Every commit is a real checkpoint (`git log` tells the
 story better than this document does), and the final third of this README is a candid writeup of
 what worked well and what didn't while building it.
@@ -65,6 +69,8 @@ server discards all data. Adding a real database was out of scope for what this 
 | Admin search reindex | `POST /api/admin/search/reindex` | `retry` — the route answers `503` + `Retry-After` until it warms up — and an echoed attempt field contrasting that with a client-driven loop |
 | Admin diagnostics | `GET /api/admin/diagnostics` | `UnhandledResponse` with `unhandledResponseBody: "retain"` |
 | Admin user directory | `GET /api/admin/users` | plain JSON, driven through `makeRequestGate`, with computed query params that omit empty filters |
+| Vendor search | `GET /api/search` | header pagination, scalar-or-array fields, stringly-typed values, `429`, and `200` with an empty body |
+| The v1 comment endpoint | `POST /api/v1/comments` | always `200` with the outcome in the body — the one case response rules cannot discriminate |
 | Authentication | every endpoint except the three public ones | a computed `authorization` header declared once on the API, removed by `extendApi` for login/register |
 | Edge cache bypass | `GET /api/posts`, `GET /api/blogs/:username/feed.atom` | `setCache` plus a computed cache-buster, applied per call site through a `RequestPlanTransform` |
 | Conflicting edits | `PUT /api/posts/:slug` | a mapped `409` opens a dialog, then replays the **same retained plan** through a `RequestPlanTransform` |
@@ -85,6 +91,59 @@ cover the library surface the first pass had reported it *could not vouch for*: 
 and url-encoded request codecs, response-rule precedence with more than one candidate, form-data
 responses, and retained unmapped bodies. Every one of them is driven from the UI, not only from a
 test.
+
+## Why the API is like this
+
+The blog was only ever a starting point — something with enough CRUD to hang an API off. The
+point of the project is the API's *misbehaviour*, because that is what a client library actually
+has to survive. An API designed the way a blog post would design it exercises nothing: JSON in,
+JSON out, correct status codes, consistent casing. Real APIs are not like that. They accrete,
+they get bolted onto by people in a hurry, they carry endpoints nobody dares change because
+something nobody can identify still calls them, and they integrate vendors whose conventions
+nothing else shares.
+
+So every oddity below is deliberate, and each is something that exists in production systems right
+now. The interesting column is the last one: what the client had to do about it.
+
+| The oddity | Where | What a tidy API would have done | What the client needed |
+| --- | --- | --- | --- |
+| Every response is `200`, outcome in a body field | `POST /api/v1/comments` | status codes | **a genuine limitation** — see below |
+| A request that must differ per retry attempt | `POST /api/admin/search/reindex` | request ids, or nothing | **a genuine limitation** — see below |
+| No results is `200` with an empty body, not `[]` | `GET /api/search` | `[]` | a second rule matched on `content-length: 0` with `ResponseBody.none` |
+| `tags` is a string for one, an array for several | `GET /api/search` | always an array | `Schema.Union` normalised to an array |
+| Numbers and booleans serialized as strings | `GET /api/search` | real JSON types | `Schema.NumberFromString`, a `"1"`/`"0"` transform |
+| Pagination in response headers, body is a bare array | `GET /api/search` | an envelope | reading `envelope.headers` through a schema |
+| Timestamps as epoch **seconds** | `POST /api/v1/comments` | ISO 8601 | one transform, defined once |
+| `snake_case` fields | v1 comments, legacy login, search | consistent casing | schema field names; nothing propagates inward |
+| A form-encoded request body | `POST /api/users/login/legacy` | JSON | `RequestBody.urlParams` |
+| An XML request body | `POST /api/blogs/:username/import.atom` | JSON | `RequestBody.text` + the feed's own transform |
+| Bytes that are secretly JSON, sent as `octet-stream` | `GET /api/admin/stats` | JSON with a correct content-type | `ResponseBody.uint8Array` + a transform |
+| `205` where `204` was meant | `POST /api/admin/cache/refresh` | `204` | nothing — status is just a number |
+| An error shape nobody ever modelled | `GET /api/admin/diagnostics` | the shared error envelope | `UnhandledResponse` with `"retain"` |
+| A cache that ignores `Cache-Control` | the feed and Atom feeds | honour request directives | a cache-busting parameter alongside `setCache` |
+| A concurrency token in a bespoke header | `PUT /api/posts/:slug` | `ETag` / `If-Match` | an ordinary `setHeader` |
+| A burst limit answering `429` | `GET /api/search` | the same, honestly | nothing — `429` is already transient |
+| Two representations at one status | `GET /api/posts/:slug/export` | separate endpoints, or honest ones | two rules separated by a `content-type` matcher |
+
+**Only two of those needed anything the library could not simply be configured to do**, and both
+are worth stating precisely rather than as complaints:
+
+1. **Rule selection cannot see the response body.** It happens on status and headers, before
+   decoding — which is what makes it fast and total, and it is the right trade. But an endpoint
+   that answers `200` for both success and failure cannot be split into two rules, so both
+   outcomes share one rule with a `Schema.Union` body and the caller narrows twice: once on the
+   envelope tag, then on the body's own field. Nothing is unsafe and the union is still
+   exhaustive; what is lost is the uniformity that lets one function render every other endpoint's
+   errors.
+2. **A request cannot vary per retry attempt.** Encoding runs once before the retry loop and every
+   attempt replays it — again correct, since a credential must not change mid-retry — so an
+   echoed, incrementing attempt counter needs `setRetries(0)` and a loop over the plan instead,
+   giving up `Retry-After` handling and the jittered schedule to get it.
+
+Everything else on that list is a declaration or a schema. That is the actual finding of this
+project: the library's failure mode under a badly-behaved API is *more configuration*, not
+workarounds — and where it genuinely cannot help, it is because of a deliberate trade that is
+documented, not an oversight.
 
 ## Running it
 
@@ -110,8 +169,8 @@ The feed and the Atom feeds are served through an emulated reverse proxy with a 
 (`packages/server/src/edgeCache.ts`); responses carry `X-Cache` and `Age`, and the feed pages
 display both. `EDGE_CACHE_TTL_MS=0` disables it.
 
-Tests: `pnpm --filter @realworld/domain run test` (20 tests) and
-`pnpm --filter @realworld/server run test` (27 tests) run under Vitest. The web package has no
+Tests: `pnpm --filter @realworld/domain run test` (32 tests) and
+`pnpm --filter @realworld/server run test` (32 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
 `playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
 in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
