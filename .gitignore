@@ -1,0 +1,24 @@
+# Rust
+services/id-server/target/
+
+# Python
+services/file-server/.venv/
+services/file-server/__pycache__/
+**/__pycache__/
+*.pyc
+
+# Java
+services/api-server/build/
+services/api-server/bin/
+services/api-server/*.class
+**/*.class
+
+# Node / TypeScript
+node_modules/
+client/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
