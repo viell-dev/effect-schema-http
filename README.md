@@ -63,7 +63,8 @@ server discards all data. Adding a real database was out of scope for what this 
 | Admin cache refresh | `POST /api/admin/cache/refresh` | `ResponseBody.none`, status `205` not `204` |
 | Admin search reindex | `POST /api/admin/search/reindex` | `retry` — the route answers `503` + `Retry-After` until it warms up |
 | Admin diagnostics | `GET /api/admin/diagnostics` | `UnhandledResponse` with `unhandledResponseBody: "retain"` |
-| Admin user directory | `GET /api/admin/users?name=&email=` | plain JSON, but driven through `makeRequestGate` client-side |
+| Admin user directory | `GET /api/admin/users` | plain JSON, driven through `makeRequestGate`, with computed query params that omit empty filters |
+| Authentication | every endpoint except the three public ones | a computed `authorization` header declared once on the API, removed by `extendApi` for login/register |
 
 The blog/post/comment CRUD underneath all of this is plain JSON in, JSON out — the default codec
 the library needs no configuration for at all.
@@ -277,13 +278,15 @@ a time.
   declaration is fully typed from the string literal — a typo'd or missing param is a compile
   error, and a path with no `:params` (like `/api/posts`) correctly makes the endpoint callable
   with zero arguments (`listFeed()`).
-- **Immutable setters compose into small, genuinely reusable combinators.** `withAuth` (attaching a
-  bearer token) is a three-line function that works across every endpoint regardless of that
-  endpoint's concrete `Body`/`Rules`/`BodyReady` type parameters — no per-endpoint casting needed
-  anywhere it's used. It originally had to guess at a minimal structural type (`{ setHeader }`)
-  because the library had no public name for that signature; it is now annotated with the exported
-  `RequestPlanTransform`, which also makes it pipeable (`getPost({ slug }).pipe(withAuth, toEffect)`)
-  instead of a wrapper around the plan.
+- **Immutable setters compose into small, genuinely reusable combinators.** This project's
+  `withAuth` — a helper attaching the bearer token, applied at every authenticated call site — was
+  the worked example of this, and it went through all three stages the library did: first a guess
+  at a minimal structural type (`{ setHeader }`) because the library had no public name for a
+  cross-endpoint setter; then the exported `RequestPlanTransform`, which also made it pipeable; and
+  finally deleted outright, because computed header values made the helper unnecessary (see the
+  next section). The combinator pattern is still right — `RequestPlanTransform` is the correct tool
+  for a setter that really does belong at call sites — it just turned out that authentication is
+  not one of those.
 - **TSDoc coverage let this whole client layer get built without reading the library's
   implementation.** Per the project's own request, every endpoint, setter, and codec choice below
   was written from `dist/request.d.ts`'s TSDoc and the README alone; `src/request.ts` was never
@@ -356,13 +359,36 @@ a time.
   — would have turned four separate rounds of type-reading into zero. That is exactly what was
   added.
 - **No worked example of a *reusable* cross-endpoint setter.** _Resolved in the library._ Every
-  README example chained setters inline at one call site. Writing `withAuth` (used above as a
-  "worked well" point) required independently figuring out that the helper had to be typed
-  structurally (`<Plan extends { setHeader: ... }>`) rather than against a concrete
-  `RequestPlan<Body, Rules, BodyReady>`, since that triple differs per endpoint. The library turned
-  out to have exactly that signature internally, used by all of its own pipeable setters, and it is
-  now exported as `RequestPlanTransform` with the pattern documented under "Reusable cross-endpoint
-  setters". `withAuth` is annotated with it; the structural guess is gone.
+  README example chained setters inline at one call site. Writing `withAuth` required independently
+  figuring out that the helper had to be typed structurally (`<Plan extends { setHeader: ... }>`)
+  rather than against a concrete `RequestPlan<Body, Rules, BodyReady>`, since that triple differs
+  per endpoint. The library turned out to have exactly that signature internally, used by all of
+  its own pipeable setters, and it is now exported as `RequestPlanTransform` with the pattern
+  documented under "Reusable cross-endpoint setters".
+- **A default header could not depend on state that did not exist yet.** _Resolved in the library._
+  The deeper reason `withAuth` existed at all: `createApi` is evaluated once when the module loads,
+  and an API-wide `authorization` header was a plain string captured at that moment — which, in a
+  browser app, is always "signed out". The only dynamic seam was `transformRequest`, and a
+  transform runs *after* the declarative layer is materialized, so nothing below it can take it
+  away: an endpoint's `removeHeaders: ["authorization"]` against a transform-supplied header is
+  silently ignored. That left attaching auth per call site as the only option that was both
+  dynamic and removable.
+
+  The library now accepts a **computed value** for any header or query parameter —
+  `() => value | undefined`, called once per request while it is materialized, where `undefined`
+  omits the field. Because it is still an ordinary *declared* header, it composes: this project's
+  API attaches `authorization` for everything, a `publicApi = api.pipe(extendApi({ removeHeaders:
+  ["authorization"] }))` carries the three endpoints that must not send a credential, and the
+  header is never even computed for those. `withAuth` is gone, and the twenty-odd call sites that
+  used to wrap their plan in it are now plain calls.
+
+  This is a better shape for a reason beyond tidiness: it fails safe. A new endpoint is
+  authenticated by construction, so forgetting to think about auth cannot produce an
+  unauthenticated request — whereas the old pattern failed the other way, silently, if you forgot
+  `withAuth`. The inverse risk (a credential going somewhere it should not) is confined to an
+  explicit opt-out list, and would not exist at all for an API whose identity provider lives on a
+  separate origin. The same mechanism removed two other papercuts: an empty filter box and an
+  unchecked toggle now omit their query parameters instead of sending `name=` and `degraded=0`.
 - **Everything the first pass could not vouch for has since been exercised, and all of it worked.**
   That list was retries, `RequestBody.text`/`.urlParams`, header-precedence tie-breaking beyond a
   single matcher, and `UnhandledResponse.discard`/`"retain"` body ownership — every one of them
@@ -422,7 +448,8 @@ comments from both registered and anonymous authors, a real multipart file uploa
 an inline image preview and re-fetched as a multipart bundle, the Atom feed in both directions,
 content-negotiated exports, retries against a genuinely flaky route, a retained unmapped response
 body, request-gate supersession and cache reuse, and admin-only access control — are exactly that
-missing coverage, for at least one realistic app shape using every codec the library ships. It is also precisely how the `traceparent`/CORS
+missing coverage, for at least one realistic app shape using every codec the library ships. It is
+also precisely how the `traceparent`/CORS
 gap above was found: it never surfaces in a same-origin `curl` smoke test or in Node-to-Node
 integration tests, only in an actual cross-origin browser request.
 
