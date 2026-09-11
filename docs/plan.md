@@ -163,4 +163,4 @@ all plausible — these are things that exist in production right now.
   refresh token, hit rate limit, trigger every quirk
 - [x] Write a comprehensive `README.md` in the style of test-llm1 (architecture, quirk table,
   what the client needed for each)
-- [ ] Final commit: "Integration complete — all services running with client"
+- [x] Final commit: "Integration complete — all services running with client"
