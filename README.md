@@ -125,6 +125,15 @@ now. The interesting column is the last one: what the client had to do about it.
 | A burst limit answering `429` | `GET /api/search` | the same, honestly | nothing — `429` is already transient |
 | Two representations at one status | `GET /api/posts/:slug/export` | separate endpoints, or honest ones | two rules separated by a `content-type` matcher |
 
+One idea got as far as being designed and then thrown out, which is worth recording because it
+looks plausible until you check: an endpoint using a URL **fragment** to select a representation,
+`/api/users/:id#thin`. It cannot work. A fragment is not part of the request target and no HTTP
+client transmits one, so the server would never see it — a server-backed test in the library now
+pins exactly that (`tests/urlFragments.test.ts`). The only correct use of a fragment is the one
+this project already makes of it: client-side routing, which is why every link in the Atom feed
+points at `#/posts/<slug>`. A representation selector has to be a query parameter or a header,
+which is what `GET /api/posts/:slug/export` uses.
+
 **Only two of those needed anything the library could not simply be configured to do**, and both
 are worth stating precisely rather than as complaints:
 

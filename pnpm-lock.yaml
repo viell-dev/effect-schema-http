@@ -615,7 +615,7 @@ packages:
     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
 
   viell-effect-schema-http@file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz:
-    resolution: {integrity: sha512-BBq6Q4INEZahEeRf7/2+H51JZWZt9ZsSz+Ili6ofs7DeLpuXsl1MT38F8LOzzAedqWe+wVRmBkLdnwFOIhsM1w==, tarball: file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz}
+    resolution: {integrity: sha512-j4JfJjGY8gULYFmByZJJOKodM+vN92jXj55Ep2uoqiJgpFgbqrFJzNbNJL+YxqsIGT07ihO3dHhS9gexfc98gg==, tarball: file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz}
     version: 0.1.0-beta.1
     engines: {node: '>=20'}
     peerDependencies:
