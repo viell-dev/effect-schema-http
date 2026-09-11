@@ -44,6 +44,14 @@ pnpm add /path/to/effect-schema-http/viell-effect-schema-http-0.1.0-beta.1.tgz '
 `pnpm pack` builds `dist/` automatically. Record the source commit alongside the tarball: the beta version alone does
 not distinguish local builds. The package is marked private to prevent registry publication during this phase.
 
+Install the packed tarball rather than linking a working copy. A `link:` or workspace dependency on a checkout brings
+that checkout's own `node_modules`, so this library resolves its own copy of `@effect/platform` while the consumer
+resolves another. The two copies declare structurally identical but nominally distinct types, and TypeScript then
+reports `TS2883` — "the inferred type of X cannot be named without a reference to … this is likely not portable" — for
+every endpoint whose inferred type mentions a provider type, which is every endpoint using a non-default codec. A
+consuming project hit exactly this. Installing the tarball resolves the peers against the consumer's own copies and the
+errors disappear.
+
 The output is ESM-only and declares a Node.js 20 runtime baseline; the development tools require a newer Node.js
 version. A consuming project has since driven a packed tarball through Chromium with `FetchHttpClient`, covering every
 body codec, retries, request gates, and mapped non-2xx responses; Node.js 20 itself, other browsers, alternative

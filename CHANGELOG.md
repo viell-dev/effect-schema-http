@@ -22,6 +22,7 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 - Documented `mapClient` as the seam for values derived from the encoded request, such as a body signature.
 - Documented that repeated response header field lines are also provider-dependent, and browser-impossible.
 - Documented that redirect, cookie, and credential behavior belong to the provider, and that following a redirect makes a `3xx` response rule unreachable.
+- Documented why the beta must be installed as a packed tarball rather than linked from a checkout.
 - Documented local beta consumption, execution boundaries, body ownership, and gate semantics.
 - Documented the schema each body codec pairs with, backed by a typechecked example and runtime coverage.
 - Documented the Fetch client's `traceparent`/`b3` propagation, its CORS consequences, and how to disable it.
