@@ -484,7 +484,13 @@ the review findings left for a subsequent pass.
    representation must preserve repeated headers and parameters without exposing mutable declaration inputs.
 5. **Retry lifecycle.** Should one deadline cover sending, disposal, and decoding, and should disposal failures consume
    retry budget? Should retries reject non-replayable bodies or accept a per-attempt body factory? Keep the current
-   boundaries explicit until these semantics are settled.
+   boundaries explicit until these semantics are settled. A consuming project has since supplied a concrete case for
+   the per-attempt question: a server that echoes back a client-supplied attempt counter so the client can confirm
+   which attempt a response answers. Because the request is encoded once before the retry loop — and computed header
+   values and `mapRequest` resolve once per evaluation for the same reason — that counter cannot vary across built-in
+   retries, and the consumer has to disable the policy and drive the loop over the plan itself. That works, but it
+   trades away `Retry-After` handling and the jittered schedule. If a per-attempt hook is added, the narrowest useful
+   form may be a per-attempt _request_ transform rather than a body factory.
 6. **Configuration ownership.** Should declarations snapshot mutable collections, policies, and matchers, or should
    immutability remain a caller contract? Deep cloning arbitrary schemas, codecs, and domain values is not generally
    safe. Snapshotting only structural configuration may be a useful compromise.

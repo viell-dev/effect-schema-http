@@ -220,7 +220,11 @@ Rules worth knowing:
 - **Functions must be pure and cheap.** They run outside the Effect runtime, so they cannot fail, retry, or be
   interrupted; use a request transform, `mapClient`, or a gate for anything effectful.
 - **Resolution happens once per evaluation, not per attempt.** Request encoding runs before the retry loop, so every
-  retry attempt reuses the value computed for that evaluation — a token cannot change mid-retry.
+  retry attempt reuses the value computed for that evaluation — a token cannot change mid-retry. The same is true of
+  `mapRequest`. A request that must genuinely differ per attempt — an incrementing attempt counter a server echoes
+  back for correlation, for instance — cannot use the built-in retry policy: disable it with `setRetries(0)` and loop
+  over the plan yourself, executing it again with different values each time. Plans are cold and re-executable, so
+  that loop is ordinary code rather than a second call site.
 - **Targeted operations match static values only.** `removeHeader(name, value)`,
   `setHeader(name, current, replacement)`, and their query-parameter equivalents select an existing value, which a
   function does not have until it runs. Remove or replace a computed entry by name.
