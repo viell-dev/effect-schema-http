@@ -5,7 +5,6 @@ import { h, mount } from "../dom.js";
 import { renderNav } from "../components/nav.js";
 import { createPost, getPost, updatePost } from "../api.js";
 import { run } from "../runtime.js";
-import { withAuth } from "../withAuth.js";
 import { domainErrorMessage } from "../errors.js";
 import { decodeForm } from "../decodeForm.js";
 import { getSession } from "../session.js";
@@ -30,7 +29,7 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
   };
 
   if (editingSlug) {
-    const existing = await run(getPost({ slug: editingSlug }).pipe(withAuth, toEffect)).catch(() => undefined);
+    const existing = await run(getPost({ slug: editingSlug }).pipe(toEffect)).catch(() => undefined);
     if (!existing) {
       mount(main, h("p", { class: "error" }, "Could not reach the server. Is it running?"));
       return;
@@ -92,7 +91,7 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
             showError(decoded.issues.join("; "));
             return;
           }
-          void run(withAuth(updatePost({ slug: editingSlug })).setBody(decoded.value).pipe(toEffect))
+          void run(updatePost({ slug: editingSlug }).setBody(decoded.value).pipe(toEffect))
             .then((result) => {
               const message = domainErrorMessage(result);
               if (message) {
@@ -120,7 +119,7 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
           showError(decoded.issues.join("; "));
           return;
         }
-        void run(withAuth(createPost()).setBody(decoded.value).pipe(toEffect))
+        void run(createPost().setBody(decoded.value).pipe(toEffect))
           .then((result) => {
             const message = domainErrorMessage(result);
             if (message) {

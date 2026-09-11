@@ -23,7 +23,6 @@
 import { Effect } from "effect";
 import { makeRequestGate, toEffect } from "viell-effect-schema-http";
 import { adminListUsers } from "./api.js";
-import { withAuth } from "./withAuth.js";
 
 export interface UserFilters {
   readonly name: string;
@@ -39,7 +38,13 @@ export const usersFilterKey = (filters: UserFilters): string => JSON.stringify([
 const allocateUsersGate = () =>
   makeRequestGate(
     (filters: UserFilters) =>
-      adminListUsers().setUrlParam("name", filters.name).setUrlParam("email", filters.email).pipe(withAuth, toEffect),
+      adminListUsers()
+        // Computed values, so an empty filter box is omitted from the query string instead of
+        // being sent as `name=`. The server treats both the same, but the request now says what
+        // it means, and the difference shows up in a network log.
+        .setUrlParam("name", () => filters.name || undefined)
+        .setUrlParam("email", () => filters.email || undefined)
+        .pipe(toEffect),
     { key: usersFilterKey },
   );
 

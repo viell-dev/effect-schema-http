@@ -6,7 +6,6 @@ import { renderNav } from "../components/nav.js";
 import { renderPostCard } from "../components/postCard.js";
 import { getBlog, importBlogFeed } from "../api.js";
 import { run } from "../runtime.js";
-import { withAuth } from "../withAuth.js";
 import { decodeForm } from "../decodeForm.js";
 import { domainErrorMessage } from "../errors.js";
 import { getSession } from "../session.js";
@@ -47,7 +46,7 @@ const renderImportPanel = (username: string, reload: () => void): HTMLElement =>
         }
 
         show("Importing…");
-        void run(importBlogFeed({ username }).setBody(decoded.value).pipe(withAuth, toEffect))
+        void run(importBlogFeed({ username }).setBody(decoded.value).pipe(toEffect))
           .then((result) => {
             const message = domainErrorMessage(result);
             if (message) {
@@ -82,7 +81,7 @@ export const renderBlogPage = async (root: HTMLElement, username: string): Promi
   const main = h("main", { class: "container" }, h("p", {}, "Loading blog…"));
   mount(root, renderNav(), main);
 
-  const result = await run(getBlog({ username }).pipe(withAuth, toEffect)).catch((error: unknown) => {
+  const result = await run(getBlog({ username }).pipe(toEffect)).catch((error: unknown) => {
     console.error("blog request failed", error);
     return undefined;
   });

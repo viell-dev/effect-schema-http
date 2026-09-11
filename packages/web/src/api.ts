@@ -36,7 +36,8 @@ import {
   UpdatePostInput,
   ValidationError,
 } from "@realworld/domain";
-import { createApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
+import { createApi, extendApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
+import { getSession } from "./session.js";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
 
@@ -46,8 +47,26 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localho
  * `NotFoundError` instead of falling through to `UnhandledResponse`. Reusing the exact
  * `Schema.TaggedError` classes from `@realworld/domain` means the client decodes the identical
  * shape the server encoded — there is exactly one definition of what a `NotFoundError` looks like.
+ *
+ * Authentication is an API-wide default too, and it is a *computed* header rather than a static
+ * one: this module is evaluated once at load, long before anyone signs in, so a plain string would
+ * capture "signed out" forever. A function is called once per request, just before it is
+ * materialized, so one API object carries the session through login, reload, and sign-out without
+ * being rebuilt — and while signed out the function returns `undefined`, which omits the field
+ * entirely rather than sending `Bearer undefined`.
+ *
+ * This is the "authenticate by default, opt out where it does not apply" shape. It fails safe: a
+ * new endpoint is authenticated by construction, and forgetting to think about auth cannot produce
+ * an unauthenticated request. Most endpoints here genuinely want it — even the public reads, since
+ * the server uses `optionalSession` to decide whether drafts and private posts are visible.
  */
 const api = createApi(API_BASE_URL, {
+  headers: {
+    authorization: () => {
+      const session = getSession();
+      return session === undefined ? undefined : `Bearer ${session.token}`;
+    },
+  },
   responses: [
     response({ _tag: "ValidationError", status: 400 }, ValidationError),
     response({ _tag: "UnauthorizedError", status: 401 }, UnauthorizedError),
@@ -57,20 +76,31 @@ const api = createApi(API_BASE_URL, {
   ] as const,
 });
 
+/**
+ * The opt-out: a sub-API for the three endpoints that must never carry a credential, because they
+ * are how a credential is obtained in the first place. This is the half that only works because
+ * the computed value is still an ordinary *declared* header — `removeHeaders` takes it away before
+ * it is ever computed. A request transform could not be removed this way.
+ *
+ * If this API had a separate identity server, this sub-API would not exist at all and every
+ * endpoint would simply be authenticated.
+ */
+const publicApi = api.pipe(extendApi({ removeHeaders: ["authorization"] }));
+
 /** `204 No Content` responses must opt into `ResponseBody.none` per the library's README: the
  * default JSON codec rejects empty bodies, and `none` cannot be installed as an implicit default. */
 const noContent = response({ _tag: "noContent", status: 204 }, Schema.Void, { codec: ResponseBody.none });
 
 // -- Auth -----------------------------------------------------------------------------------
 
-export const register = api.createRequest({
+export const register = publicApi.createRequest({
   method: "POST",
   path: "/api/users",
   body: RegisterInput,
   responses: [response({ _tag: "created", status: 201 }, AuthResponse)],
 });
 
-export const login = api.createRequest({
+export const login = publicApi.createRequest({
   method: "POST",
   path: "/api/users/login",
   body: LoginInput,
@@ -83,7 +113,7 @@ export const login = api.createRequest({
  * strings — already *is* one, so no transformation is needed: the same "identity schema" trick
  * that makes `Schema.instanceOf(FormData)` work for multipart, one wire format down.
  */
-export const legacyLogin = api.createRequest({
+export const legacyLogin = publicApi.createRequest({
   method: "POST",
   path: "/api/users/login/legacy",
   body: LegacyLoginForm,

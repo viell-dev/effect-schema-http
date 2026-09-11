@@ -5,7 +5,6 @@ import { renderNav } from "../components/nav.js";
 import { renderUsersDirectory } from "../components/usersDirectory.js";
 import { adminDiagnostics, adminRefreshCache, adminReindex, adminStats } from "../api.js";
 import { run } from "../runtime.js";
-import { withAuth } from "../withAuth.js";
 import { domainErrorMessage } from "../errors.js";
 import { getSession } from "../session.js";
 
@@ -19,7 +18,7 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
   const main = h("main", { class: "container" }, h("p", {}, "Loading…"));
   mount(root, renderNav(), main);
 
-  const result = await run(adminStats().pipe(withAuth, toEffect)).catch((error: unknown) => {
+  const result = await run(adminStats().pipe(toEffect)).catch((error: unknown) => {
     console.error("admin stats request failed", error);
     return undefined;
   });
@@ -54,7 +53,7 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
             statusBox.classList.add("hidden");
             const reason = reasonInput.value.trim();
 
-            void run(withAuth(adminRefreshCache()).setBody(reason ? { reason } : {}).pipe(toEffect))
+            void run(adminRefreshCache().setBody(reason ? { reason } : {}).pipe(toEffect))
               .then((refreshResult) => {
                 const message = domainErrorMessage(refreshResult);
                 if (message) {
@@ -102,7 +101,7 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
           onclick: () => {
             reindexStatus.classList.remove("hidden");
             reindexStatus.textContent = "Reindexing (the cluster may need a few attempts)…";
-            void run(adminReindex().pipe(withAuth, toEffect))
+            void run(adminReindex().pipe(toEffect))
               .then((reindexResult) => {
                 const message = domainErrorMessage(reindexResult);
                 if (message) {
@@ -147,11 +146,15 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
           onclick: () => {
             diagnosticsOutput.classList.remove("hidden");
             diagnosticsOutput.textContent = "Collecting…";
-            const plan = adminDiagnostics().setUrlParam("degraded", degradedToggle.checked ? "1" : "0");
+            // A computed parameter reads the checkbox when the request is materialized, and
+            // returning `undefined` omits it: the URL carries `?degraded=1` or no parameter at
+            // all, rather than a meaningless `degraded=0`.
+            const plan = adminDiagnostics().setUrlParam("degraded", () =>
+              degradedToggle.checked ? "1" : undefined,
+            );
 
             void run(
               plan.pipe(
-                withAuth,
                 toEffect,
                 // An unmapped response is an ordinary Effect failure, so it is caught in the error
                 // channel rather than by inspecting the success union.

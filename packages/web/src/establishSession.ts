@@ -13,6 +13,10 @@ import { run } from "./runtime.js";
 import { setSession } from "./session.js";
 
 export const establishSession = async (auth: AuthResponse): Promise<void> => {
+  // The one place that sets `authorization` by hand. Every other call inherits it from the API's
+  // computed default, which reads the stored session — and the session is not stored yet: that is
+  // what this call is gathering the last field for. A call-site setter replaces the computed
+  // default for this plan, so the brand-new token is used without touching global state first.
   const result = await run(currentUser().setHeader("authorization", `Bearer ${auth.token}`).pipe(toEffect)).catch(
     () => undefined,
   );

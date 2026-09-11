@@ -17,7 +17,6 @@ import {
   uploadAttachment,
 } from "../api.js";
 import { run } from "../runtime.js";
-import { withAuth } from "../withAuth.js";
 import { domainErrorMessage } from "../errors.js";
 import { decodeForm } from "../decodeForm.js";
 import { getSession } from "../session.js";
@@ -32,15 +31,15 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
   const rerender = () => void renderPostPage(root, slug);
 
   const [postResult, commentsResult, attachmentsResult] = await Promise.all([
-    run(getPost({ slug }).pipe(withAuth, toEffect)).catch((error: unknown) => {
+    run(getPost({ slug }).pipe(toEffect)).catch((error: unknown) => {
       console.error("post request failed", error);
       return undefined;
     }),
-    run(listComments({ slug }).pipe(withAuth, toEffect)).catch((error: unknown) => {
+    run(listComments({ slug }).pipe(toEffect)).catch((error: unknown) => {
       console.error("comments request failed", error);
       return undefined;
     }),
-    run(listAttachments({ slug }).pipe(withAuth, toEffect)).catch((error: unknown) => {
+    run(listAttachments({ slug }).pipe(toEffect)).catch((error: unknown) => {
       console.error("attachments request failed", error);
       return undefined;
     }),
@@ -92,7 +91,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
               return;
             }
 
-            void run(withAuth(createComment({ slug })).setBody(decoded.value).pipe(toEffect))
+            void run(createComment({ slug }).setBody(decoded.value).pipe(toEffect))
               .then((result) => {
                 const message = domainErrorMessage(result);
                 if (message) {
@@ -118,7 +117,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
       );
 
       const deleteComment_ = (commentId: string) => {
-        void run(deleteComment({ slug, commentId }).pipe(withAuth, toEffect))
+        void run(deleteComment({ slug, commentId }).pipe(toEffect))
           .then((result) => {
             const message = domainErrorMessage(result);
             if (message) {
@@ -134,7 +133,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
       };
 
       const deleteAttachment_ = (attachmentId: string) => {
-        void run(deleteAttachment({ slug, attachmentId }).pipe(withAuth, toEffect))
+        void run(deleteAttachment({ slug, attachmentId }).pipe(toEffect))
           .then((result) => {
             const message = domainErrorMessage(result);
             if (message) {
@@ -175,7 +174,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
             formData.set("file", file);
             if (captionInput.value) formData.set("caption", captionInput.value);
 
-            void run(withAuth(uploadAttachment({ slug })).setBody(formData).pipe(toEffect))
+            void run(uploadAttachment({ slug }).setBody(formData).pipe(toEffect))
               .then((result) => {
                 const message = domainErrorMessage(result);
                 if (message) {
@@ -211,7 +210,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
       const exportAs = (format: "json" | "markdown") => {
         exportLine.classList.remove("hidden");
         exportLine.textContent = "Exporting…";
-        void run(exportPostAs(slug, format).pipe(withAuth, toEffect))
+        void run(exportPostAs(slug, format).pipe(toEffect))
           .then((result) => {
             const message = domainErrorMessage(result);
             if (message) {
@@ -271,7 +270,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
                     class: "link-button",
                     onclick: () => {
                       if (!window.confirm("Delete this post?")) return;
-                      void run(deletePost({ slug }).pipe(withAuth, toEffect))
+                      void run(deletePost({ slug }).pipe(toEffect))
                         .then((result) => {
                           const message = domainErrorMessage(result);
                           if (message) {
