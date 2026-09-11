@@ -1,6 +1,7 @@
 import * as http from "node:http";
 import { Effect, Layer } from "effect";
 import * as routes from "./routes.js";
+import { edgeCacheKey, edgeCacheLookup, edgeCacheStore } from "./edgeCache.js";
 import { Store } from "./store.js";
 import type { RouteResponse } from "./httpError.js";
 
@@ -292,8 +293,12 @@ const server = http.createServer((req, res) => {
     console.log(`${method} ${url.pathname} -> ${response.status} (${Date.now() - start}ms)`);
   };
 
+  // The reverse proxy in front of this API (see edgeCache.ts) fronts exactly two routes.
+  const cacheKey = edgeCacheKey(method, url.pathname, url.search);
+
   const delayed = RESPONSE_DELAY_MS > 0 && url.pathname.startsWith(RESPONSE_DELAY_PATH);
-  const respond = (response: RouteResponse) => {
+  const respond = (rawResponse: RouteResponse) => {
+    const response = cacheKey === undefined ? rawResponse : edgeCacheStore(cacheKey, rawResponse);
     if (!delayed) {
       write(response);
       return;
@@ -309,6 +314,15 @@ const server = http.createServer((req, res) => {
   if (!route) {
     respond({ kind: "json", status: 404, body: { _tag: "NotFoundError", resource: "Route", id: url.pathname } });
     return;
+  }
+
+  if (cacheKey !== undefined) {
+    const cached = edgeCacheLookup(cacheKey);
+    if (cached !== undefined) {
+      // Deliberately not consulting `req.headers["cache-control"]`: this proxy never learned to.
+      write(cached);
+      return;
+    }
   }
 
   const params = route.pattern.exec(url.pathname)?.slice(1) ?? [];

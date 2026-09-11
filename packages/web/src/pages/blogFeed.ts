@@ -11,12 +11,17 @@ import { renderNav } from "../components/nav.js";
 import { getBlogFeed } from "../api.js";
 import { run } from "../runtime.js";
 import { domainErrorMessage } from "../errors.js";
+import { describeCacheStatus, forceFresh } from "../forceFresh.js";
 
-export const renderBlogFeedPage = async (root: HTMLElement, username: string): Promise<void> => {
+export const renderBlogFeedPage = async (root: HTMLElement, username: string, fresh = false): Promise<void> => {
   const main = h("main", { class: "container" }, h("p", {}, "Loading feed…"));
   mount(root, renderNav(), main);
 
-  const result = await run(getBlogFeed({ username }).pipe(toEffect)).catch((error: unknown) => {
+  // The same transform as the public feed, applied to an endpoint with a completely different
+  // response shape: this one decodes XML through `ResponseBody.text`, the other decodes JSON.
+  const plan = fresh ? getBlogFeed({ username }).pipe(forceFresh) : getBlogFeed({ username });
+
+  const result = await run(plan.pipe(toEffect)).catch((error: unknown) => {
     console.error("feed request failed", error);
     return undefined;
   });
@@ -33,7 +38,7 @@ export const renderBlogFeedPage = async (root: HTMLElement, username: string): P
   }
 
   Match.value(result).pipe(
-    Match.tag("ok", ({ body: feed }) => {
+    Match.tag("ok", ({ body: feed, headers }) => {
       mount(
         main,
         h("h1", {}, `${feed.title}'s feed`),
@@ -42,6 +47,14 @@ export const renderBlogFeedPage = async (root: HTMLElement, username: string): P
           { class: "hint" },
           `Parsed from Atom/XML served with a text/atom+xml content-type — fetched via ResponseBody.text, not JSON. `,
           h("a", { href: `#/blog/${username}` }, "Back to the blog"),
+          " · ",
+          describeCacheStatus(headers),
+          " · ",
+          h(
+            "button",
+            { class: "link-button", onclick: () => void renderBlogFeedPage(root, username, true) },
+            "Force refresh",
+          ),
         ),
         feed.entries.length === 0
           ? h("p", { class: "empty" }, "No public entries yet.")

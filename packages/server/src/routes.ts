@@ -57,6 +57,7 @@ import {
   profileOfAccount,
 } from "@realworld/domain";
 import { decodeBody } from "./decode.js";
+import { edgeCacheClear } from "./edgeCache.js";
 import { hashPassword, verifyPassword } from "./crypto.js";
 import { domainErrorToResponse, type DomainError, type RouteResponse } from "./httpError.js";
 import { optionalSession, requireAdmin, requireSession } from "./session.js";
@@ -482,6 +483,9 @@ export const adminRefreshCache = (authHeader: string | undefined, json: unknown)
     const input = yield* decodeBody(RefreshCacheInput, json);
     const store = yield* Store;
     yield* store.refreshCache();
+    // The command an operator actually reaches for when the feed looks stale: purging the proxy
+    // is the half that matters, since the store itself has nothing to warm.
+    edgeCacheClear();
     if (input.reason) {
       // A real deployment would write this to an audit log; this demo just proves the reason
       // made it from the client's form field, through validation, to the server.

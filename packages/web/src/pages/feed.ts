@@ -6,12 +6,17 @@ import { listFeed } from "../api.js";
 import { toEffect } from "viell-effect-schema-http";
 import { run } from "../runtime.js";
 import { domainErrorMessage } from "../errors.js";
+import { describeCacheStatus, forceFresh } from "../forceFresh.js";
 
-export const renderFeedPage = async (root: HTMLElement): Promise<void> => {
+export const renderFeedPage = async (root: HTMLElement, fresh = false): Promise<void> => {
   const main = h("main", { class: "container" }, h("p", {}, "Loading feed…"));
   mount(root, renderNav(), main);
 
-  const result = await run(listFeed().pipe(toEffect)).catch((error: unknown) => {
+  // Ordinary navigation goes through the edge cache; only the reader asking for a refresh opts
+  // out of it. Both calls are the same endpoint — the difference is one composable transform.
+  const plan = fresh ? listFeed().pipe(forceFresh) : listFeed();
+
+  const result = await run(plan.pipe(toEffect)).catch((error: unknown) => {
     console.error("feed request failed", error);
     return undefined;
   });
@@ -28,10 +33,21 @@ export const renderFeedPage = async (root: HTMLElement): Promise<void> => {
   }
 
   Match.value(result).pipe(
-    Match.tag("ok", ({ body }) => {
+    Match.tag("ok", ({ body, headers }) => {
       mount(
         main,
         h("h1", {}, "Public feed"),
+        h(
+          "p",
+          { class: "hint" },
+          describeCacheStatus(headers),
+          " · ",
+          h(
+            "button",
+            { class: "link-button", onclick: () => void renderFeedPage(root, true) },
+            "Force refresh",
+          ),
+        ),
         body.posts.length === 0
           ? h("p", { class: "empty" }, "No public posts yet. Be the first to write one!")
           : h("div", { class: "post-list" }, ...body.posts.map(renderPostCard)),
