@@ -62,7 +62,7 @@ server discards all data. Adding a real database was out of scope for what this 
 | Post export | `GET /api/posts/:slug/export` | two `200` rules separated by a `content-type` matcher, plus a status-predicate rule |
 | Admin stats | `GET /api/admin/stats` | `ResponseBody.uint8Array` (bytes that are secretly JSON) |
 | Admin cache refresh | `POST /api/admin/cache/refresh` | `ResponseBody.none`, status `205` not `204` |
-| Admin search reindex | `POST /api/admin/search/reindex` | `retry` — the route answers `503` + `Retry-After` until it warms up |
+| Admin search reindex | `POST /api/admin/search/reindex` | `retry` — the route answers `503` + `Retry-After` until it warms up — and an echoed attempt field contrasting that with a client-driven loop |
 | Admin diagnostics | `GET /api/admin/diagnostics` | `UnhandledResponse` with `unhandledResponseBody: "retain"` |
 | Admin user directory | `GET /api/admin/users` | plain JSON, driven through `makeRequestGate`, with computed query params that omit empty filters |
 | Authentication | every endpoint except the three public ones | a computed `authorization` header declared once on the API, removed by `extendApi` for login/register |
@@ -111,7 +111,7 @@ The feed and the Atom feeds are served through an emulated reverse proxy with a 
 display both. `EDGE_CACHE_TTL_MS=0` disables it.
 
 Tests: `pnpm --filter @realworld/domain run test` (20 tests) and
-`pnpm --filter @realworld/server run test` (26 tests) run under Vitest. The web package has no
+`pnpm --filter @realworld/server run test` (27 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
 `playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
 in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
@@ -449,6 +449,35 @@ a time.
     drained by the library rather than surfacing anywhere. The one thing worth saying out loud:
     `Retry-After` is only *readable* cross-origin if the server lists it in
     `Access-Control-Expose-Headers`, which is the server's job, not the library's.
+
+    The reindex endpoint also echoes back whatever `x-attempt` field the caller sends — the server
+    does nothing else with it — which turned out to be the sharpest way to see what the built-in
+    retry actually does. Because the request is encoded once before the retry loop, all three
+    attempts carry the *same* `x-attempt`, so the echo cannot distinguish them:
+
+    ```
+    -> POST x-attempt=1    <- 503 echo=1
+    -> POST x-attempt=1    <- 503 echo=1
+    -> POST x-attempt=1    <- 202 echo=1
+    ```
+
+    That is correct — a credential must not change mid-retry, and the same rule governs computed
+    header values and `mapRequest`, all of which resolve once per evaluation — but it means **a
+    request that genuinely has to differ per attempt cannot use the built-in policy at all.** The
+    alternative is `setRetries(0)` plus a loop over the plan, which works cleanly because plans are
+    cold and re-executable:
+
+    ```
+    -> POST x-attempt=1    <- 503 echo=1
+    -> POST x-attempt=2    <- 503 echo=2
+    -> POST x-attempt=3    <- 202 echo=3
+    ```
+
+    The admin panel runs both, side by side, with the attempt trail visible
+    (`packages/web/src/components/reindexPanel.ts`). The trade is explicit and worth stating: the
+    first form is one line and brings `Retry-After` handling and jittered backoff with it; the
+    second gives all of that up in exchange for varying the request per attempt. The library's
+    design notes now record this case under its deferred retry-lifecycle question.
   - **`RequestBody.text` and `.urlParams`.** The Atom importer encodes a domain value into XML
     through the same `AtomFeedFromString` the feed endpoint decodes with, and the legacy login
     posts `LegacyLoginForm` as `application/x-www-form-urlencoded`. Both pairings are the ones the
