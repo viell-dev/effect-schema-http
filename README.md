@@ -259,8 +259,8 @@ sequencing, the error channel and the compensation are ordinary Effect.
 
 ## Running it
 
-Requires Node.js 22+, pnpm 10, and — this being the point — a Rust toolchain, Python 3.12+,
-a Java 21 JDK, Perl 5, and Ruby 3.
+Requires Node.js 22+ and pnpm 10, plus — this being the point — a Rust toolchain, Python
+3.12+, a Java 21 JDK, Perl 5 (core modules only), and Ruby 3 (WEBrick ships with it).
 
 ```sh
 pnpm install

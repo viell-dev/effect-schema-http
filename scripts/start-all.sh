@@ -60,7 +60,7 @@ for i in {1..30}; do
   sleep 1
 done
 
-# 4. Vite Frontend Client (Port 5173)
+# 6. Vite Frontend Client (Port 5173)
 echo "Starting Client (Vite/TypeScript on :5173)..."
 (cd "$ROOT_DIR/client" && pnpm dev) &
 PIDS+=($!)
