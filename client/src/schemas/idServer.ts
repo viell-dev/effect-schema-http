@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { taggedBody } from "./common.js";
 
 /**
  * Register input for POST /register on ID Server.
@@ -80,38 +81,30 @@ export type UserInfoResponse = typeof UserInfoResponse.Type;
  * OAuth2 standard error format used by /token and /register:
  * { error: string, error_description: string }
  */
-export class OAuthError extends Schema.TaggedError<OAuthError>()(
-  "OAuthError",
-  {
-    error: Schema.String,
-    error_description: Schema.String,
-  },
-) {}
+export const OAuthError = taggedBody("OAuthError", {
+  error: Schema.String,
+  error_description: Schema.String,
+});
+export type OAuthError = typeof OAuthError.Type;
 
 /**
  * Quirk: Simple error format used by /userinfo (divergent team convention):
  * { message: string }
  */
-export class SimpleError extends Schema.TaggedError<SimpleError>()(
-  "SimpleError",
-  {
-    message: Schema.String,
-  },
-) {}
+export const SimpleError = taggedBody("SimpleError", {
+  message: Schema.String,
+});
+export type SimpleError = typeof SimpleError.Type;
 
 /**
  * Quirk: Rate-limit error (429) where Retry-After header is formatted
  * as an HTTP-date string (e.g. "Fri, 11 Sep 2026 15:39:28 GMT"), not seconds.
  */
-export class RateLimitError extends Schema.TaggedError<RateLimitError>()(
-  "RateLimitError",
-  {
-    error: Schema.String,
-    error_description: Schema.String,
-    retryAfterDate: Schema.optional(Schema.DateFromSelf),
-    retryAfterSeconds: Schema.optional(Schema.Number),
-  },
-) {}
+export const RateLimitError = taggedBody("RateLimitError", {
+  error: Schema.String,
+  error_description: Schema.String,
+});
+export type RateLimitError = typeof RateLimitError.Type;
 
 /**
  * Parses HTTP-date string (RFC 7231 / RFC 1123) into seconds until expiration.

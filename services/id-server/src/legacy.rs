@@ -412,6 +412,22 @@ pub async fn session_echo(
         .into_response();
     }
 
+    // The replay check runs *before* the warm-up check, because in production it lives
+    // in the API gateway and the warm-up failure comes from the service behind it. That
+    // ordering is what makes this endpoint impossible to drive with a replayed retry:
+    // the nonce is spent by the attempt that failed with a 503.
+    if let Err(previous) = store.accept_nonce(&token, nonce) {
+        return (
+            StatusCode::CONFLICT,
+            [("content-type", "application/json")],
+            serde_json::json!({
+                "message": format!("nonce {nonce} was already used (highest seen: {previous})"),
+            })
+            .to_string(),
+        )
+            .into_response();
+    }
+
     let attempt = store.next_echo_attempt(&token);
     if attempt <= 2 {
         let retry_at = chrono::Utc::now() + chrono::Duration::seconds(1);
@@ -424,18 +440,6 @@ pub async fn session_echo(
             ],
             serde_json::json!({
                 "message": format!("warming up, attempt {attempt} of 3"),
-            })
-            .to_string(),
-        )
-            .into_response();
-    }
-
-    if let Err(previous) = store.accept_nonce(&token, nonce) {
-        return (
-            StatusCode::CONFLICT,
-            [("content-type", "application/json")],
-            serde_json::json!({
-                "message": format!("nonce {nonce} was already used (highest seen: {previous})"),
             })
             .to_string(),
         )

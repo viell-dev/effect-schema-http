@@ -1,7 +1,4 @@
-import { HttpClientRequest } from "@effect/platform";
-import { toEffect } from "viell-effect-schema-http";
 import { describe, expect, it } from "vitest";
-import { run } from "../src/runtime.js";
 import {
   createComment,
   createProject,
@@ -13,221 +10,152 @@ import {
   search,
   uploadFileProxy,
 } from "../src/services/apiClient.js";
-import {
-  downloadFile,
-  getWsdl,
-  listFiles,
-  uploadFile,
-} from "../src/services/fileClient.js";
-import {
-  getUserInfo,
-  register,
-  requestToken,
-} from "../src/services/idClient.js";
+import { attemptDownloadFileViaGet, downloadFile, getWsdl, listFiles, uploadFile } from "../src/services/fileClient.js";
+import { getUserInfo, register, requestToken } from "../src/services/idClient.js";
 import { setSession } from "../src/session.js";
+import { call, callFailure, servicesUp } from "./support.js";
 
-// Check if servers are running before executing e2e suite
-const serversAvailable = async (): Promise<boolean> => {
-  try {
-    const r1 = await fetch("http://localhost:4100/health");
-    const r2 = await fetch("http://localhost:4200/health");
-    const r3 = await fetch("http://localhost:4300/health");
-    return r1.ok && r2.ok && r3.ok;
-  } catch {
-    return false;
-  }
-};
-
-describe.runIf(await serversAvailable())("End-to-End Multi-Service Integration", () => {
+/**
+ * The original end-to-end path across all three of the first-pass services.
+ *
+ * Every call narrows its response envelope before reading a body. That is not test
+ * ceremony: a mapped `401` or `409` is an ordinary member of the same union as the
+ * success here, so reading `.body.id` without narrowing is exactly the mistake the
+ * library's types exist to prevent.
+ */
+describe.runIf(await servicesUp([4100, 4200, 4300]))("end to end across three services", () => {
   const username = `e2e_${Date.now()}`;
   const password = "e2e_password_123";
-  let accessToken = "";
   let refreshToken = "";
   let projectId = "";
   let taskId = "";
   let fileId = "";
 
-  it("1. Registers a new account on Rust ID server (201 with body)", async () => {
-    const res = await run(
-      register()
-        .setBody({
-          username,
-          email: `${username}@test.com`,
-          password,
-          display_name: "E2E Tester",
-        })
-        .pipe(toEffect),
+  it("registers on the Rust ID server, which answers 201 with the user", async () => {
+    const created = await call(
+      register().setBody({
+        username,
+        email: `${username}@test.invalid`,
+        password,
+        display_name: "E2E Tester",
+      }),
+      "created",
     );
-    expect(res.status).toBe(201);
-    expect(res.body.username).toBe(username);
+    expect(created.body.username).toBe(username);
   });
 
-  it("2. Logs in on Rust ID server (testing token_type normalization)", async () => {
-    const res = await run(
-      requestToken()
-        .setBody({
-          grant_type: "password",
-          username,
-          password,
-        })
-        .pipe(toEffect),
-    );
-    expect(res.status).toBe(200);
-    expect(res.body.access_token).toBeDefined();
-    // Quirk: token_type on wire is "bearer", schema normalizes to "Bearer"
-    expect(res.body.token_type).toBe("Bearer");
+  it("logs in, where the wire says \"bearer\" and the schema says Bearer", async () => {
+    const ok = await call(requestToken().setBody({ grant_type: "password", username, password }), "ok");
+    expect(ok.body.token_type).toBe("Bearer");
 
-    accessToken = res.body.access_token;
-    refreshToken = res.body.refresh_token;
+    refreshToken = ok.body.refresh_token;
+    setSession({ accessToken: ok.body.access_token, refreshToken, tokenType: "Bearer", username });
+  });
+
+  it("refreshes, where the other code path says \"Bearer\" and the schema agrees", async () => {
+    const ok = await call(requestToken().setBody({ grant_type: "refresh_token", refresh_token: refreshToken }), "ok");
+    expect(ok.body.token_type).toBe("Bearer");
     setSession({
-      accessToken,
-      refreshToken,
+      accessToken: ok.body.access_token,
+      refreshToken: ok.body.refresh_token,
       tokenType: "Bearer",
       username,
     });
   });
 
-  it("3. Refreshes token on Rust ID server (refresh_token grant)", async () => {
-    const res = await run(
-      requestToken()
-        .setBody({
-          grant_type: "refresh_token",
-          refresh_token: refreshToken,
-        })
-        .pipe(toEffect),
+  it("reads the profile the login response deliberately omitted", async () => {
+    const ok = await call(getUserInfo(), "ok");
+    expect(ok.body.username).toBe(username);
+  });
+
+  it("creates a project on the Java API server, over the Token auth scheme", async () => {
+    const created = await call(
+      createProject().setBody({ name: "E2E Platform Project", description: "Integration test project" }),
+      "created",
     );
-    expect(res.status).toBe(200);
-    // Quirk: wire returned "Bearer" with capital B
-    expect(res.body.token_type).toBe("Bearer");
-    accessToken = res.body.access_token;
-    setSession({
-      accessToken,
-      refreshToken: res.body.refresh_token,
-      tokenType: "Bearer",
-      username,
-    });
+    expect(created.body.owner).toBe(username);
+    expect(created.body.createdAt).toBeInstanceOf(Date);
+    projectId = created.body.id;
   });
 
-  it("4. Fetches userinfo from Rust ID server", async () => {
-    const res = await run(getUserInfo().pipe(toEffect));
-    expect(res.status).toBe(200);
-    expect(res.body.username).toBe(username);
-  });
-
-  it("5. Creates project on Java API server (testing Token header & epoch-ms)", async () => {
-    const res = await run(
-      createProject()
-        .setBody({
-          name: "E2E Platform Project",
-          description: "Integration test project",
-        })
-        .pipe(toEffect),
+  it("PATCHes a project and gets the state it had before the write", async () => {
+    const patched = await call(
+      patchProject({ id: projectId }).setBody({ name: "E2E Platform Project Renamed" }),
+      "ok",
     );
-    expect(res.status).toBe(201);
-    expect(res.body.owner).toBe(username);
-    expect(res.body.createdAt).toBeInstanceOf(Date);
-    projectId = res.body.id;
+    expect(patched.body.name).toBe("E2E Platform Project");
+
+    const listed = await call(listProjects(), "ok");
+    expect(listed.body.find((project) => project.id === projectId)?.name).toBe("E2E Platform Project Renamed");
   });
 
-  it("6. Verifies PATCH returns OLD state quirk on Java API server", async () => {
-    const patchRes = await run(
-      patchProject({ id: projectId })
-        .setBody({
-          name: "E2E Platform Project Renamed",
-        })
-        .pipe(toEffect),
+  it("creates a task, sending a status name and receiving an ordinal", async () => {
+    const created = await call(
+      createTask().setBody({ projectId, title: `Implement Quirk Tests ${username}`, status: "OPEN" }),
+      "created",
     );
-    // Quirk: returns OLD name!
-    expect(patchRes.body.name).toBe("E2E Platform Project");
+    expect(created.body.status).toBe("OPEN");
+    taskId = created.body.id;
 
-    // Re-fetch to confirm it actually changed on server
-    const list = await run(listProjects().pipe(toEffect));
-    const updated = list.body.find((p) => p.id === projectId);
-    expect(updated?.name).toBe("E2E Platform Project Renamed");
+    const tasks = await call(listTasks(projectId), "ok");
+    expect(tasks.body.some((task) => task.id === taskId)).toBe(true);
   });
 
-  it("7. Creates task on Java API server (testing string status request vs integer ordinal response)", async () => {
-    const res = await run(
-      createTask()
-        .setBody({
-          projectId,
-          title: "Implement Quirk Tests",
-          status: "OPEN",
-        })
-        .pipe(toEffect),
+  it("creates a comment, which answers 200 with a relative Location", async () => {
+    const ok = await call(createComment().setBody({ taskId, body: "Everything is tested." }), "ok");
+    expect(ok.body.body).toBe("Everything is tested.");
+    expect(ok.headers.location).toBe(`/api/comments/${ok.body.id}`);
+  });
+
+  it("searches, where one hit is not wrapped in an array", async () => {
+    const ok = await call(search(`Implement Quirk Tests ${username}`), "ok");
+    expect(ok.body).toHaveLength(1);
+    expect(ok.body[0]?.id).toBe(taskId);
+  });
+
+  it("uploads to the Python SOAP service, which reports success inside a 200", async () => {
+    const ok = await call(uploadFile("e2e.txt", "text/plain", btoa("Hello from the multi-service test!")), "ok");
+    expect(ok.body.fileId).toBeTruthy();
+    fileId = ok.body.fileId;
+  });
+
+  it("lists files across the three shapes the .NET serializer used to emit", async () => {
+    const ok = await call(listFiles(), "ok");
+    const mine = ok.body.find((file) => file.id === fileId);
+    expect(mine?.name).toBe("e2e.txt");
+    expect(mine?.lastModified).toBeInstanceOf(Date);
+  });
+
+  it("downloads the bytes directly and through the Java proxy", async () => {
+    const direct = await call(downloadFile(fileId), "ok");
+    expect(new TextDecoder().decode(direct.body)).toBe("Hello from the multi-service test!");
+
+    const proxied = await call(downloadFileProxy({ id: fileId }), "ok");
+    expect(new TextDecoder().decode(proxied.body)).toBe("Hello from the multi-service test!");
+  });
+
+  it("uploads through the Java proxy, which translates JSON into SOAP on the way", async () => {
+    const ok = await call(
+      uploadFileProxy().setBody({
+        fileName: "proxied.txt",
+        contentType: "text/plain",
+        fileData: btoa("through the proxy"),
+      }),
+      "ok",
     );
-    expect(res.status).toBe(201);
-    // Quirk: wire ordinal 0 was decoded back to string "OPEN" by schema
-    expect(res.body.status).toBe("OPEN");
-    taskId = res.body.id;
+    expect(ok.body.status).toBe("uploaded");
   });
 
-  it("8. Creates comment on Java API server (200 OK + relative Location header)", async () => {
-    const res = await run(
-      createComment()
-        .setBody({
-          taskId,
-          body: "Everything is tested.",
-        })
-        .pipe(toEffect),
-    );
-    // Quirk: 200 OK, not 201 Created
-    expect(res.status).toBe(200);
-    expect(res.body.body).toBe("Everything is tested.");
-    expect(res.headers.location).toBe(`/api/comments/${res.body.id}`);
+  it("serves the WSDL whose size limit disagrees with its own error message", async () => {
+    const ok = await call(getWsdl(), "ok");
+    expect(ok.body).toContain("urn:filestore:2011");
   });
 
-  it("9. Searches on Java API server (unwrapped single object vs array normalized)", async () => {
-    const res = await run(search("Implement Quirk").pipe(toEffect));
-    expect(res.status).toBe(200);
-    // Quirk: exactly 1 match returned as bare object on wire, normalized to Array by schema
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0]?.id).toBe(taskId);
-  });
-
-  it("10. Uploads file to Python SOAP File server (FaultCode 0, HTTP 200)", async () => {
-    const textData = "Hello from full end-to-end multi-service test!";
-    const b64 = btoa(textData);
-    const res = await run(uploadFile("e2e.txt", "text/plain", b64).pipe(toEffect));
-    expect(res.status).toBe(200);
-    expect(res.body.fileId).toBeDefined();
-    fileId = res.body.fileId;
-  });
-
-  it("11. Lists files on Python SOAP File server (single file wrapped in <Result><File> & US date)", async () => {
-    const res = await run(listFiles().pipe(toEffect));
-    expect(res.status).toBe(200);
-    const myFile = res.body.find((f) => f.id === fileId);
-    expect(myFile).toBeDefined();
-    expect(myFile?.name).toBe("e2e.txt");
-    expect(myFile?.lastModified).toBeInstanceOf(Date);
-  });
-
-  it("12. Downloads file from Python SOAP File server via SOAP POST", async () => {
-    const res = await run(downloadFile(fileId).pipe(toEffect));
-    expect(res.status).toBe(200);
-    const text = new TextDecoder().decode(res.body);
-    expect(text).toBe("Hello from full end-to-end multi-service test!");
-  });
-
-  it("13. Downloads file via Java API server proxy", async () => {
-    const res = await run(downloadFileProxy({ id: fileId }).pipe(toEffect));
-    expect(res.status).toBe(200);
-    const text = new TextDecoder().decode(res.body);
-    expect(text).toBe("Hello from full end-to-end multi-service test!");
-  });
-
-  it("14. Confirms viell-effect-schema-http strictly rejects GET requests carrying a body (RequestBodyNotAllowed)", async () => {
-    const { attemptDownloadFileViaGet } = await import("../src/services/fileClient.js");
-    let caughtError: any = null;
-    try {
-      await run(attemptDownloadFileViaGet(fileId).pipe(toEffect));
-    } catch (err: any) {
-      caughtError = err;
-    }
-    expect(caughtError).toBeDefined();
-    // Verifies the library invariant: RequestBodyNotAllowed is raised
-    expect(String(caughtError)).toContain("RequestBodyNotAllowed");
+  it("refuses to put a body on a GET before anything reaches the network", async () => {
+    // The original service modelled downloads as a GET carrying a SOAP envelope. The
+    // library rejects that after request transforms and before dispatch, so the failure
+    // is a typed library error rather than whatever the server would have made of it.
+    const failure = await callFailure(attemptDownloadFileViaGet(fileId));
+    expect(failure).toMatchObject({ _tag: "RequestBodyNotAllowed" });
   });
 });
