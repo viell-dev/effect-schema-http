@@ -813,3 +813,76 @@ describe("the original comment endpoint", () => {
   });
 });
 
+describe("the vendor search endpoint", () => {
+  const seedPosts = (count: number) =>
+    Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+      for (let index = 0; index < count; index += 1) {
+        yield* routes.createPost(header, {
+          title: `Searchable post ${index}`,
+          body: "Findable body text.",
+          visibility: "public",
+        });
+      }
+      return header;
+    });
+
+  it("puts pagination in headers and hits in a bare array", async () => {
+    const program = Effect.gen(function* () {
+      yield* seedPosts(2);
+      return yield* routes.search("searchable", undefined);
+    }).pipe(Effect.provide(Store.Default));
+
+    const response = await Effect.runPromise(program as Effect.Effect<RouteResponse>);
+
+    expect(response.status).toBe(200);
+    expect(response.headers).toMatchObject({ "x-total-count": "2", "x-page": "1", "x-per-page": "5" });
+    const hits = jsonBody(response) as ReadonlyArray<{ tags: unknown; score: unknown; is_public: unknown }>;
+    expect(Array.isArray(hits)).toBe(true);
+    // One tag serializes as a string and several as an array, which is the vendor's own bug.
+    expect(typeof hits[0]?.tags).toBe("string");
+    expect(Array.isArray(hits[1]?.tags)).toBe(true);
+    // Everything is stringified, including the number and the boolean.
+    expect(typeof hits[0]?.score).toBe("string");
+    expect(hits[0]?.is_public).toBe("1");
+  });
+
+  it("answers no results with an empty body rather than an empty array", async () => {
+    const program = Effect.gen(function* () {
+      yield* seedPosts(1);
+      return yield* routes.search("nothing-matches-this", undefined);
+    }).pipe(Effect.provide(Store.Default));
+
+    const response = await Effect.runPromise(program as Effect.Effect<RouteResponse>);
+
+    expect(response.status).toBe(200);
+    // Not `[]` — zero bytes, announced as JSON. This is the case a JSON parser cannot survive.
+    expect(response.kind === "text" && response.body).toBe("");
+    expect(response.kind === "text" && response.contentType).toBe("application/json");
+    expect(response.headers).toMatchObject({ "x-total-count": "0" });
+  });
+
+  it("refuses with 429 and Retry-After once the burst is spent", async () => {
+    const program = Effect.gen(function* () {
+      yield* seedPosts(1);
+      const statuses: Array<number> = [];
+      for (let index = 0; index < 5; index += 1) {
+        const response = yield* routes.search("searchable", undefined);
+        statuses.push(response.status);
+      }
+      return statuses;
+    }).pipe(Effect.provide(Store.Default));
+
+    const statuses = await Effect.runPromise(program as Effect.Effect<Array<number>>);
+
+    // Three served, the fourth refused, then the window rolls over.
+    expect(statuses).toEqual([200, 200, 200, 429, 200]);
+  });
+});
+

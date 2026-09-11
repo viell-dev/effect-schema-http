@@ -34,6 +34,7 @@ import {
   RefreshCacheInput,
   RegisterInput,
   ReindexAccepted,
+  SearchHits,
   UnauthorizedError,
   UpdatePostInput,
   ValidationError,
@@ -177,6 +178,36 @@ export const listFeed = api.createRequest({
   method: "GET",
   path: "/api/posts",
   responses: [response({ _tag: "ok", status: 200 }, FeedResponse)],
+});
+
+/**
+ * Search, which is a vendor product behind a proxy rule rather than part of this API, and needs
+ * three rules where every other list endpoint needs one.
+ *
+ * The interesting one is `empty`. When the vendor finds nothing it answers `200` with a genuinely
+ * empty body rather than `[]`, and the default JSON codec rejects empty payloads — correctly, and
+ * by design. Because response rules are selected on status and headers *before* any decoding
+ * happens, that case can be separated out on `content-length: 0` and read with
+ * `ResponseBody.none`, which drains the (absent) payload and decodes `undefined`. Two outcomes at
+ * one status, told apart by a header, is exactly what the rule model is for — and per the
+ * documented precedence, a rule with a header condition outranks one without, so the order these
+ * are declared in does not matter.
+ *
+ * `429` is the vendor's burst limit. It is already in the library's transient classification, so
+ * the retry policy below rides through it without a custom predicate; the rule exists for the case
+ * where the retries run out.
+ */
+export const search = api.createRequest({
+  method: "GET",
+  path: "/api/search",
+  retry: { times: 2 },
+  responses: [
+    response({ _tag: "empty", status: 200, headers: { "content-length": "0" } }, Schema.Void, {
+      codec: ResponseBody.none,
+    }),
+    response({ _tag: "hits", status: 200 }, SearchHits),
+    response({ _tag: "rateLimited", status: 429 }, Schema.Struct({ message: Schema.String })),
+  ] as const,
 });
 
 // -- Posts ----------------------------------------------------------------------------------

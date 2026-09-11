@@ -120,6 +120,13 @@ const routeTable: ReadonlyArray<Route> = [
     handle: ([username], _q, auth, xml) => run(routes.importAtom(username!, auth, xml as string)),
   },
   {
+    // The vendor search product, exposed through a proxy rule; see routes.ts.
+    method: "GET",
+    pattern: /^\/api\/search$/,
+    bodyMode: "none",
+    handle: (_p, query) => run(routes.search(query.get("q") ?? undefined, query.get("page") ?? undefined)),
+  },
+  {
     method: "GET",
     pattern: /^\/api\/posts$/,
     bodyMode: "none",

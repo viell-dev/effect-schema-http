@@ -40,6 +40,8 @@ interface State {
   readonly lastCacheRefresh: DateTime.Utc | undefined;
   /** How many times the search index has been asked to rebuild since this process started. */
   readonly reindexAttempts: number;
+  /** Requests the search vendor has served since its last window; it rate-limits after a burst. */
+  readonly searchRequests: number;
 }
 
 const emptyState: State = {
@@ -53,6 +55,7 @@ const emptyState: State = {
   attachments: new Map(),
   lastCacheRefresh: undefined,
   reindexAttempts: 0,
+  searchRequests: 0,
 };
 
 export class Store extends Effect.Service<Store>()("Store", {
@@ -296,6 +299,18 @@ export class Store extends Effect.Service<Store>()("Store", {
         return [reindexAttempts, { ...state, reindexAttempts }] as const;
       });
 
+    /**
+     * The vendor allows a short burst and then answers `429` until its window rolls over. Modelled
+     * as a counter rather than a clock so the behaviour is reproducible: every `burst + 1`-th
+     * request is refused, and the count resets after the refusal.
+     */
+    const recordSearchRequest = (burst: number) =>
+      Ref.modify(ref, (state) => {
+        const searchRequests = state.searchRequests + 1;
+        const limited = searchRequests > burst;
+        return [limited, { ...state, searchRequests: limited ? 0 : searchRequests }] as const;
+      });
+
     /** Bouncing the cluster puts it back into warm-standby, so it needs poking again. */
     const resetReindexAttempts = () => Ref.update(ref, (state) => ({ ...state, reindexAttempts: 0 }));
 
@@ -331,6 +346,7 @@ export class Store extends Effect.Service<Store>()("Store", {
       deleteAttachment,
       countStats,
       recordReindexAttempt,
+      recordSearchRequest,
       resetReindexAttempts,
       refreshCache,
     } as const;

@@ -51,6 +51,7 @@ import {
   ReindexAccepted,
   RefreshCacheInput,
   RegisterInput,
+  SearchHits,
   SessionToken,
   Slug,
   UnauthorizedError,
@@ -845,3 +846,84 @@ export const legacyCreateComment = (
     }),
   );
 };
+
+// -- Search ------------------------------------------------------------------------------------
+
+/** How many searches the vendor serves before it starts refusing; see `store.recordSearchRequest`. */
+const SEARCH_BURST = Number(process.env.SEARCH_BURST ?? 3);
+
+const SEARCH_PAGE_SIZE = 5;
+
+/**
+ * `GET /api/search`, which is a vendor product behind a proxy rule rather than part of this API.
+ * Its response shape is the vendor's, passed through untouched — see
+ * `packages/domain/src/search.ts` for the full list of what that means. The three that matter to
+ * this handler:
+ *
+ * - pagination goes in headers, and the body is a bare array;
+ * - no results means `200` with a genuinely empty body, not `[]`;
+ * - a burst limit answers `429` with `Retry-After`, which is a status the `repo` library already
+ *   classifies as transient, so a client with a retry policy rides through it.
+ */
+export const search = (
+  queryParam: string | undefined,
+  pageParam: string | undefined,
+): Effect.Effect<RouteResponse, never, Store> =>
+  Effect.gen(function* () {
+    const store = yield* Store;
+
+    const limited = yield* store.recordSearchRequest(SEARCH_BURST);
+    if (limited) {
+      return {
+        kind: "json",
+        status: 429,
+        headers: { "retry-after": "1" },
+        body: { message: "search quota exceeded" },
+      } satisfies RouteResponse;
+    }
+
+    const query = (queryParam ?? "").trim().toLowerCase();
+    const page = Math.max(1, Number(pageParam ?? "1") || 1);
+    const posts = yield* store.listPosts();
+    const matches = posts
+      .filter((post) => post.visibility === "public")
+      .filter(
+        (post) =>
+          query === "" || post.title.toLowerCase().includes(query) || post.body.toLowerCase().includes(query),
+      )
+      .sort((a, b) => DateTime.toEpochMillis(b.createdAt) - DateTime.toEpochMillis(a.createdAt));
+
+    const pageOfMatches = matches.slice((page - 1) * SEARCH_PAGE_SIZE, page * SEARCH_PAGE_SIZE);
+    const headers = {
+      "x-total-count": String(matches.length),
+      "x-page": String(page),
+      "x-per-page": String(SEARCH_PAGE_SIZE),
+    };
+
+    // The sin that actually breaks clients: nothing found means nothing sent. The explicit
+    // `content-length: 0` is what the vendor sends and what makes this case recognisable at all —
+    // without it Node would fall back to chunked encoding and a caller could not tell an empty
+    // body apart from a body it has not finished reading.
+    if (pageOfMatches.length === 0) {
+      return {
+        kind: "text",
+        status: 200,
+        contentType: "application/json",
+        headers: { ...headers, "content-length": "0" },
+        body: "",
+      } satisfies RouteResponse;
+    }
+
+    const hits = yield* Schema.encode(SearchHits)(
+      pageOfMatches.map((post, index) => ({
+        slug: post.slug,
+        title: post.title,
+        // One tag serializes as a string, several as an array — the vendor's own inconsistency.
+        tags: index % 2 === 0 ? ["blog"] : ["blog", "archive"],
+        score: Math.round((1 - index / (pageOfMatches.length + 1)) * 100) / 100,
+        is_public: post.visibility === "public",
+      })),
+    ).pipe(Effect.orDie);
+
+    return { kind: "json", status: 200, headers, body: hits } satisfies RouteResponse;
+  });

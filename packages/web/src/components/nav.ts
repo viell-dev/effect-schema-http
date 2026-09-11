@@ -12,6 +12,7 @@ export const renderNav = (): HTMLElement => {
       "div",
       { class: "nav-links" },
       h("a", { href: "#/" }, "Feed"),
+      h("a", { href: "#/search" }, "Search"),
       session
         ? h(
             "span",
