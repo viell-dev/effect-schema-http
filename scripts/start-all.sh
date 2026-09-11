@@ -36,12 +36,18 @@ echo "Starting API Server (Java/HttpServer on :4300)..."
 (cd "$ROOT_DIR/services/api-server" && ./gradlew run --quiet) &
 PIDS+=($!)
 
+# 4. Perl Report Gateway (Port 4400)
+echo "Starting Report Gateway (Perl/raw sockets on :4400)..."
+(cd "$ROOT_DIR/services/report-server" && perl report-gateway.pl) &
+PIDS+=($!)
+
 # Wait for backend servers to become available
 echo "Waiting for backend services to be healthy..."
 for i in {1..30}; do
   if curl -s http://localhost:4100/health >/dev/null 2>&1 && \
      curl -s http://localhost:4200/health >/dev/null 2>&1 && \
-     curl -s http://localhost:4300/health >/dev/null 2>&1; then
+     curl -s http://localhost:4300/health >/dev/null 2>&1 && \
+     curl -s http://localhost:4400/health >/dev/null 2>&1; then
     echo "✓ All backend services healthy!"
     break
   fi
@@ -59,6 +65,7 @@ echo "  All services running:"
 echo "    ID Server (Rust):   http://localhost:4100"
 echo "    File Server (Py):   http://localhost:4200"
 echo "    API Server (Java):  http://localhost:4300"
+echo "    Report GW (Perl):   http://localhost:4400"
 echo "    Web Client (Vite):  http://localhost:5173"
 echo "=========================================================="
 echo "Press Ctrl+C to terminate all services."

@@ -53,3 +53,19 @@ export const onSessionChange = (
     listeners.delete(listener);
   };
 };
+
+/**
+ * The reporting gateway's own session.
+ *
+ * It has no connection to the OAuth session above: the gateway predates it by twenty
+ * years, hands out an opaque id from a query string, and expects it back the same way.
+ * Keeping the two separate is deliberate — one credential per trust domain, and neither
+ * service can be persuaded to accept the other's.
+ */
+let reportSession: string | undefined;
+
+export const getReportSession = (): string | undefined => reportSession;
+
+export const setReportSession = (session: string | undefined): void => {
+  reportSession = session;
+};
