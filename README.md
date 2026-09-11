@@ -670,6 +670,34 @@ configured, or, in the four cases above, documented.
 
 ---
 
+## What the sibling project found that this one could not
+
+[`test-llm1`](../test-llm1) shares one package of schemas between its server and its
+client, and that is not merely a different architecture — it makes two questions askable
+that cannot be asked here.
+
+**Schema evolution.** When the two ends share a definition, a wire shape cannot drift in
+*source*. It can still drift in *deployment*: during a rollout, and for as long as a
+browser tab stays open, code compiled against one version is talking to code compiled
+against another. That project now models a field added to a running system and pins what
+each kind of change does to the end that has not caught up — with two results worth
+carrying across: unknown properties are ignored by default, which is what makes additive
+changes safe and which four characters of configuration switch off; and adding a *member
+to a literal union* is a breaking change even though adding a whole field is not.
+
+Neither question arises here, because nothing is shared: this client is already written
+against five definitions it does not control, and a change to any of them arrives as a
+decode failure at a boundary that exists precisely to catch it. That is the compensation
+for all the translation work — the alignment is explicit, so a drift is a test failure
+rather than a deploy-day surprise.
+
+**Driving the schemas with the schemas.** That project generates its inputs from the same
+`arbitrary` annotations its schemas carry and round-trips them through a real server,
+which is only possible because both ends agree. Here the closest equivalent is the
+round-trip assertions in the translation layer's tests, and the saga's habit of storing an
+extract it re-encoded from what it decoded — weaker evidence, and the best available when
+the other end is a Perl script.
+
 ## What this project says about the "agnostic" claim
 
 The library's position is that the application chooses its transport, its formats and its
