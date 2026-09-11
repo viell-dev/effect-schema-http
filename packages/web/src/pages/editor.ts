@@ -30,7 +30,7 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
   };
 
   if (editingSlug) {
-    const existing = await run(withAuth(getPost({ slug: editingSlug })).pipe(toEffect)).catch(() => undefined);
+    const existing = await run(getPost({ slug: editingSlug }).pipe(withAuth, toEffect)).catch(() => undefined);
     if (!existing) {
       mount(main, h("p", { class: "error" }, "Could not reach the server. Is it running?"));
       return;

@@ -13,7 +13,7 @@ export const renderBlogPage = async (root: HTMLElement, username: string): Promi
   const main = h("main", { class: "container" }, h("p", {}, "Loading blog…"));
   mount(root, renderNav(), main);
 
-  const result = await run(withAuth(getBlog({ username })).pipe(toEffect)).catch((error: unknown) => {
+  const result = await run(getBlog({ username }).pipe(withAuth, toEffect)).catch((error: unknown) => {
     console.error("blog request failed", error);
     return undefined;
   });

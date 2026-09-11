@@ -31,15 +31,15 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
   const rerender = () => void renderPostPage(root, slug);
 
   const [postResult, commentsResult, attachmentsResult] = await Promise.all([
-    run(withAuth(getPost({ slug })).pipe(toEffect)).catch((error: unknown) => {
+    run(getPost({ slug }).pipe(withAuth, toEffect)).catch((error: unknown) => {
       console.error("post request failed", error);
       return undefined;
     }),
-    run(withAuth(listComments({ slug })).pipe(toEffect)).catch((error: unknown) => {
+    run(listComments({ slug }).pipe(withAuth, toEffect)).catch((error: unknown) => {
       console.error("comments request failed", error);
       return undefined;
     }),
-    run(withAuth(listAttachments({ slug })).pipe(toEffect)).catch((error: unknown) => {
+    run(listAttachments({ slug }).pipe(withAuth, toEffect)).catch((error: unknown) => {
       console.error("attachments request failed", error);
       return undefined;
     }),
@@ -117,7 +117,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
       );
 
       const deleteComment_ = (commentId: string) => {
-        void run(withAuth(deleteComment({ slug, commentId })).pipe(toEffect))
+        void run(deleteComment({ slug, commentId }).pipe(withAuth, toEffect))
           .then((result) => {
             const message = domainErrorMessage(result);
             if (message) {
@@ -133,7 +133,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
       };
 
       const deleteAttachment_ = (attachmentId: string) => {
-        void run(withAuth(deleteAttachment({ slug, attachmentId })).pipe(toEffect))
+        void run(deleteAttachment({ slug, attachmentId }).pipe(withAuth, toEffect))
           .then((result) => {
             const message = domainErrorMessage(result);
             if (message) {
@@ -228,7 +228,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
                     class: "link-button",
                     onclick: () => {
                       if (!window.confirm("Delete this post?")) return;
-                      void run(withAuth(deletePost({ slug })).pipe(toEffect))
+                      void run(deletePost({ slug }).pipe(withAuth, toEffect))
                         .then((result) => {
                           const message = domainErrorMessage(result);
                           if (message) {

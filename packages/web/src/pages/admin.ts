@@ -19,7 +19,7 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
   const main = h("main", { class: "container" }, h("p", {}, "Loading…"));
   mount(root, renderNav(), main);
 
-  const result = await run(withAuth(adminStats()).pipe(toEffect)).catch((error: unknown) => {
+  const result = await run(adminStats().pipe(withAuth, toEffect)).catch((error: unknown) => {
     console.error("admin stats request failed", error);
     return undefined;
   });
