@@ -11,6 +11,7 @@
 mod store;
 mod routes;
 mod error;
+mod legacy;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -33,7 +34,11 @@ async fn main() {
     let permissive_cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        // Without this a browser cannot read Retry-After, the probe endpoint's
+        // X-Token-* headers, or the edge cache's X-Cache/Age. Server-side tests never
+        // notice; browsers notice immediately.
+        .expose_headers(Any);
 
     let app = routes::build_router(store).layer(permissive_cors);
 

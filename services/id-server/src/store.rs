@@ -3,7 +3,7 @@
 use hmac::Hmac;
 use sha2::Sha256;
 use hmac::Mac;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -42,6 +42,16 @@ pub struct UserStore {
     pub access_tokens: HashMap<String, AccessToken>,
     /// Rate limit tracking: IP → (count, window_start)
     pub rate_limits: HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>,
+    /// Tokens revoked through `/revoke` (RFC 7009). Kept separately from `access_tokens`
+    /// because the revocation endpoint was added in 2021 and its author did not want to
+    /// touch the original token map "in case something else depends on it".
+    pub revoked_tokens: HashSet<String>,
+    /// Highest nonce seen per access token, for the replay-protected echo endpoint.
+    pub nonces: HashMap<String, u64>,
+    /// Attempt counter per access token for the deliberately flaky echo endpoint.
+    pub echo_attempts: HashMap<String, u32>,
+    /// Emulated reverse-proxy cache in front of `/jwks.json`: (stored_at, body).
+    pub jwks_cache: Option<(chrono::DateTime<chrono::Utc>, String)>,
 }
 
 impl UserStore {
@@ -52,6 +62,10 @@ impl UserStore {
             users_by_email: HashMap::new(),
             access_tokens: HashMap::new(),
             rate_limits: HashMap::new(),
+            revoked_tokens: HashSet::new(),
+            nonces: HashMap::new(),
+            echo_attempts: HashMap::new(),
+            jwks_cache: None,
         }
     }
 
@@ -118,6 +132,9 @@ impl UserStore {
     }
 
     pub fn validate_access_token(&self, token: &str) -> Option<&AccessToken> {
+        if self.revoked_tokens.contains(token) {
+            return None;
+        }
         let at = self.access_tokens.get(token)?;
         if at.expires_at > chrono::Utc::now() {
             Some(at)
@@ -128,6 +145,36 @@ impl UserStore {
 
     pub fn get_user(&self, user_id: &str) -> Option<&User> {
         self.users.get(user_id)
+    }
+
+    /// Revoke a token (RFC 7009). Revoking an unknown or already-revoked token is a
+    /// no-op, exactly as the RFC requires.
+    pub fn revoke_token(&mut self, token: &str) {
+        self.revoked_tokens.insert(token.to_string());
+    }
+
+    /// Record a nonce for a token, rejecting values that do not strictly increase.
+    /// Returns the previously highest value on rejection.
+    pub fn accept_nonce(&mut self, token: &str, nonce: u64) -> Result<(), u64> {
+        let last = self.nonces.get(token).copied().unwrap_or(0);
+        if nonce <= last {
+            return Err(last);
+        }
+        self.nonces.insert(token.to_string(), nonce);
+        Ok(())
+    }
+
+    /// Count an attempt against the flaky echo endpoint. The first two attempts per
+    /// token fail with `503`; the third and later succeed.
+    pub fn next_echo_attempt(&mut self, token: &str) -> u32 {
+        let counter = self.echo_attempts.entry(token.to_string()).or_insert(0);
+        *counter += 1;
+        *counter
+    }
+
+    /// Reset the flaky echo endpoint so a fresh run starts from attempt one again.
+    pub fn reset_echo_attempts(&mut self, token: &str) {
+        self.echo_attempts.remove(token);
     }
 
     /// Check rate limit. Returns Ok(()) if allowed, Err(retry_after) if limited.

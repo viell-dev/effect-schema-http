@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use crate::error::ApiError;
+use crate::legacy;
 use crate::store::{UserStore, JWT_SECRET};
 
 pub type AppState = Arc<RwLock<UserStore>>;
@@ -44,6 +45,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/userinfo", get(userinfo))
         .route("/introspect", post(introspect))
         .route("/health", get(health))
+        // Endpoints that accreted after 2019 — see legacy.rs for the reasons.
+        .route("/oauth/token", post(legacy::form_token))
+        .route("/revoke", post(legacy::revoke))
+        .route("/userinfo/probe", axum::routing::head(legacy::userinfo_probe))
+        .route("/jwks.json", get(legacy::jwks))
+        .route("/directory/{username}", get(legacy::directory_entry))
+        .route("/session/echo", post(legacy::session_echo))
+        .route("/session/echo/reset", post(legacy::session_echo_reset))
+        .route("/token/scoped", post(legacy::scoped_token))
+        .route("/.well-known/openid-configuration", get(legacy::discovery))
         .with_state(state)
         .merge(register_router)
 }
