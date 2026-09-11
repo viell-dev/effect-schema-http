@@ -343,6 +343,7 @@ const program = Effect.gen(function* () {
   yield* users.run(filters); // reuse when the key matches the latest success
   yield* users.refresh(filters); // bypass reuse for this input
   yield* users.reload; // rerun the input that produced the latest success
+  yield* users.cancel; // interrupt superseded flights, keep the retained success
 });
 ```
 
@@ -357,8 +358,12 @@ execute separately. A `run` during refresh can return the prior cached success. 
 but older completions cannot overwrite newer successful completions. The cache is intentionally a single latest entry,
 not a map: alternating `a`, `b`, `a`, `b` executes four times. `invalidate` clears the retained pair, interrupts every
 request currently owned by that gate, completes their shared waiters with the interrupted exit, and prevents stale work
-from repopulating the cache. Clearing state and signaling cancellation are uninterruptible together; invalidation
-does not wait for executing fibers' finalizers or transport cleanup. `peek` reads the retained value without executing
+from repopulating the cache. `cancel` performs the same interruption and stale-write prevention but retains the cached
+pair, which separates "this request is superseded" from "this value is wrong". Supersession patterns such as a
+filter-as-you-type datatable need the former: the previous keystroke's request must stop on the wire, while the rows it
+replaced stay available to `peek` and to an equivalent `run` until newer rows arrive. Clearing state and signaling
+cancellation are uninterruptible together; neither operation waits for executing fibers' finalizers or transport
+cleanup. `peek` reads the retained value without executing
 anything. Here, newer means later-started: an earlier request finishing last cannot replace a later-started success,
 but can be retained if all later requests failed.
 

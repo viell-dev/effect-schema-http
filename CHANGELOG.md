@@ -27,6 +27,6 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 - API defaults, sub-API extension, path parameters, and call-site overrides.
 - JSON, text, byte, form-data, and explicit no-body response codecs.
 - Retry schedules, timeouts, cache controls, response matching, and repeated-field support.
-- Single-entry request gates with in-flight de-duplication, refresh, reload, and interruption.
+- Single-entry request gates with in-flight de-duplication, refresh, reload, cancellation, and invalidation.
 - Unit, type-level, and loopback-server integration test coverage.
 - ESM package metadata, MIT licensing, release checks, and a Node.js 20 runtime baseline.

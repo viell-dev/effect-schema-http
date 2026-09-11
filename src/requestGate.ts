@@ -50,6 +50,16 @@ export interface RequestGate<Input, A, E, R> extends Pipeable.Pipeable {
   readonly reload: Effect.Effect<A, E | NoPreviousRequest, R>;
   /** Clears the cached success and signals interruption of current flights; does not await their finalizers. */
   readonly invalidate: Effect.Effect<void>;
+  /**
+   * Signals interruption of current flights while retaining the cached success; does not await their finalizers.
+   *
+   * @remarks
+   * Use this for filter-as-you-type and similar supersession patterns, where the previous request should stop on the
+   * wire but the last useful value should stay available to {@link RequestGate.peek} and to an equivalent
+   * {@link RequestGate.run}. Cancelled executions can no longer repopulate the cache, so a late completion cannot
+   * resurrect a superseded value.
+   */
+  readonly cancel: Effect.Effect<void>;
   /** Reads the cached success without executing a request. */
   readonly peek: Effect.Effect<Option.Option<A>>;
 }
@@ -104,7 +114,8 @@ const findLatestEquivalent = <Input, Key, A, E>(
  * @remarks
  * Equivalent concurrent `run` calls share one execution when no equivalent success is cached. `refresh` and `reload`
  * always start separate executions. Inputs and results are retained by reference and must be treated as immutable.
- * Invalidation signals interruption of all current executions. The fiber that
+ * Invalidation signals interruption of all current executions, and cancellation does the same while keeping the
+ * retained success. The fiber that
  * wins the execute decision owns the shared execution; interrupting that fiber completes its waiters as interrupted.
  * Interrupting a waiter only stops that waiter. Throws from `execute` become defects and still release shared waiters
  * and remove the in-flight entry, allowing subsequent calls to retry.
@@ -203,25 +214,30 @@ export const makeRequestGate = <Input, Key, A, E, R>(
       ),
     );
 
-    const invalidate = Ref.modify(
-      stateRef,
-      (state) =>
-        [
-          state.inFlight.map(({ cancellation }) => cancellation),
-          {
-            ...state,
-            cache: Option.none(),
-            inFlight: [],
-            invalidatedThrough: state.generation,
-          },
-        ] as const,
-    ).pipe(
-      Effect.flatMap((cancellations) =>
-        Effect.forEach(cancellations, (cancellation) => Deferred.succeed(cancellation, undefined), { discard: true }),
-      ),
-      Effect.asVoid,
-      Effect.uninterruptible,
-    );
+    /** Drops every current flight and signals its cancellation, optionally clearing the retained success. */
+    const stop = (clearCache: boolean) =>
+      Ref.modify(
+        stateRef,
+        (state) =>
+          [
+            state.inFlight.map(({ cancellation }) => cancellation),
+            {
+              ...state,
+              cache: clearCache ? Option.none() : state.cache,
+              inFlight: [],
+              invalidatedThrough: state.generation,
+            },
+          ] as const,
+      ).pipe(
+        Effect.flatMap((cancellations) =>
+          Effect.forEach(cancellations, (cancellation) => Deferred.succeed(cancellation, undefined), { discard: true }),
+        ),
+        Effect.asVoid,
+        Effect.uninterruptible,
+      );
+
+    const invalidate = stop(true);
+    const cancel = stop(false);
 
     const gate = {
       pipe: pipeSelf,
@@ -229,6 +245,7 @@ export const makeRequestGate = <Input, Key, A, E, R>(
       refresh: (input: Input) => request(input, true),
       reload,
       invalidate,
+      cancel,
       peek: Ref.get(stateRef).pipe(Effect.map((state) => Option.map(state.cache, ({ value }) => value))),
     } satisfies RequestGate<Input, A, E, R>;
 
@@ -279,3 +296,13 @@ export const reloadRequest = <Input, A, E, R>(
  */
 export const invalidateRequestGate = <Input, A, E, R>(gate: RequestGate<Input, A, E, R>): Effect.Effect<void> =>
   gate.invalidate;
+
+/**
+ * Pipeable form of {@link RequestGate.cancel}.
+ *
+ * @param gate - Gate whose current flights should be interrupted without clearing its retained success.
+ * @returns An Effect that cancels the gate's in-flight work.
+ * @public
+ */
+export const cancelRequestGate = <Input, A, E, R>(gate: RequestGate<Input, A, E, R>): Effect.Effect<void> =>
+  gate.cancel;

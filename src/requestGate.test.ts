@@ -2,6 +2,7 @@
 import { Cause, Deferred, Effect, Either, Exit, Fiber, Option } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
+  cancelRequestGate,
   invalidateRequestGate,
   makeRequestGate,
   NoPreviousRequest,
@@ -321,5 +322,86 @@ describe("RequestGate", () => {
     const result = Effect.runSync(program);
     expect(Either.isLeft(result)).toBe(true);
     if (Either.isLeft(result)) expect(result.left).toBeInstanceOf(NoPreviousRequest);
+  });
+
+  it("interrupts current flights while retaining the cached success", async () => {
+    let calls = 0;
+    const program = Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let interrupted = false;
+      const gate = yield* makeRequestGate(
+        (input: string) =>
+          Effect.gen(function* () {
+            calls += 1;
+            if (input === "cached") return input;
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+            return input;
+          }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                interrupted = true;
+              }),
+            ),
+          ),
+        { key: (input) => input },
+      );
+
+      yield* gate.run("cached");
+      const superseded = yield* Effect.fork(gate.run("superseded"));
+      yield* Deferred.await(started);
+      const waiter = yield* Effect.fork(gate.run("superseded"));
+      yield* Effect.yieldNow();
+
+      yield* gate.pipe(cancelRequestGate);
+
+      const supersededExit = yield* Fiber.await(superseded);
+      const waiterExit = yield* Fiber.await(waiter);
+      const afterCancel = yield* gate.peek;
+
+      // The retained success is still reusable without another execution.
+      const reused = yield* gate.run("cached");
+
+      // A cancelled flight completing late cannot resurrect its own value.
+      yield* Deferred.succeed(release, undefined);
+      yield* Effect.yieldNow();
+      const afterLateCompletion = yield* gate.peek;
+
+      return { afterCancel, afterLateCompletion, interrupted, reused, supersededExit, waiterExit };
+    });
+
+    const result = await Effect.runPromise(program);
+
+    expect(Option.getOrUndefined(result.afterCancel)).toBe("cached");
+    expect(Option.getOrUndefined(result.afterLateCompletion)).toBe("cached");
+    expect(result.reused).toBe("cached");
+    expect(result.interrupted).toBe(true);
+    expect(calls).toBe(2);
+    expect(Exit.isFailure(result.supersededExit) && Cause.isInterruptedOnly(result.supersededExit.cause)).toBe(true);
+    expect(Exit.isFailure(result.waiterExit) && Cause.isInterruptedOnly(result.waiterExit.cause)).toBe(true);
+  });
+
+  it("can reload the retained input after cancelling its successor", async () => {
+    const program = Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const gate = yield* makeRequestGate(
+        (input: string) =>
+          input === "slow"
+            ? Deferred.succeed(started, undefined).pipe(Effect.zipRight(Effect.never), Effect.as(input))
+            : Effect.succeed(input),
+        { key: (input) => input },
+      );
+
+      yield* gate.run("first");
+      const slow = yield* Effect.fork(gate.run("slow"));
+      yield* Deferred.await(started);
+      yield* gate.cancel;
+      yield* Fiber.await(slow);
+
+      return yield* gate.reload;
+    });
+
+    await expect(Effect.runPromise(program)).resolves.toBe("first");
   });
 });

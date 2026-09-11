@@ -242,6 +242,7 @@ const gatedProgram = Effect.gen(function* () {
   yield* users.run(filters); // reuses the latest equivalent success
   yield* users.refresh(filters); // always executes
   yield* users.reload; // executes the latest successful input again
+  yield* users.cancel; // interrupts in-flight work and keeps retention
   yield* users.invalidate; // clears retention and interrupts in-flight work
 });
 ```
@@ -252,7 +253,25 @@ remembers only its latest successful input and value, not one value per key. Fai
 mapped non-2xx responses also count as successes. Treat inputs, keys, and cached values as immutable.
 
 Interrupting the first caller interrupts the shared execution and its waiters. Interrupting a waiter only stops that
-waiter. Invalidation signals cancellation but does not wait for transport cleanup to finish.
+waiter. `cancel` and `invalidate` signal cancellation but do not wait for transport cleanup to finish.
+
+### Superseding an in-flight request
+
+A gate retains a stale result rather than cancelling the request that produced it: "older completions cannot overwrite
+newer successful completions" is a correctness guarantee, not a cancellation one. A filter-as-you-type box wants the
+superseded request to stop on the wire too, which is what `cancel` and `invalidate` provide. Use `cancel` unless the
+retained value itself has become wrong:
+
+```ts
+const applyFilters = (filters: Filters) => usersGate.cancel.pipe(Effect.zipRight(usersGate.run(filters)));
+```
+
+`cancel` interrupts every request the gate currently owns, completes their shared waiters with the interrupted exit,
+and prevents those executions from repopulating the cache — while keeping the latest retained success available to
+`peek` and to an equivalent `run`. `invalidate` does the same and additionally clears that success, which is the right
+choice after a mutation invalidates what the gate remembers. Both are the gate-level vocabulary for the
+`Effect.runFork` + `Fiber.interrupt` pattern; interruption reaches the transport the same way (see
+[Providers and cancellation](#providers-and-cancellation)).
 
 ## Providers and cancellation
 

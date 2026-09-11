@@ -82,6 +82,7 @@ export {
 
 export {
   NoPreviousRequest,
+  cancelRequestGate,
   invalidateRequestGate,
   makeRequestGate,
   refreshRequest,
