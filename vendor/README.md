@@ -1,7 +1,7 @@
 # Vendored tarball
 
 `viell-effect-schema-http-0.1.0-beta.1.tgz` was produced by `pnpm pack` against commit
-`8fa4ac5ee18e0febd24a0abd8f780e84c10934b6` of the library (`../../repo-llm1` relative to this workspace), following the
+`00cd6694e2d31e613974aec4216139d5951a3294` of the library (`../../repo-llm1` relative to this workspace), following the
 "Trying the beta" instructions in that project's README. It is installed by the `web`
 package as a `file:` dependency pointing at this tarball, matching the library's
 documented beta-distribution flow (no registry package exists yet).
