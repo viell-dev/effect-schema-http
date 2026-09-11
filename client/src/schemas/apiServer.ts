@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { taggedBody } from "./common.js";
 
 /**
  * Quirk: Timestamps are epoch milliseconds as JSON numbers.
@@ -129,25 +130,21 @@ export const CreateCommentInput = Schema.Struct({
 /**
  * 4xx error: structured format { error: { code: string, message: string } }
  */
-export class StructuredError extends Schema.TaggedError<StructuredError>()(
-  "StructuredError",
-  {
-    error: Schema.Struct({
-      code: Schema.String,
-      message: Schema.String,
-    }),
-  },
-) {}
+export const StructuredError = taggedBody("StructuredError", {
+  error: Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+  }),
+});
+export type StructuredError = typeof StructuredError.Type;
 
 /**
  * Quirk: 5xx error: flat format { error: string } (developer wrote .toString() on exception)
  */
-export class FlatError extends Schema.TaggedError<FlatError>()(
-  "FlatError",
-  {
-    error: Schema.String,
-  },
-) {}
+export const FlatError = taggedBody("FlatError", {
+  error: Schema.String,
+});
+export type FlatError = typeof FlatError.Type;
 
 // ---------------------------------------------------------------------------
 // Search

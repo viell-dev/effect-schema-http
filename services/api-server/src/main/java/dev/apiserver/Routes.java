@@ -322,13 +322,19 @@ public class Routes {
             return;
         }
 
-        // Quirk: 204 with a body
+        // Quirk: this handler still tries to send {"deleted": true} with its 204,
+        // because a junior developer added the body "for debugging" in 2015 and it was
+        // never taken out. It has never actually shipped: the container refuses to write
+        // a payload for a status that forbids one, so every caller has always received
+        // an empty 204 and the debug body has been dead code for a decade.
         var body = "{\"deleted\":true}";
         var bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "application/json");
         exchange.sendResponseHeaders(204, bytes.length);
         try (var os = exchange.getResponseBody()) {
             os.write(bytes);
+        } catch (IOException ignored) {
+            // Exactly what happens in production, and exactly what nobody noticed.
         }
     }
 

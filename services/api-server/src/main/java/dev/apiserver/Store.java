@@ -138,9 +138,10 @@ public class Store {
         return Optional.ofNullable(tasks.get(id));
     }
 
+    /** Lists tasks for one project, or every task when {@code projectId} is null. */
     public List<Task> listTasks(String projectId) {
         return tasks.values().stream()
-            .filter(t -> t.projectId().equals(projectId))
+            .filter(t -> projectId == null || t.projectId().equals(projectId))
             .sorted(Comparator.comparingInt(Task::priority).reversed()
                 .thenComparingLong(Task::updatedAt).reversed())
             .toList();

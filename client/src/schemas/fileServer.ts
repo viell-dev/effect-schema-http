@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { taggedBody } from "./common.js";
 
 export const FILESTORE_NS = "urn:filestore:2011";
 
@@ -57,13 +58,11 @@ export type FileItem = typeof FileItem.Type;
  * Quirk: The server always responds with HTTP 200; failures are encoded as
  * FaultCode != 0 in the SOAP response body.
  */
-export class SoapFaultError extends Schema.TaggedError<SoapFaultError>()(
-  "SoapFaultError",
-  {
-    faultCode: Schema.Number,
-    faultString: Schema.String,
-  },
-) {}
+export const SoapFaultError = taggedBody("SoapFaultError", {
+  faultCode: Schema.Number,
+  faultString: Schema.String,
+});
+export type SoapFaultError = typeof SoapFaultError.Type;
 
 /**
  * Helper to build a standard SOAP request envelope with the urn:filestore:2011 namespace.

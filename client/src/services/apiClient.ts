@@ -87,16 +87,18 @@ export const patchProject = apiServer.createRequest({
 });
 
 /**
- * Quirk: DELETE returns 204 with body {"deleted": true}.
+ * `DELETE /api/projects/:id`.
+ *
+ * The handler still writes `{"deleted": true}` after its `204`, a debug aid added in
+ * 2015. It has never reached a client: the container refuses to write a payload for a
+ * status that forbids one. Declaring `ResponseBody.json` here produces a decode failure
+ * on every successful delete, which is how that was discovered — the JSON codec rejects
+ * an empty payload, correctly. `ResponseBody.none` describes what actually arrives.
  */
 export const deleteProject = apiServer.createRequest({
   method: "DELETE",
   path: "/api/projects/:id",
-  responses: [
-    response({ _tag: "noContent", status: 204 }, Schema.Unknown, {
-      codec: ResponseBody.json,
-    }),
-  ],
+  responses: [response({ _tag: "noContent", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
 });
 
 // ---------------------------------------------------------------------------
@@ -136,13 +138,18 @@ export const patchTask = apiServer.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, Task)],
 });
 
+/**
+ * `DELETE /api/tasks/:id` — refused unless it is tunnelled.
+ *
+ * The gateway in front of this service strips `DELETE`, so the service refuses a raw one
+ * too. Apply `tunnelMethod("DELETE")` at the call site.
+ */
 export const deleteTask = apiServer.createRequest({
   method: "DELETE",
   path: "/api/tasks/:id",
   responses: [
-    response({ _tag: "noContent", status: 204 }, Schema.Unknown, {
-      codec: ResponseBody.json,
-    }),
+    response({ _tag: "noContent", status: 204 }, Schema.Void, { codec: ResponseBody.none }),
+    response({ _tag: "methodBlocked", status: 405 }, StructuredError),
   ],
 });
 
