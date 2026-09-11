@@ -1,9 +1,9 @@
-import { DateTime, Match } from "effect";
-import { toEffect } from "viell-effect-schema-http";
+import { DateTime, Effect, Match } from "effect";
+import { toEffect, UnhandledResponse } from "viell-effect-schema-http";
 import { h, mount } from "../dom.js";
 import { renderNav } from "../components/nav.js";
 import { renderUsersDirectory } from "../components/usersDirectory.js";
-import { adminRefreshCache, adminReindex, adminStats } from "../api.js";
+import { adminDiagnostics, adminRefreshCache, adminReindex, adminStats } from "../api.js";
 import { run } from "../runtime.js";
 import { withAuth } from "../withAuth.js";
 import { domainErrorMessage } from "../errors.js";
@@ -130,6 +130,76 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
         "Reindex search",
       );
 
+      /**
+       * The unmapped-response path. `adminDiagnostics` maps only the modern subsystem's JSON, and
+       * declares `unhandledResponseBody: "retain"`, so when the old watchdog answers its
+       * plain-text dump instead the library hands this caller the *live* response rather than
+       * draining it. Ownership then belongs here: read the body, or run `error.discard`. Doing
+       * neither would leak the transport resource, which is exactly why the library drains
+       * unmapped bodies unless a caller opts out.
+       */
+      const degradedToggle = h("input", { type: "checkbox", name: "degraded" });
+      const diagnosticsOutput = h("pre", { class: "export-output hidden" });
+      const diagnosticsButton = h(
+        "button",
+        {
+          type: "button",
+          onclick: () => {
+            diagnosticsOutput.classList.remove("hidden");
+            diagnosticsOutput.textContent = "Collecting…";
+            const plan = adminDiagnostics().setUrlParam("degraded", degradedToggle.checked ? "1" : "0");
+
+            void run(
+              plan.pipe(
+                withAuth,
+                toEffect,
+                // An unmapped response is an ordinary Effect failure, so it is caught in the error
+                // channel rather than by inspecting the success union.
+                Effect.catchTag("UnhandledResponse", (unhandled: UnhandledResponse) =>
+                  // Reading `.text` consumes the retained body; that *is* taking ownership of it.
+                  unhandled.response.text.pipe(
+                    Effect.map((raw) => `Unmapped ${unhandled.status} response, body retained:\n\n${raw}`),
+                    // If even reading it fails, drain what is left so the transport is released.
+                    Effect.catchAll(() =>
+                      unhandled.discard.pipe(
+                        Effect.orElse(() => Effect.void),
+                        Effect.as(`Unmapped ${unhandled.status} response; its body could not be read and was discarded.`),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            )
+              .then((diagnosticsResult) => {
+                if (typeof diagnosticsResult === "string") {
+                  diagnosticsOutput.textContent = diagnosticsResult;
+                  return;
+                }
+                const message = domainErrorMessage(diagnosticsResult);
+                if (message) {
+                  diagnosticsOutput.textContent = message;
+                  return;
+                }
+                Match.value(diagnosticsResult).pipe(
+                  Match.tag("ok", ({ body }) => {
+                    diagnosticsOutput.textContent = `${body.subsystem} subsystem: ${
+                      body.healthy ? "healthy" : "unhealthy"
+                    } (checked ${new Date(DateTime.toEpochMillis(body.checkedAt)).toLocaleString()})`;
+                  }),
+                  Match.orElse(() => {
+                    diagnosticsOutput.textContent = "Unexpected response from the server.";
+                  }),
+                );
+              })
+              .catch((error: unknown) => {
+                console.error("diagnostics failed", error);
+                diagnosticsOutput.textContent = "Could not reach the server. Is it running?";
+              });
+          },
+        },
+        "Collect diagnostics",
+      );
+
       mount(
         main,
         h("h1", {}, "Admin"),
@@ -152,6 +222,14 @@ export const renderAdminPage = async (root: HTMLElement): Promise<void> => {
           h("h2", {}, "Search index"),
           reindexStatus,
           reindexButton,
+        ),
+        h(
+          "section",
+          { class: "card form" },
+          h("h2", {}, "Diagnostics"),
+          h("label", { class: "checkbox" }, degradedToggle, " Simulate an unhealthy modern subsystem"),
+          diagnosticsButton,
+          diagnosticsOutput,
         ),
         renderUsersDirectory(),
       );

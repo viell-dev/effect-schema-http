@@ -71,3 +71,18 @@ export const BundleMetadata = Schema.Struct({
   size: NonNegativeInt,
 });
 export type BundleMetadata = typeof BundleMetadata.Type;
+
+/**
+ * The documented shape of `GET /api/admin/diagnostics`. What that endpoint *actually* answers
+ * depends on which subsystem replies: the modern one sends this JSON, while the original watchdog
+ * — still wired in, still the fallback when the modern one is unhealthy — dumps a plain-text
+ * report nobody has ever modelled. The client therefore maps this shape and nothing else, and
+ * keeps the unmapped body so an operator can read whatever the watchdog said. See
+ * `packages/web/src/pages/admin.ts`.
+ */
+export const DiagnosticsReport = Schema.Struct({
+  subsystem: Schema.Literal("modern"),
+  healthy: Schema.Boolean,
+  checkedAt: Schema.DateTimeUtc,
+});
+export type DiagnosticsReport = typeof DiagnosticsReport.Type;

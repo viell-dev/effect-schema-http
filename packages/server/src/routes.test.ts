@@ -565,3 +565,36 @@ describe("export, reindex, and bundles", () => {
     expect(missing.status).toBe(400);
   });
 });
+
+describe("diagnostics", () => {
+  it("answers modelled JSON normally and the watchdog's unmodelled text when degraded", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+
+      const healthy = yield* routes.adminDiagnostics(header, false);
+      const degraded = yield* routes.adminDiagnostics(header, true);
+      const asAnonymous = yield* routes.adminDiagnostics(undefined, false);
+
+      return { healthy, degraded, asAnonymous };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { healthy, degraded, asAnonymous } = await Effect.runPromise(
+      program as Effect.Effect<{ healthy: RouteResponse; degraded: RouteResponse; asAnonymous: RouteResponse }>,
+    );
+
+    expect(healthy.status).toBe(200);
+    expect(jsonBody(healthy)).toMatchObject({ subsystem: "modern", healthy: true });
+    // The shape the client deliberately does not model.
+    expect(degraded.status).toBe(503);
+    expect(degraded.kind).toBe("text");
+    expect(degraded.kind === "text" && degraded.contentType).toContain("text/plain");
+    expect(degraded.kind === "text" && degraded.body).toContain("WATCHDOG DIAGNOSTIC DUMP");
+    expect(asAnonymous.status).toBe(401);
+  });
+});

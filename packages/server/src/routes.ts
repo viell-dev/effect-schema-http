@@ -27,6 +27,7 @@ import {
   CreatePostInput,
   CurrentUser,
   currentUserOfAccount,
+  DiagnosticsReport,
   FeedResponse,
   Filename,
   ForbiddenError,
@@ -672,5 +673,39 @@ export const attachmentBundle = (
       status: 200,
       contentType: serialized.headers.get("content-type") ?? "multipart/form-data",
       body: bytes,
+    } satisfies RouteResponse;
+  }).pipe(Effect.catchAll(domainErrorToResponse));
+
+/**
+ * Answers either the modern JSON report or, when the modern subsystem is unhealthy, the original
+ * watchdog's plain-text dump. The second shape is deliberately something no client models: it is
+ * what the `repo` library's `UnhandledResponse` exists for.
+ */
+export const adminDiagnostics = (
+  authHeader: string | undefined,
+  degraded: boolean,
+): Effect.Effect<RouteResponse, never, Store> =>
+  Effect.gen(function* () {
+    yield* requireAdmin(authHeader);
+    if (!degraded) {
+      return yield* Effect.succeed({
+        subsystem: "modern" as const,
+        healthy: true,
+        checkedAt: DateTime.unsafeNow(),
+      }).pipe(respondWith(DiagnosticsReport, 200));
+    }
+    const store = yield* Store;
+    const counts = yield* store.countStats();
+    const dump = [
+      "WATCHDOG DIAGNOSTIC DUMP",
+      "modern subsystem: UNREACHABLE",
+      `accounts=${counts.users} posts=${counts.posts} comments=${counts.comments}`,
+      "advice: restart the modern collector",
+    ].join("\n");
+    return {
+      kind: "text",
+      status: 503,
+      contentType: "text/plain; charset=utf-8",
+      body: dump,
     } satisfies RouteResponse;
   }).pipe(Effect.catchAll(domainErrorToResponse));

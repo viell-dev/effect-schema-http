@@ -19,6 +19,7 @@ import {
   CreateCommentInput,
   CreatePostInput,
   CurrentUser,
+  DiagnosticsReport,
   FeedResponse,
   ForbiddenError,
   ImportSummary,
@@ -333,6 +334,24 @@ export const adminReindex = api.createRequest({
     response({ _tag: "accepted", status: 202 }, ReindexAccepted),
     response({ _tag: "warmingUp", status: 503 }, Schema.Struct({ message: Schema.String })),
   ] as const,
+});
+
+/**
+ * The one endpoint here that deliberately does *not* map everything it can receive. The modern
+ * subsystem answers the JSON below; the original watchdog answers a plain-text dump at `503` that
+ * nobody has ever modelled, and inventing a schema for it would be pretending to understand a
+ * format that is not specified anywhere.
+ *
+ * So that second shape is left unmapped and becomes an `UnhandledResponse` — and the call site
+ * asks for `unhandledResponseBody: "retain"`, which transfers ownership of the live body to the
+ * caller instead of draining it. The admin page then either reads it (see `pages/admin.ts`) or
+ * runs `error.discard`; per the library's docs, a retained body must be one or the other.
+ */
+export const adminDiagnostics = api.createRequest({
+  method: "GET",
+  path: "/api/admin/diagnostics",
+  unhandledResponseBody: "retain",
+  responses: [response({ _tag: "ok", status: 200 }, DiagnosticsReport)],
 });
 
 /** `205 Reset Content`, not `204 No Content`: per HTTP semantics this tells the caller to reset

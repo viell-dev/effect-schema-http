@@ -229,6 +229,13 @@ const routeTable: ReadonlyArray<Route> = [
     bodyMode: "none",
     handle: (_p, _q, auth) => run(routes.adminReindex(auth)),
   },
+  {
+    // JSON from the modern subsystem, or the old watchdog's plain-text dump when it is unhealthy.
+    method: "GET",
+    pattern: /^\/api\/admin\/diagnostics$/,
+    bodyMode: "none",
+    handle: (_p, query, auth) => run(routes.adminDiagnostics(auth, query.get("degraded") === "1")),
+  },
 ];
 
 const baseCorsHeaders = {
