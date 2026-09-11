@@ -45,7 +45,7 @@ client/          TypeScript + Effect + Vite    One client for all five
   src/plans/       reusable RequestPlanTransforms, including HMAC signing
   src/integration/ the translation layer, the saga, and the gates
   src/ui/          a browser client that drives every endpoint in here
-  tests/           127 tests across nine files
+  tests/           135 tests across ten files
 
 vendor/          the packed viell-effect-schema-http-0.1.0-beta.1 tarball
 ```
@@ -159,6 +159,8 @@ right now. The interesting column is the last one.
 | A CSV with a UTF-8 BOM, CRLF, semicolons and a decimal comma | RFC 4180 | Strip the BOM before it becomes part of a column name |
 | Every failure is a `200` | Statuses | A header-matched rule, or a union in the schema |
 | Duplicate query parameters silently collapse | Repeat or reject | Nothing; worth knowing that the client did everything right |
+| HTTP Digest (RFC 2069, no `qop`) on the admin export | A token | Read the challenge off a mapped `401`, then execute the same plan again |
+| A Digest nonce good for exactly one request | Reuse within a window | Nothing — but every call costs two round trips, forever |
 
 ### Ruby notification service (:4500)
 
@@ -173,6 +175,8 @@ right now. The interesting column is the last one.
 | A long poll that holds the connection open | The same, honestly | `setTimeout`, and a `TimeoutException` rather than a response |
 | An absolutized `Location`, where Java sends a relative one | Agreement | Resolve either; the **container** decides, not the code |
 | Three different headers announcing its own retirement | One | Read all three; no two services pick the same one |
+| A `301` from the 2011 path, still there for a 2014 desktop build | A rewrite at the edge | **Nothing works**: Fetch follows it before the library sees it |
+| An endpoint that reads the session *cookie*, not the header | A header | Set `cookie` by hand; there is no cookie jar to help |
 
 That last row is worth dwelling on. `Deprecation`, `Sunset` and `Warning` all say the same
 thing on the same response, because each was added by a different person reading a
@@ -280,7 +284,7 @@ saying which quirk it exercises, and the call itself — so the interesting part
 is the request rather than the markup.
 
 ```sh
-cd client && pnpm test        # 127 tests, nine files
+cd client && pnpm test        # 135 tests, ten files
 cd client && pnpm typecheck   # and this passes, which is load-bearing — see below
 ```
 
@@ -449,10 +453,14 @@ page needed; it is recorded as a judgement call, not a defect.
   library accepts both. That is a small thing that a great many clients get wrong, and the
   identity server's limiter sends the date form precisely because a real devops team once
   copied it from an Apache example.
-- **Cold, re-executable plans made two awkward flows ordinary.** Polling a `202` job and
-  looping a nonce-bearing request with a fresh value each time are both "execute this plan
-  again with something different", and both are ten lines of plain code rather than a
-  second call site.
+- **Cold, re-executable plans made three awkward flows ordinary.** Polling a `202` job,
+  looping a nonce-bearing request with a fresh value each time, and answering an HTTP
+  Digest challenge are all "execute this plan again with something different", and all
+  three are ten lines of plain code rather than a second call site. Digest is the clearest
+  of them: the `401` carrying the challenge is a *declared response*, so reading the nonce
+  off it and re-executing is ordinary control flow. With a throwing client the same flow is
+  a catch block that has to re-derive the status, re-parse a header, and re-enter the happy
+  path from outside it.
 - **The compile-time guards are real.** A duplicate response tag is caught by the type
   system *and* by a synchronous throw; a body-bearing plan has no Effect in the type system
   until `setBody`; an empty path parameter throws while the plan is built. Each of these
@@ -545,7 +553,36 @@ is called. An API that depends on repeated field lines is a Node-only API, whate
 is used. That is now written down, because "use a provider that preserves it" reads like
 advice a browser application could follow.
 
-### 5. A request that must genuinely differ per attempt still cannot use the retry policy
+### 5. A `3xx` response rule is declarable and, with the default provider, unreachable
+
+**Not resolved, and arguably should not be.** The Ruby service still serves the 2011
+notification path as a `301`, because a desktop application last built in 2014 has that URL
+compiled into it. A client might reasonably want to *see* that redirect — to update a
+stored URL, or to warn that a link is stale — and
+`response({ _tag: "moved", status: 301 }, …)` is perfectly declarable. It can never match:
+`fetch` follows redirects unless its `redirect` option says otherwise, so the library is
+handed the `200` from the new path and the rule is dead code.
+
+Nothing in the plan API changes that, and that is defensible — following redirects is a
+property of the *client*, and the library's position is that the application chooses its
+client. But the consequence is a rule that typechecks, reads correctly, and silently never
+fires, which is the same failure mode as a matcher with a typo in it.
+
+The escape hatch exists and is worth knowing: `FetchHttpClient.RequestInit` is a context
+tag carrying the options `fetch` is called with, so
+`Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" })` on one plan's
+Effect makes the rule reachable. It is provider-specific and outside this library's
+surface, which is exactly why a consumer will not find it: from the library's point of
+view it is someone else's API, and from the consumer's it is the only way to express a
+per-request transport option. The same gap covers `credentials: "include"`, which is what a
+browser needs before a cross-origin cookie is sent at all.
+
+A sentence in "Providers and cancellation" pointing at the tag would close it. Whether a
+plan setter should exist is a real design question — `setCache` already exposes
+`RequestCache`, which is one Fetch option, so the line is currently drawn in an arbitrary
+place.
+
+### 6. A request that must genuinely differ per attempt still cannot use the retry policy
 
 **This remains the one real trade, and this project makes it sharper than its predecessor
 did.** `test-llm1` found a server that *echoed* an attempt counter, so the built-in retry
@@ -575,7 +612,7 @@ is a header, not a body, and a per-attempt request transform would have solved i
 recording that `mapClient` *is* per-attempt and therefore already solves the header case;
 what it cannot do is vary the body, and this project never needed that.
 
-### 6. The first pass of this repository did not typecheck, and that mattered
+### 7. The first pass of this repository did not typecheck, and that mattered
 
 Not a library finding — a finding about how a library like this must be evaluated. The
 first pass shipped a client with 69 TypeScript errors and a `typecheck` script that had
