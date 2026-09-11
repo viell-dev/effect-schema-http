@@ -10,10 +10,10 @@ a vehicle for using both the way a real application would — including the part
 application that accreted over time and never ended up uniform. The blog CRUD alone only needed
 JSON in and JSON out; the attachments/feed/admin features exist specifically to make this backend
 "look" long-lived by mixing in the request/response codecs a pure-JSON API would never need
-(`ResponseBody.text`, `ResponseBody.uint8Array`, `RequestBody.formData`, `ResponseBody.none`,
-and an intentionally non-standard `205` status), and the admin user directory exists specifically
-to exercise `makeRequestGate` — a filter-as-you-type datatable, the shape the library's own docs
-use as the gate's motivating example.
+(every non-JSON codec the library ships, a deliberately flaky endpoint, a response nobody
+modelled, and an intentionally non-standard `205` status), and the admin user directory exists
+specifically to exercise `makeRequestGate` — a filter-as-you-type datatable, the shape the
+library's own docs use as the gate's motivating example.
 
 This is a local, no-remote git repository. Every commit is a real checkpoint (`git log` tells the
 story better than this document does), and the final third of this README is a candid writeup of
@@ -50,17 +50,29 @@ server discards all data. Adding a real database was out of scope for what this 
 
 **The "long-lived backend" features and which codec each one exercises:**
 
-| Feature | Endpoint(s) | Codec |
+| Feature | Endpoint(s) | Library surface it exercises |
 | --- | --- | --- |
 | Post attachments (upload) | `POST /api/posts/:slug/attachments` | `RequestBody.formData` |
 | Post attachments (download) | `GET /api/posts/:slug/attachments/:id` | `ResponseBody.uint8Array` (raw file bytes) |
+| Attachment bundle | `GET /api/posts/:slug/attachments/:id/bundle` | `ResponseBody.formData` (metadata + bytes in one multipart response) |
 | Per-blog Atom feed | `GET /api/blogs/:username/feed.atom` | `ResponseBody.text` (XML) |
+| Atom import | `POST /api/blogs/:username/import.atom` | `RequestBody.text` — the *same* schema, encoding instead of decoding |
+| Legacy form login | `POST /api/users/login/legacy` | `RequestBody.urlParams` |
+| Post export | `GET /api/posts/:slug/export` | two `200` rules separated by a `content-type` matcher, plus a status-predicate rule |
 | Admin stats | `GET /api/admin/stats` | `ResponseBody.uint8Array` (bytes that are secretly JSON) |
 | Admin cache refresh | `POST /api/admin/cache/refresh` | `ResponseBody.none`, status `205` not `204` |
+| Admin search reindex | `POST /api/admin/search/reindex` | `retry` — the route answers `503` + `Retry-After` until it warms up |
+| Admin diagnostics | `GET /api/admin/diagnostics` | `UnhandledResponse` with `unhandledResponseBody: "retain"` |
 | Admin user directory | `GET /api/admin/users?name=&email=` | plain JSON, but driven through `makeRequestGate` client-side |
 
 The blog/post/comment CRUD underneath all of this is plain JSON in, JSON out — the default codec
 the library needs no configuration for at all.
+
+The bottom half of that table was added after the first pass of this evaluation, specifically to
+cover the library surface the first pass had reported it *could not vouch for*: retries, the text
+and url-encoded request codecs, response-rule precedence with more than one candidate, form-data
+responses, and retained unmapped bodies. Every one of them is driven from the UI, not only from a
+test.
 
 ## Running it
 
@@ -82,8 +94,8 @@ is ever there to cancel. `RESPONSE_DELAY_MS=400 pnpm --filter @realworld/server 
 route (`RESPONSE_DELAY_PATH`, default `/api/admin/users`) so the users directory's gate behaviour
 is reproducible in a browser — see "Request gates" below.
 
-Tests: `pnpm --filter @realworld/domain run test` (14 tests) and
-`pnpm --filter @realworld/server run test` (11 tests) run under Vitest. The web package has no
+Tests: `pnpm --filter @realworld/domain run test` (20 tests) and
+`pnpm --filter @realworld/server run test` (17 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
 `playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
 in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
@@ -340,11 +352,34 @@ a time.
   out to have exactly that signature internally, used by all of its own pipeable setters, and it is
   now exported as `RequestPlanTransform` with the pattern documented under "Reusable cross-endpoint
   setters". `withAuth` is annotated with it; the structural guess is gone.
-- **We did not exercise, and so cannot vouch for or against:** retries (`setRetry`/`setRetries`),
-  `RequestBody.text`/`.urlParams` specifically (we hit `.formData` for requests but not these two),
-  header-precedence tie-breaking beyond the single matcher above, or `UnhandledResponse.discard`/
-  `"retain"` body ownership. Nothing in this project needed a retry, a second HTTP provider, or an
-  endpoint whose response shape genuinely varies by header at runtime.
+- **Everything the first pass could not vouch for has since been exercised, and all of it worked.**
+  That list was retries, `RequestBody.text`/`.urlParams`, header-precedence tie-breaking beyond a
+  single matcher, and `UnhandledResponse.discard`/`"retain"` body ownership — every one of them
+  skipped because nothing in the blog happened to need it, not because anything was wrong. Rather
+  than write tests against features the app did not use, the app grew features that genuinely need
+  them (see the feature table above), and each was then driven through a real browser:
+  - **Retries.** `retry: { times: 3 }` on the reindex endpoint. The server answers `503` with
+    `Retry-After: 1` for its first two calls; Chromium's network log shows `503`, `503`, `202`
+    while the page's handler only ever sees the `202`. No custom `while` predicate was needed —
+    `503` is already in the library's transient classification — and the intermediate bodies are
+    drained by the library rather than surfacing anywhere. The one thing worth saying out loud:
+    `Retry-After` is only *readable* cross-origin if the server lists it in
+    `Access-Control-Expose-Headers`, which is the server's job, not the library's.
+  - **`RequestBody.text` and `.urlParams`.** The Atom importer encodes a domain value into XML
+    through the same `AtomFeedFromString` the feed endpoint decodes with, and the legacy login
+    posts `LegacyLoginForm` as `application/x-www-form-urlencoded`. Both pairings are the ones the
+    library's README now documents, and both worked from the type signature alone.
+  - **Header precedence.** The export endpoint declares two rules at `200` separated only by a
+    `content-type` matcher, plus a third matching any 5xx through a status *predicate*. The
+    documented ranking held: the header-bearing rules are tried first and the predicate rule never
+    shadows them, so the same call site renders parsed JSON or a parsed Markdown document
+    depending only on the `Accept` it sent.
+  - **Retained unmapped bodies.** Diagnostics maps the modern subsystem's JSON and nothing else;
+    the old watchdog's `text/plain` `503` arrives as an `UnhandledResponse` whose body the library
+    hands over instead of draining. Reading `error.response.text` renders the dump; the failure
+    path runs `error.discard`. The ownership rule is exactly as documented, and the *default*
+    (drain) is clearly the right one — opting out is a deliberate diagnostic act.
+
   The library's own
   [`docs/report.md`](../repo/docs/report.md) already flags several of these areas (retry/timeout
   interaction, mutable-input aliasing, dot-segment path values) as deferred findings from its
@@ -352,6 +387,14 @@ a time.
   (`Slug`, `Username`, UUIDs) are all schema-constrained to alphabets that cannot produce a bare
   `.`/`..` segment in the first place, which happens to sidestep that particular finding by
   construction rather than by deliberate mitigation.
+- **A union of two plan types is not pipeable, only its Effects are.** The login page chooses
+  between the JSON and url-encoded endpoints at runtime, and `plan.pipe(toEffect)` on the resulting
+  union does not typecheck: the two plans differ in their `Body` type parameter, so neither concrete
+  `pipe` signature accepts the union. Extracting `.effect` inside each branch and unioning *those*
+  works fine, because both endpoints declare the same responses and therefore produce the same
+  Effect type. This is ordinary TypeScript variance rather than a library defect, and the fix is
+  two lines, but it is the one place where the plan's rich type parameters got in the way instead
+  of helping.
 - **Nothing else failed outright.** Every endpoint, every setter used, and the whole
   `pnpm pack` → `file:` dependency distribution flow worked exactly as documented once the CORS
   header issue above was understood and fixed on the server side (which is our code, not the
@@ -362,11 +405,13 @@ a time.
 [`docs/report.md`](../repo/docs/report.md) (the library's pre-beta review) explicitly lists
 *"Browser, alternative-runtime, and official non-Fetch client coverage is absent"* as an open item.
 This project's manual verification passes — a real, system-installed Chromium driven through
-`playwright-core` against a live Vite dev server and Node backend, covering registration, login,
-post CRUD across all three visibility levels, comments from both registered and anonymous authors,
-a real multipart file upload rendered back as an inline image preview, the Atom feed, and
-admin-only access control — are exactly that missing coverage, for at least one realistic app
-shape using most of the library's codec surface. It is also precisely how the `traceparent`/CORS
+`playwright-core` against a live Vite dev server and Node backend, covering registration, login
+through both the JSON and url-encoded endpoints, post CRUD across all three visibility levels,
+comments from both registered and anonymous authors, a real multipart file upload rendered back as
+an inline image preview and re-fetched as a multipart bundle, the Atom feed in both directions,
+content-negotiated exports, retries against a genuinely flaky route, a retained unmapped response
+body, request-gate supersession and cache reuse, and admin-only access control — are exactly that
+missing coverage, for at least one realistic app shape using every codec the library ships. It is also precisely how the `traceparent`/CORS
 gap above was found: it never surfaces in a same-origin `curl` smoke test or in Node-to-Node
 integration tests, only in an actual cross-origin browser request.
 
