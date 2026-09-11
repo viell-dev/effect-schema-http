@@ -34,6 +34,9 @@ packages/
             edgeCache.ts emulates the reverse proxy that fronts the feed in production.
   web/      A vanilla TypeScript + Vite SPA. Every server call goes through
             viell-effect-schema-http's createApi/createRequest/response().
+  e2e/      Boots the real server on an ephemeral port and drives it through the real
+            client library, with inputs generated from the schemas' own `arbitrary`
+            annotations. The only package that depends on both ends.
 vendor/     The packed viell-effect-schema-http-0.1.0-beta.1 tarball, installed by
             server and web as a `file:` dependency (see vendor/README.md).
 ```
@@ -347,6 +350,72 @@ a single entry, so alternating between two filters never hits the cache. Both ar
 questions in the library's design notes (10 and 11); neither bites this page, which runs one key at
 a time.
 
+## What a shared schema does and does not protect you from
+
+The premise of this project is that one package of schemas is imported by both ends, so a
+wire shape cannot drift. That is true of the *source*, and it is worth being exact about
+what it does not cover: during any rolling deploy, and for as long as a browser tab stays
+open, code compiled against one version of these definitions is talking to code compiled
+against another. The schema is shared; the deployment is not.
+
+So the interesting question is not "do the two ends agree" — they do, by construction —
+but "what does each kind of change do to the end that has not caught up yet".
+`packages/domain/src/evolution.ts` and its tests are the worked answer, using the change
+this blog actually needed: a `category` on posts, added to a running system.
+
+| The change | Safe for an old client reading a new server? | Safe for a new client reading an old server? |
+| --- | --- | --- |
+| Add a field | **Yes** — `Schema.Struct` ignores unknown properties | Only if it is `optionalWith(..., { default })` |
+| Add a field, with `onExcessProperty: "error"` | **No** — every additive deploy is an outage | — |
+| Add a field as *required* | Yes | **No** — half the servers still send the old shape |
+| Remove a field | **No**, and no schema cleverness helps | Yes |
+| Rename a field | `Schema.fromKey` buys exactly one deploy | — |
+| Add a member to a literal union | **No** — a literal union is a closed set | Yes |
+
+Two of those are worth calling out because they are counter-intuitive.
+
+**Unknown properties are ignored by default, and that default is the whole model.** Every
+additive server change is backwards compatible without anyone doing anything — which is
+excellent, and means a project can switch the guarantee off in four characters by passing
+`onExcessProperty: "error"`. That setting is right for parsing a configuration file, where
+a typo should be loud, and wrong for a wire format whose other end will grow fields.
+
+**Adding a field is safe but adding an enum member is not.** A literal union is closed, so
+a newer server sending `category: "legal"` breaks every client that has not been
+redeployed, even though sending a whole new *field* would not have. If a set is expected
+to grow, that has to be a design-time decision — a transform that maps unknown members
+onto a known one — and it cannot be retrofitted after the fact.
+
+The negotiation itself is a header, and that choice is specific to this library: a
+response *rule* can match on a header, so the client picks its decoder before the body is
+read and the two versions never become a union some later reader has to narrow.
+`getPostVersioned` declares two rules at `200`, separated only by `x-schema-version`. The
+second rule is not defensive padding — mid-rollout a load balancer will route some
+requests to a server that has not been redeployed, and that server answers `1` to an
+`Accept-Version: 2` request. Without it, that is an `UnhandledResponse` during every
+deploy.
+
+## Driving the schemas with the schemas
+
+`packages/e2e` boots the real HTTP server on an ephemeral port, declares the endpoints with
+the real client library, and round-trips fifty posts generated from `CreatePostInput`'s own
+`arbitrary` annotations. Four annotation kinds end up load-bearing at once: `arbitrary`
+makes the inputs, the schema encodes and decodes on both sides, the custom `equivalence` on
+`PostView` decides whether what came back is the same post, and `pretty` formats a failure
+into something readable.
+
+Every other test in this repository checks one side. The domain package checks that a
+schema decodes what it should; `routes.test.ts` checks that a handler does the right thing
+when called directly. Neither exercises the actual claim — that the *same* definition
+encodes on the server and decodes on the client, over a socket, for values nobody chose by
+hand.
+
+A property test over a network is unusual, and it earns its place for one reason: it is the
+only way to find an encode/decode asymmetry that a hand-written fixture happens to avoid. A
+`PostTitle` is built on `Schema.Trim`, so a generated title with trailing whitespace is a
+different string after a round trip — correct, and exactly the kind of thing nobody writes
+a fixture for.
+
 ## Using `viell-effect-schema-http`: what worked well
 
 - **The core API is exactly as pleasant as the README promises.** `createApi(baseUrl, { responses
@@ -598,6 +667,24 @@ a time.
   Effect type. This is ordinary TypeScript variance rather than a library defect, and the fix is
   two lines, but it is the one place where the plan's rich type parameters got in the way instead
   of helping.
+- **A `link:` dependency on the library breaks a consumer's typecheck.** _Fixed on our
+  side._ This workspace briefly replaced the vendored tarball with
+  `"viell-effect-schema-http": "link:../../../repo-llm1"`, which is convenient while
+  iterating on both at once and produced 24 `TS2883` errors in `packages/web`:
+
+  ```
+  The inferred type of 'getBlogFeed' cannot be named without a reference to
+  'HttpClientResponse' from 'viell-effect-schema-http/node_modules/.pnpm/@effect+platform@…'.
+  This is likely not portable. A type annotation is necessary.
+  ```
+
+  A linked directory brings its own `node_modules`, so the library resolves its own copy of
+  `@effect/platform` while the consumer resolves another; the two declare structurally
+  identical but nominally distinct types, and every endpoint whose inferred type mentions
+  one — which is every endpoint using a non-default codec — becomes unnameable. This is a
+  pnpm/TypeScript interaction rather than a library defect, but it is worth knowing before
+  reaching for a link during development: the packed tarball is not just the *documented*
+  distribution flow, it is the one that typechecks.
 - **Nothing else failed outright.** Every endpoint, every setter used, and the whole
   `pnpm pack` → `file:` dependency distribution flow worked exactly as documented once the CORS
   header issue above was understood and fixed on the server side (which is our code, not the
@@ -619,6 +706,31 @@ missing coverage, for at least one realistic app shape using every codec the lib
 also precisely how the `traceparent`/CORS
 gap above was found: it never surfaces in a same-origin `curl` smoke test or in Node-to-Node
 integration tests, only in an actual cross-origin browser request.
+
+## What the sibling project found that this one could not
+
+[`test-llm1-2`](../test-llm1-2) is the deliberate opposite of this project: five backend
+services in five languages, none of which has heard of Effect, and nothing shared between
+the ends at all. Two of its findings bear directly on the conclusions above.
+
+**`Schema.TaggedError` as a response schema is a property of this architecture, not of the
+library.** The section above calls reusing the exact class on both sides "the headline
+feature", and that is true *because one codebase owns both ends*: the server encodes an
+instance, so the `_tag` is on the wire, so the client can decode the same class. Point a
+client at a Rust service and the same code fails to decode, because the discriminant the
+schema requires is not there and never will be. The answer there is
+`Schema.attachPropertySignature`, which attaches a tag during decoding and strips it again
+on the way out. Worth knowing that the pattern this project recommends has a hard
+precondition.
+
+**Everything else transferred.** Response rules discriminating envelopes while schemas
+discriminate bodies, non-JSON codecs carrying formats the library has never heard of,
+computed headers for credentials, `RequestPlanTransform` for setters that must travel
+together, cold re-executable plans — all of it held against XML-RPC, SOAP, WebDAV, OData
+and fixed-width mainframe records just as it held here. And the one limitation this project
+identified — that a request cannot vary across the attempts of its own retry policy —
+reappeared there in a sharper form, where the built-in retry converts a transient failure
+into a permanent one.
 
 ## Effect Schema, separately from the HTTP library
 
