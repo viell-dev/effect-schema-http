@@ -241,6 +241,14 @@ Custom codecs are accepted in every default scope, so an API-wide parser can pro
 objects for its endpoint schemas. Keeping parsing in a schema is equally supported: `ResponseBody.text` followed by a
 composed `*FromString` schema is the same pipeline with the parsing boundary moved into Effect Schema.
 
+Each codec names one concrete transport value, and the schema paired with it is the one whose decode input (responses)
+or encoded type (requests) already is that value. `Schema.Void` pairs with `ResponseBody.none`,
+`Schema.Uint8ArrayFromSelf` with the byte codecs, and `Schema.instanceOf(FormData)` with the form-data codecs; these
+identity schemas exist precisely so a caller-owned `Uint8Array` or `FormData` reaches the transport without a
+transformation. Parsing stays a schema concern one level up: a `Schema.transformOrFail` whose _from_ side is
+`Schema.String` or `Schema.Uint8ArrayFromSelf` serves both directions of a non-JSON format from one definition.
+`examples/bodyCodecs.ts` keeps a typechecked endpoint for every codec so these pairings cannot silently rot.
+
 `ResponseBody.uint8Array` reads a finite binary response, and `ResponseBody.formData` delegates multipart or
 URL-encoded parsing to the provider. `ResponseBody.none` drains the incoming stream without accumulating its payload
 and then decodes `undefined`; an absent stream reported as `EmptyBody` is already clean. It marks

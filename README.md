@@ -206,13 +206,29 @@ or supply a body change the plan's type parameters and cannot use it; compose th
 
 Response codecs read the transport body before its response schema decodes the resulting value:
 
-| Codec                     | Schema input                           | Default `Accept`             |
-| ------------------------- | -------------------------------------- | ---------------------------- |
-| `ResponseBody.json`       | Parsed JSON                            | `application/json`           |
-| `ResponseBody.text`       | `string`                               | `text/*`                     |
-| `ResponseBody.uint8Array` | `Uint8Array`                           | `application/octet-stream`   |
-| `ResponseBody.formData`   | `FormData`                             | `multipart/form-data`        |
-| `ResponseBody.none`       | `undefined` after draining the payload | Rule-specific; never default |
+| Codec                     | Schema input                           | Schema that pairs with it                                | Default `Accept`             |
+| ------------------------- | -------------------------------------- | -------------------------------------------------------- | ---------------------------- |
+| `ResponseBody.json`       | Parsed JSON                            | Any schema; the default needs no configuration           | `application/json`           |
+| `ResponseBody.text`       | `string`                               | `Schema.String`, or a `*FromString` transformation       | `text/*`                     |
+| `ResponseBody.uint8Array` | `Uint8Array`                           | `Schema.Uint8ArrayFromSelf`, or a transformation from it | `application/octet-stream`   |
+| `ResponseBody.formData`   | `FormData`                             | `Schema.instanceOf(FormData)`                            | `multipart/form-data`        |
+| `ResponseBody.none`       | `undefined` after draining the payload | `Schema.Void`                                            | Rule-specific; never default |
+
+Request codecs receive the schema's **encoded** value, so the same pairings apply in the other direction:
+
+| Codec                            | Encoded type it requires   | Schema that pairs with it                                |
+| -------------------------------- | -------------------------- | -------------------------------------------------------- |
+| `RequestBody.json`               | Any JSON-compatible value  | Any schema; the default needs no configuration           |
+| `RequestBody.text(contentType?)` | `string`                   | `Schema.String`, or a `*FromString` transformation       |
+| `RequestBody.uint8Array(type?)`  | `Uint8Array`               | `Schema.Uint8ArrayFromSelf`, or a transformation from it |
+| `RequestBody.urlParams`          | Record of coercible values | `Schema.Struct` of strings, numbers, booleans, or arrays |
+| `RequestBody.formData`           | `FormData`                 | `Schema.instanceOf(FormData)`                            |
+
+`Schema.instanceOf(FormData)` and `Schema.Uint8ArrayFromSelf` are identity schemas: their `Type` and `Encoded` are the
+same value the codec already handles, so the caller's own `FormData` or `Uint8Array` reaches the transport untouched.
+When the payload needs real parsing, keep that in the schema instead — a `Schema.transformOrFail` from
+`Schema.String` or `Schema.Uint8ArrayFromSelf` decodes a response and encodes a request from one definition.
+[examples/bodyCodecs.ts](examples/bodyCodecs.ts) is a typechecked endpoint for every row of both tables.
 
 Custom codecs can be installed at API, endpoint, rule, or plan scope. A text codec followed by a `*FromString` schema
 can parse XML, YAML, a custom JSON dialect, or another textual protocol without special support from this library.

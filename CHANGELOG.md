@@ -18,6 +18,7 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 ### Changed
 
 - Documented local beta consumption, execution boundaries, body ownership, and gate semantics.
+- Documented the schema each body codec pairs with, backed by a typechecked example and runtime coverage.
 - Marked the repository private until registry publication is planned; recorded deferred review findings and questions.
 
 ### Added

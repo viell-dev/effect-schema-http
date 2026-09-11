@@ -45,6 +45,12 @@ const mockFetch = (handler: (request: Request) => Promise<Response>): typeof fet
   ((input: URL | RequestInfo, init?: RequestInit) =>
     handler(input instanceof Request ? input : new Request(input, init))) as typeof fetch;
 
+/** The documented shape of a cross-endpoint setter: annotate the helper, not each call site. */
+const withAuth =
+  (token: string): RequestPlanTransform =>
+  (plan) =>
+    plan.setHeader("authorization", `Bearer ${token}`).appendHeader("x-request-source", "test");
+
 describe("createRequest", () => {
   it("discards no-body and retry responses without buffering the full payload", async () => {
     const discarded = new Response("discarded", { status: 503 });
@@ -176,12 +182,6 @@ describe("createRequest", () => {
 
   it("reuses one plan transformation across endpoints with different type parameters", async () => {
     const requests: Array<Request> = [];
-
-    /** The documented shape of a cross-endpoint setter: annotate the helper, not each call site. */
-    const withAuth =
-      (token: string): RequestPlanTransform =>
-      (plan) =>
-        plan.setHeader("authorization", `Bearer ${token}`).appendHeader("x-request-source", "test");
 
     const getUser = createRequest({
       method: "GET",
@@ -1304,6 +1304,73 @@ describe("createRequest", () => {
       // @ts-expect-error The text codec requires a schema whose encoded representation is a string.
       bodyCodec: RequestBody.text(),
     });
+  });
+
+  it("serializes url-encoded, byte, and form-data request bodies through their schemas", async () => {
+    const requests: Array<Request> = [];
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return new Response(null, { status: 204 });
+      }),
+    );
+    const done = [response({ _tag: "done", status: 204 }, Schema.Void, { codec: ResponseBody.none })] as const;
+
+    const requestToken = createRequest({
+      method: "POST",
+      path: "https://example.test/oauth/token",
+      body: Schema.Struct({ grant_type: Schema.Literal("password"), scopes: Schema.Array(Schema.String) }),
+      bodyCodec: RequestBody.urlParams,
+      responses: done,
+    });
+
+    const StatsFromBytes = Schema.transformOrFail(Schema.Uint8ArrayFromSelf, Schema.Struct({ posts: Schema.Number }), {
+      strict: true,
+      decode: (bytes, _options, ast) =>
+        ParseResult.try({
+          try: () => JSON.parse(new TextDecoder().decode(bytes)) as { posts: number },
+          catch: () => new ParseResult.Type(ast, bytes, "malformed statistics payload"),
+        }),
+      encode: (stats) => ParseResult.succeed(new TextEncoder().encode(JSON.stringify(stats))),
+    });
+
+    const putStats = createRequest({
+      method: "PUT",
+      path: "https://example.test/stats",
+      body: StatsFromBytes,
+      bodyCodec: RequestBody.uint8Array("application/json"),
+      responses: done,
+    });
+
+    const upload = createRequest({
+      method: "POST",
+      path: "https://example.test/uploads",
+      body: Schema.instanceOf(FormData),
+      bodyCodec: RequestBody.formData,
+      responses: done,
+    });
+
+    const form = new FormData();
+    form.set("title", "Ada");
+    form.set("file", new Blob(["bytes"], { type: "text/plain" }), "note.txt");
+
+    await Effect.all(
+      [
+        requestToken().setBody({ grant_type: "password", scopes: ["read", "write"] }).effect,
+        putStats().setBody({ posts: 3 }).effect,
+        upload().setBody(form).effect,
+      ],
+      { discard: true },
+    ).pipe(Effect.provide(layer), Effect.runPromise);
+
+    expect(requests[0]?.headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+    expect(await requests[0]?.text()).toBe("grant_type=password&scopes=read&scopes=write");
+    expect(requests[1]?.headers.get("content-type")).toBe("application/json");
+    expect(await requests[1]?.text()).toBe('{"posts":3}');
+    expect(requests[2]?.headers.get("content-type")).toMatch(/^multipart\/form-data; boundary=/);
+    const received = await requests[2]!.formData();
+    expect(received.get("title")).toBe("Ada");
+    expect(await (received.get("file") as File).text()).toBe("bytes");
   });
 
   it("wraps fallible request schema encoding with request context", async () => {
