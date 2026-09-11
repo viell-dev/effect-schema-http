@@ -76,6 +76,12 @@ Open the Vite URL, register an account, write a post, comment on it while signed
 tab. `VITE_API_BASE_URL` overrides the server URL the web app targets (defaults to
 `http://localhost:4000`).
 
+The in-memory store answers in well under a millisecond, which makes request supersession
+impossible to watch: two keystrokes typed milliseconds apart never overlap on the wire, so nothing
+is ever there to cancel. `RESPONSE_DELAY_MS=400 pnpm --filter @realworld/server run dev` delays one
+route (`RESPONSE_DELAY_PATH`, default `/api/admin/users`) so the users directory's gate behaviour
+is reproducible in a browser — see "Request gates" below.
+
 Tests: `pnpm --filter @realworld/domain run test` (14 tests) and
 `pnpm --filter @realworld/server run test` (11 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
@@ -84,11 +90,13 @@ in → sign out → comment anonymously → create a private post → confirm it
 visitor instead of leaking that it exists; (2) first-registered-user-becomes-admin → upload a real
 PNG attachment and see it render as an inline preview → view the same post through its Atom feed →
 refresh the admin cache and watch the reason field clear itself on the `205` response → confirm a
-second user gets neither the admin nav link nor access to `/admin`; (3) an artificially-delayed
+second user gets neither the admin nav link nor access to `/admin`; (3) a delayed
 `/api/admin/users` route plus rapid, genuinely distinct keystrokes into the users-directory filter,
-confirming real `net::ERR_ABORTED` network failures for every superseded request (see "Request
-gates" below). No browser-automation tool was preinstalled in this environment, so that was set up
-ad hoc for this verification pass; it is not part of the committed project.
+confirming real `net::ERR_ABORTED` network failures for every superseded request, and — after the
+library grew `gate.cancel` — that correcting a typo inside the previous request's flight resolves
+from the gate's retained rows with no network request at all (see "Request gates" below). No
+browser-automation tool was preinstalled in this environment, so that was set up ad hoc for these
+verification passes; it is not part of the committed project.
 
 ## Effect Schema tricks exercised
 
@@ -169,42 +177,54 @@ that request's result, if it arrives late, can't overwrite whatever a newer requ
 produced. For a live filter box that still leaves every stale request running to completion on the
 wire, which is exactly what this task asked to avoid.
 
-The actual interruption primitive is `gate.invalidate`: *"clears the retained pair, interrupts
-every request currently owned by that gate."* So `usersDirectory.ts` calls `gate.invalidate` before
-every `gate.run`, and `FetchHttpClient` — per the library's own "Providers and cancellation" section
-— translates that Effect interruption into a real `AbortController.abort()` on the underlying
-`fetch()`. This was verified concretely, not just inferred from the docs: driving the page through
-a real (system-installed) Chromium with an artificial 400ms delay injected on the `/api/admin/users`
-route (needed because the real in-memory server responds sub-millisecond — too fast for keystrokes
-typed even a few milliseconds apart to genuinely overlap) and typing `a`, `l`, `i`, `c` back-to-back
-produced this exact request log:
+The first version of this page used `gate.invalidate` — *"clears the retained pair, interrupts every
+request currently owned by that gate"* — because it was the only interruption tool the gate offered,
+and it reported the obvious cost as a gap: there was no way to interrupt the current flight while
+keeping what the gate had already cached, so the gate's headline reuse behaviour was wiped before it
+could ever help. **The library has since closed that gap with `gate.cancel`**, which performs the
+same interruption and stale-write prevention while retaining the cached pair. `usersDirectory.ts`
+now calls `gate.cancel` before every `gate.run`, and `FetchHttpClient` — per the library's own
+"Providers and cancellation" section — translates that Effect interruption into a real
+`AbortController.abort()` on the underlying `fetch()`.
+
+Both halves were verified concretely, not inferred from the docs: driving the page through a real
+(system-installed) Chromium against the server's `RESPONSE_DELAY_MS=400` route. Typing `a`, `d`, `a`
+back-to-back produced this exact request log:
 
 ```
 sent      /api/admin/users?name=a
-sent      /api/admin/users?name=al
-sent      /api/admin/users?name=ali
+sent      /api/admin/users?name=ad
 failed    /api/admin/users?name=a    net::ERR_ABORTED
-failed    /api/admin/users?name=al   net::ERR_ABORTED
-sent      /api/admin/users?name=alic
-failed    /api/admin/users?name=ali  net::ERR_ABORTED
-finished  /api/admin/users?name=alic
+sent      /api/admin/users?name=ada
+failed    /api/admin/users?name=ad   net::ERR_ABORTED
+finished  /api/admin/users?name=ada
 ```
 
-Three real, browser-level aborted network requests, and only the last keystroke's request actually
-completed and rendered — with the table correctly holding only rows matching `alic`. That is the
-concrete evidence behind the "worked well" and "gap" bullets below, not just a reading of the docs.
+Real, browser-level aborted network requests, and only the last keystroke's request completed and
+rendered. Then the case `cancel` exists for — typing a typo and correcting it *inside* the typo's
+own request flight, the single most ordinary thing that happens in a search box:
 
-**The genuine gap this surfaced:** there is no "interrupt the current flight, but keep whatever is
-already cached" operation. `invalidate` is the only interruption tool the gate offers, and it always
-clears the retained success too. That's a fine trade for this page — it keeps its own last-rendered
-rows on screen regardless of what the gate remembers, so nothing is lost — but a caller who wanted
-both the gate's cross-call cache-hit behavior *and* per-keystroke interruption at once has no single
-method for that; they would have to reach for the lower-level "interrupt the specific fiber that
-issued the previous call" pattern the docs mention (`Effect.runFork` + `Fiber.interrupt`) instead of
-the gate's own vocabulary. For a live search box specifically, this also means the gate's headline
-feature — "equivalent concurrent `run` calls share one execution... `run` first checks for an
-equivalent cached success" — is barely exercised: `invalidate` wipes that cache before it would ever
-get a chance to help, since almost every keystroke produces a new, distinct key anyway.
+```
+sent      /api/admin/users?name=adax
+failed    /api/admin/users?name=adax  net::ERR_ABORTED
+(correcting back to "ada": no network request at all)
+```
+
+The correction resolved straight out of the gate's retained success, with the "Loading…" line never
+appearing, because the cancelled `adax` flight could neither complete nor evict what `ada` had
+already put there. Under the old `invalidate` call that same correction cost a full round trip.
+That is the concrete evidence behind the bullets below.
+
+The page also keeps a **Refresh** button wired to `gate.refresh`, the cache-bypassing counterpart:
+same filters, but always a new execution. Between `run`, `refresh`, and `cancel`, the only gate
+operation this page has no natural use for is `reload`, which re-runs the retained *input* rather
+than the currently typed one.
+
+**What remains a judgement call, not a defect:** cancellation is whole-gate, so a page running
+several keys concurrently behind one gate cannot supersede just one of them, and retention is still
+a single entry, so alternating between two filters never hits the cache. Both are recorded as open
+questions in the library's design notes (10 and 11); neither bites this page, which runs one key at
+a time.
 
 ## Using `viell-effect-schema-http`: what worked well
 
@@ -235,9 +255,12 @@ get a chance to help, since almost every keystroke produces a new, distinct key 
   error, and a path with no `:params` (like `/api/posts`) correctly makes the endpoint callable
   with zero arguments (`listFeed()`).
 - **Immutable setters compose into small, genuinely reusable combinators.** `withAuth` (attaching a
-  bearer token) is an 8-line function written once against a minimal structural type
-  (`{ setHeader }`) and it works across every endpoint regardless of that endpoint's concrete
-  `Body`/`Rules`/`BodyReady` type parameters — no per-endpoint casting needed anywhere it's used.
+  bearer token) is a three-line function that works across every endpoint regardless of that
+  endpoint's concrete `Body`/`Rules`/`BodyReady` type parameters — no per-endpoint casting needed
+  anywhere it's used. It originally had to guess at a minimal structural type (`{ setHeader }`)
+  because the library had no public name for that signature; it is now annotated with the exported
+  `RequestPlanTransform`, which also makes it pipeable (`getPost({ slug }).pipe(withAuth, toEffect)`)
+  instead of a wrapper around the plan.
 - **TSDoc coverage let this whole client layer get built without reading the library's
   implementation.** Per the project's own request, every endpoint, setter, and codec choice below
   was written from `dist/request.d.ts`'s TSDoc and the README alone; `src/request.ts` was never
@@ -267,21 +290,29 @@ get a chance to help, since almost every keystroke produces a new, distinct key 
 
 ## Using `viell-effect-schema-http`: friction, gaps, and one real bug we hit
 
-- **`FetchHttpClient` sends a `traceparent` header on every request, and the library's docs never
-  mention it.** This broke every cross-origin call from the browser during manual verification: a
-  CORS server with a fixed `Access-Control-Allow-Headers` allow-list (a completely standard pattern
-  — see the *first* version of `packages/server/src/main.ts` in git history) rejects the preflight,
-  and the failure surfaces only as an opaque `RequestError: Transport error (...)` with no
-  indication that CORS, let alone this specific header, was the cause. Diagnosing it required
-  opening the browser console for the real (non-Effect-wrapped) message and instrumenting a raw
-  `fetch()` call to compare. This is technically `@effect/platform`'s tracing propagation rather
-  than code in this library, but it is exactly the kind of thing a consumer hits *only* because of
-  how this library uses `HttpClient.HttpClient`, and the README's browser-facing "Quick start" and
-  "Providers and cancellation" sections are the natural place to warn about it. **Fix applied on our
-  side:** the demo server now reflects `Access-Control-Request-Headers` instead of hard-coding an
-  allow-list (see `packages/server/src/main.ts`); a real backend would need to explicitly allow
-  `traceparent` (and `tracestate`) or disable tracing propagation on the client.
-- **No worked example for what schema to pair with any of the three non-default codecs.** The
+- **`FetchHttpClient` sends tracing headers on every request, and the library's docs did not
+  mention it.** _Resolved in the library._ This broke every cross-origin call from the browser
+  during manual verification: a CORS server with a fixed `Access-Control-Allow-Headers` allow-list
+  (a completely standard pattern — see the *first* version of `packages/server/src/main.ts` in git
+  history) rejects the preflight, and the failure surfaces only as an opaque
+  `RequestError: Transport error (...)` with no indication that CORS, let alone a specific header,
+  was the cause. Diagnosing it required opening the browser console for the real
+  (non-Effect-wrapped) message and instrumenting a raw `fetch()` call to compare. This is
+  technically `@effect/platform`'s tracing propagation rather than code in this library, but it is
+  exactly the kind of thing a consumer hits *only* because of how this library uses
+  `HttpClient.HttpClient`. The library's README now has a "Browsers and CORS" section that names
+  the headers, explains the preflight consequence, and gives the
+  `HttpClient.withTracerPropagation(false)` opt-out — and a library test pins the header names so
+  the guidance cannot drift from the provider. Worth knowing: it is **two** headers, `traceparent`
+  *and* `b3`, so an allow-list fixed up to permit only the one named in the original report would
+  still have failed. **Fix applied on our side:** the demo server reflects
+  `Access-Control-Request-Headers` instead of hard-coding an allow-list (see
+  `packages/server/src/main.ts`).
+- **No worked example for what schema to pair with any of the three non-default codecs.**
+  _Resolved in the library._ Both codec tables in the README now carry the schema each codec pairs
+  with, in both directions, and `examples/bodyCodecs.ts` is a typechecked endpoint per codec. The
+  four pairings worked out below are the ones it documents. The original complaint follows as
+  written, because it is the reason the fix exists. The
   README's "Body codecs" table names `ResponseBody.text`/`.uint8Array`/`.formData`/`.none` and
   `RequestBody.text`/`.uint8Array`/`.urlParams`/`.formData`, but every worked example in the README
   uses the JSON default. Each pairing had to be worked out independently, by the same
@@ -299,13 +330,16 @@ get a chance to help, since almost every keystroke produces a new, distinct key 
     README's prose suggests without an example.
 
   One worked example per codec in the README — even just the schema signature, not a full endpoint
-  — would have turned four separate rounds of type-reading into zero.
-- **No worked example of a *reusable* cross-endpoint setter.** Every README example chains setters
-  inline at one call site. Writing `withAuth` (used above as a "worked well" point) required
-  independently figuring out that the trick is to type the helper structurally
-  (`<Plan extends { setHeader: ... }>`) rather than against a concrete `RequestPlan<Body, Rules,
-  BodyReady>`, since that triple differs per endpoint. It works well once you know it; nothing in
-  the docs points at the pattern.
+  — would have turned four separate rounds of type-reading into zero. That is exactly what was
+  added.
+- **No worked example of a *reusable* cross-endpoint setter.** _Resolved in the library._ Every
+  README example chained setters inline at one call site. Writing `withAuth` (used above as a
+  "worked well" point) required independently figuring out that the helper had to be typed
+  structurally (`<Plan extends { setHeader: ... }>`) rather than against a concrete
+  `RequestPlan<Body, Rules, BodyReady>`, since that triple differs per endpoint. The library turned
+  out to have exactly that signature internally, used by all of its own pipeable setters, and it is
+  now exported as `RequestPlanTransform` with the pattern documented under "Reusable cross-endpoint
+  setters". `withAuth` is annotated with it; the structural guess is gone.
 - **We did not exercise, and so cannot vouch for or against:** retries (`setRetry`/`setRetries`),
   `RequestBody.text`/`.urlParams` specifically (we hit `.formData` for requests but not these two),
   header-precedence tie-breaking beyond the single matcher above, or `UnhandledResponse.discard`/
