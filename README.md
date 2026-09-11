@@ -67,6 +67,7 @@ server discards all data. Adding a real database was out of scope for what this 
 | Admin user directory | `GET /api/admin/users` | plain JSON, driven through `makeRequestGate`, with computed query params that omit empty filters |
 | Authentication | every endpoint except the three public ones | a computed `authorization` header declared once on the API, removed by `extendApi` for login/register |
 | Edge cache bypass | `GET /api/posts`, `GET /api/blogs/:username/feed.atom` | `setCache` plus a computed cache-buster, applied per call site through a `RequestPlanTransform` |
+| Conflicting edits | `PUT /api/posts/:slug` | a mapped `409` opens a dialog, then replays the **same retained plan** through a `RequestPlanTransform` |
 
 The blog/post/comment CRUD underneath all of this is plain JSON in, JSON out — the default codec
 the library needs no configuration for at all.
@@ -102,7 +103,7 @@ The feed and the Atom feeds are served through an emulated reverse proxy with a 
 display both. `EDGE_CACHE_TTL_MS=0` disables it.
 
 Tests: `pnpm --filter @realworld/domain run test` (20 tests) and
-`pnpm --filter @realworld/server run test` (22 tests) run under Vitest. The web package has no
+`pnpm --filter @realworld/server run test` (25 tests) run under Vitest. The web package has no
 automated tests; it was verified by driving a real, system-installed Chromium through
 `playwright-core` against both dev servers, in three passes: (1) register → post → comment signed
 in → sign out → comment anonymously → create a private post → confirm it 404s for a signed-out
@@ -263,6 +264,14 @@ a time.
   pipeable endpoint. Every one of the twenty endpoints in `packages/web/src/api.ts` was declared
   this way — across five different response/request codecs — and it stayed easy to read even with
   five shared error rules inherited by every one of them.
+- **Response unions as ordinary success values pay off most when a status is a *question*, not a
+  failure.** The conflict flow is the case that made this concrete. A `409` from `PUT
+  /api/posts/:slug` is not an error condition to be caught and re-parsed — it is a typed value
+  carrying the server's explanation, sitting in the same union as the success, which the editor
+  reads and puts straight into a dialog. `if (result._tag === "ConflictError")` narrows the body
+  for free, and the code that follows reads like the product requirement it implements. With a
+  throwing client this is a catch block that has to re-derive the status, re-parse the payload, and
+  then re-enter the happy path from outside it.
 - **Response unions as ordinary success values is a genuinely good design.** Modeling a `404` as a
   decoded, typed member of the *success* channel (not a thrown error) means `Match.tag` handles
   "the post doesn't exist" and "here is the post" in the same exhaustive `Match.value(...).pipe(...)`
@@ -304,7 +313,16 @@ a time.
   should hit the caches, because that is what they are for; only a reader explicitly asking for a
   refresh has any business going around them.
 
-  The two together are the clearest statement this project can make about the library's defaults
+  `forceUpdate` (`packages/web/src/forceUpdate.ts`) is the sharpest version of the same idea, and
+  the one that best shows why plans being *cold and re-executable* matters. Saving a post sends the
+  revision the editor loaded; if someone else saved first the write is refused, a dialog asks the
+  obvious question, and if the person chooses to overwrite, the **same plan** is executed again
+  with one transform applied — adding the override and dropping the revision the caller has
+  knowingly abandoned. Nothing is rebuilt, nothing is re-encoded, and there is no second copy of
+  the call site to keep in sync. Here the opt-in is not even a call-site decision made in advance:
+  it is a decision made by a human, after the first attempt has already failed.
+
+  The three together are the clearest statement this project can make about the library's defaults
   model: **if the safe answer is "always", it belongs in the API declaration as a computed value;
   if the caller has to choose, it belongs in a `RequestPlanTransform`.** Both are one-liners at the
   point of use, and getting the distinction wrong is what produced `withAuth`.
@@ -465,10 +483,11 @@ a time.
 This project's manual verification passes — a real, system-installed Chromium driven through
 `playwright-core` against a live Vite dev server and Node backend, covering registration, login
 through both the JSON and url-encoded endpoints, post CRUD across all three visibility levels,
-comments from both registered and anonymous authors, a real multipart file upload rendered back as
-an inline image preview and re-fetched as a multipart bundle, the Atom feed in both directions,
-content-negotiated exports, retries against a genuinely flaky route, a retained unmapped response
-body, request-gate supersession and cache reuse, and admin-only access control — are exactly that
+two tabs racing on one post through the conflict dialog, comments from both registered and
+anonymous authors, a real multipart file upload rendered back as an inline image preview and
+re-fetched as a multipart bundle, the Atom feed in both directions, content-negotiated exports,
+retries against a genuinely flaky route, a retained unmapped response body, request-gate
+supersession and cache reuse, and admin-only access control — are exactly that
 missing coverage, for at least one realistic app shape using every codec the library ships. It is
 also precisely how the `traceparent`/CORS
 gap above was found: it never surfaces in a same-origin `curl` smoke test or in Node-to-Node
