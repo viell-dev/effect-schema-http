@@ -35,6 +35,9 @@ import {
   PostExport,
   PostExportFromMarkdown,
   PostView,
+  PostViewV2,
+  ACCEPT_VERSION_HEADER,
+  SCHEMA_VERSION_HEADER,
   RefreshCacheInput,
   RegisterInput,
   ReindexAccepted,
@@ -268,6 +271,35 @@ export const getPost = api.createRequest({
   method: "GET",
   path: "/api/posts/:slug",
   responses: [response({ _tag: "ok", status: 200 }, PostView)],
+});
+
+/**
+ * The same endpoint, asking for the newer view.
+ *
+ * Two rules at `200`, separated only by the version the server says it actually sent. That
+ * is the whole reason the negotiation is a header rather than a payload field: a response
+ * rule matches on headers, so the decoder is chosen before the body is read and the two
+ * versions never become a union some later reader has to narrow.
+ *
+ * The `v1` rule is not defensive padding. Mid-rollout, a load balancer will route some
+ * requests to a server that has not been redeployed, and that server answers `1` to an
+ * `Accept-Version: 2` request. Without the second rule that is an `UnhandledResponse`
+ * during every deploy.
+ */
+export const getPostVersioned = api.createRequest({
+  method: "GET",
+  path: "/api/posts/:slug",
+  headers: { [ACCEPT_VERSION_HEADER]: "2" },
+  responses: [
+    response(
+      { _tag: "v2", status: 200, headers: { [SCHEMA_VERSION_HEADER]: "2" } },
+      PostViewV2,
+    ),
+    response(
+      { _tag: "v1", status: 200, headers: { [SCHEMA_VERSION_HEADER]: "1" } },
+      PostView,
+    ),
+  ],
 });
 
 export const updatePost = api.createRequest({

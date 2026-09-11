@@ -18,5 +18,12 @@
     "tsx": "^4.20.6",
     "typescript": "^6.0.3",
     "vitest": "^5.0.0"
+  },
+  "main": "./src/main.ts",
+  "types": "./src/main.ts",
+  "exports": {
+    ".": "./src/main.ts",
+    "./routes": "./src/routes.ts",
+    "./store": "./src/store.ts"
   }
 }
