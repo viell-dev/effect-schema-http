@@ -23,6 +23,7 @@ import {
   type CommentAuthor,
   CommentId,
   CommentsResponse,
+  ConflictError,
   CreateCommentInput,
   CreatePostInput,
   CurrentUser,
@@ -245,13 +246,43 @@ export const getPost = (slugParam: string, authHeader: string | undefined) =>
     return yield* postToView(post);
   }).pipe(respondWith(PostView, 200));
 
-export const updatePost = (slugParam: string, authHeader: string | undefined, json: unknown) =>
+/**
+ * Optimistic concurrency, bolted on years after the fact and therefore carried in headers rather
+ * than in `UpdatePostInput`: changing the request body's shape would have broken the clients that
+ * were already posting to this route, so the check went somewhere additive instead.
+ *
+ * A client that knows about it sends `x-expected-revision` with the `updatedAt` it last saw. If
+ * the post has moved on since, the write is refused with the same `ConflictError` every other
+ * conflict on this API uses, carrying the time it actually changed. `x-force-update: true`
+ * overrides the check — that is the "I've read the warning, overwrite it" path, and it is
+ * deliberately a separate header so the server can tell "didn't check" (no revision sent, old
+ * client) apart from "checked and chose to win" (revision sent, force sent).
+ */
+export const updatePost = (
+  slugParam: string,
+  authHeader: string | undefined,
+  json: unknown,
+  expectedRevision: string | undefined,
+  forceUpdate: string | undefined,
+) =>
   Effect.gen(function* () {
     const slug = yield* decodeBody(Slug, slugParam);
     const requesterId = yield* requireSession(authHeader);
     const input = yield* decodeBody(UpdatePostInput, json);
     const store = yield* Store;
     const existing = yield* store.getPostBySlug(slug);
+
+    if (expectedRevision !== undefined && forceUpdate !== "true") {
+      const current = DateTime.formatIso(existing.updatedAt);
+      if (current !== expectedRevision) {
+        return yield* Effect.fail(
+          new ConflictError({
+            message: `This post was changed by someone else at ${current}. Saving now would overwrite their edit.`,
+          }),
+        );
+      }
+    }
+
     const updated = yield* store.replacePost(
       existing.id,
       requesterId,

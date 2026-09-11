@@ -1,12 +1,14 @@
-import { Match } from "effect";
+import { DateTime, Match } from "effect";
 import { toEffect } from "viell-effect-schema-http";
 import { CreatePostInput, type PostVisibility, UpdatePostInput } from "@realworld/domain";
 import { h, mount } from "../dom.js";
 import { renderNav } from "../components/nav.js";
+import { askAboutConflict } from "../components/conflictDialog.js";
 import { createPost, getPost, updatePost } from "../api.js";
 import { run } from "../runtime.js";
 import { domainErrorMessage } from "../errors.js";
 import { decodeForm } from "../decodeForm.js";
+import { forceUpdate } from "../forceUpdate.js";
 import { getSession } from "../session.js";
 import { navigate } from "../router.js";
 
@@ -27,6 +29,9 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
     body: "",
     visibility: "public",
   };
+  // The revision this editor was opened against, sent back with the save so the server can tell
+  // whether anyone else has written since. Absent for a new post: there is nothing to conflict with.
+  let loadedRevision: string | undefined;
 
   if (editingSlug) {
     const existing = await run(getPost({ slug: editingSlug }).pipe(toEffect)).catch(() => undefined);
@@ -48,6 +53,7 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
       return;
     }
     initial = { title: existing.body.title, body: existing.body.body, visibility: existing.body.visibility };
+    loadedRevision = DateTime.formatIso(existing.body.updatedAt);
   }
 
   const errorBox = h("p", { class: "error hidden" });
@@ -91,22 +97,42 @@ export const renderEditorPage = async (root: HTMLElement, editingSlug?: string):
             showError(decoded.issues.join("; "));
             return;
           }
-          void run(updatePost({ slug: editingSlug }).setBody(decoded.value).pipe(toEffect))
-            .then((result) => {
-              const message = domainErrorMessage(result);
-              if (message) {
-                showError(message);
+          // Built once and held. A conflict re-executes this very plan with one transform
+          // applied, rather than assembling a second, near-identical request.
+          const save = updatePost({ slug: editingSlug })
+            .setBody(decoded.value)
+            .setHeader("x-expected-revision", loadedRevision ?? "");
+
+          const submit = async (plan: typeof save): Promise<void> => {
+            const result = await run(plan.pipe(toEffect));
+
+            // A 409 is a mapped response rule, so it arrives here as an ordinary typed value
+            // alongside the success case — not as a thrown error to be caught and re-parsed.
+            if (result._tag === "ConflictError") {
+              const { force } = await askAboutConflict(result.body.message);
+              if (!force) {
+                showError("Your changes were not saved. Reload the page to see the other version.");
                 return;
               }
-              Match.value(result).pipe(
-                Match.tag("ok", ({ body }) => navigate(`/posts/${body.slug}`)),
-                Match.orElse(() => showError("Unexpected response from the server.")),
-              );
-            })
-            .catch((error: unknown) => {
-              console.error("post update failed", error);
-              showError("Could not reach the server. Is it running?");
-            });
+              await submit(save.pipe(forceUpdate));
+              return;
+            }
+
+            const message = domainErrorMessage(result);
+            if (message) {
+              showError(message);
+              return;
+            }
+            Match.value(result).pipe(
+              Match.tag("ok", ({ body }) => navigate(`/posts/${body.slug}`)),
+              Match.orElse(() => showError("Unexpected response from the server.")),
+            );
+          };
+
+          void submit(save).catch((error: unknown) => {
+            console.error("post update failed", error);
+            showError("Could not reach the server. Is it running?");
+          });
           return;
         }
 

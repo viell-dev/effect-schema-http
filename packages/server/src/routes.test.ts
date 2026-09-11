@@ -598,3 +598,80 @@ describe("diagnostics", () => {
     expect(asAnonymous.status).toBe(401);
   });
 });
+
+describe("optimistic concurrency on post updates", () => {
+  const setup = () =>
+    Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+      const created = yield* routes.createPost(header, {
+        title: "Hello world",
+        body: "First version.",
+        visibility: "public",
+      });
+      const revision = (jsonBody(created) as { updatedAt: string }).updatedAt;
+      return { header, revision };
+    });
+
+  it("accepts a write whose expected revision still matches", async () => {
+    const program = Effect.gen(function* () {
+      const { header, revision } = yield* setup();
+      return yield* routes.updatePost("hello-world", header, { body: "Second version." }, revision, undefined);
+    }).pipe(Effect.provide(Store.Default));
+
+    const response = await Effect.runPromise(program as Effect.Effect<RouteResponse>);
+    expect(response.status).toBe(200);
+    expect(jsonBody(response)).toMatchObject({ body: "Second version." });
+  });
+
+  it("refuses a write whose expected revision is stale, naming when it changed", async () => {
+    const program = Effect.gen(function* () {
+      const { header, revision } = yield* setup();
+      // Somebody else saves first, moving the post on.
+      const theirs = yield* routes.updatePost("hello-world", header, { body: "Their version." }, revision, undefined);
+      const theirRevision = (jsonBody(theirs) as { updatedAt: string }).updatedAt;
+      // Our editor still holds the revision from before their save.
+      const ours = yield* routes.updatePost("hello-world", header, { body: "Our version." }, revision, undefined);
+      const after = yield* routes.getPost("hello-world", header);
+      return { ours, theirRevision, after };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { ours, theirRevision, after } = await Effect.runPromise(
+      program as Effect.Effect<{ ours: RouteResponse; theirRevision: string; after: RouteResponse }>,
+    );
+
+    expect(ours.status).toBe(409);
+    expect((jsonBody(ours) as { message: string }).message).toContain(theirRevision);
+    // The refusal is a refusal: their version survived untouched.
+    expect(jsonBody(after)).toMatchObject({ body: "Their version." });
+  });
+
+  it("overwrites when the caller forces it, and skips the check for clients that never send one", async () => {
+    const program = Effect.gen(function* () {
+      const { header, revision } = yield* setup();
+      yield* routes.updatePost("hello-world", header, { body: "Their version." }, revision, undefined);
+
+      // The replayed request: same stale revision, plus the override the dialog opted into.
+      const forced = yield* routes.updatePost("hello-world", header, { body: "Our version." }, revision, "true");
+      const afterForce = yield* routes.getPost("hello-world", header);
+
+      // An older client that knows nothing about revisions is unaffected by any of this.
+      const legacy = yield* routes.updatePost("hello-world", header, { body: "Legacy version." }, undefined, undefined);
+
+      return { forced, afterForce, legacy };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { forced, afterForce, legacy } = await Effect.runPromise(
+      program as Effect.Effect<{ forced: RouteResponse; afterForce: RouteResponse; legacy: RouteResponse }>,
+    );
+
+    expect(forced.status).toBe(200);
+    expect(jsonBody(afterForce)).toMatchObject({ body: "Our version." });
+    expect(legacy.status).toBe(200);
+  });
+});

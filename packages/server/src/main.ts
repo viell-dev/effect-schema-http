@@ -79,7 +79,8 @@ interface Route {
     query: URLSearchParams,
     authHeader: string | undefined,
     body: unknown,
-    accept: string | undefined,
+    /** Reads any other request field; handlers that need one take it rather than a fixed list. */
+    header: (name: string) => string | undefined,
   ) => Promise<RouteResponse>;
 }
 
@@ -140,7 +141,8 @@ const routeTable: ReadonlyArray<Route> = [
     method: "PUT",
     pattern: /^\/api\/posts\/([^/]+)$/,
     bodyMode: "json",
-    handle: ([slug], _q, auth, json) => run(routes.updatePost(slug!, auth, json)),
+    handle: ([slug], _q, auth, json, header) =>
+      run(routes.updatePost(slug!, auth, json, header("x-expected-revision"), header("x-force-update"))),
   },
   {
     method: "DELETE",
@@ -171,7 +173,7 @@ const routeTable: ReadonlyArray<Route> = [
     method: "GET",
     pattern: /^\/api\/posts\/([^/]+)\/export$/,
     bodyMode: "none",
-    handle: ([slug], _q, auth, _body, accept) => run(routes.exportPost(slug!, auth, accept)),
+    handle: ([slug], _q, auth, _body, header) => run(routes.exportPost(slug!, auth, header("accept"))),
   },
   {
     method: "GET",
@@ -344,8 +346,13 @@ const server = http.createServer((req, res) => {
   const bodyPromise: Promise<unknown> =
     route.bodyMode === "none" ? Promise.resolve(undefined) : readRawBody(req).then(parseBody);
 
+  const header = (name: string): string | undefined => {
+    const value = req.headers[name.toLowerCase()];
+    return Array.isArray(value) ? value[0] : value;
+  };
+
   bodyPromise
-    .then((body) => route.handle(params, url.searchParams, authHeader, body, req.headers.accept))
+    .then((body) => route.handle(params, url.searchParams, authHeader, body, header))
     .then(respond)
     .catch((error: unknown) => {
       console.error("unhandled server error", error);
