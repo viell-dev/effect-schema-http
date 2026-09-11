@@ -11,6 +11,7 @@ export * from "./admin.js";
 export * from "./legacy.js";
 export * from "./legacyComments.js";
 export * from "./search.js";
+export * from "./calendar.js";
 export * from "./export.js";
 export * from "./adminUsers.js";
 export * from "./api.js";

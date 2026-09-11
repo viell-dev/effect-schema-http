@@ -9,9 +9,16 @@ import {
   Account,
   type AttachmentId,
   type AttachmentView,
+  type CalendarEntryId,
+  type CalendarTitle,
   type Comment,
   ConflictError,
+  type DisplayName,
   type Email,
+  type RepeatingEvent,
+  type ServiceOrderId,
+  type SingleEvent,
+  type StreetAddress,
   ForbiddenError,
   NotFoundError,
   Post,
@@ -37,11 +44,26 @@ interface State {
   readonly slugIndex: Map<Slug, PostId>;
   readonly comments: Map<CommentId, Comment>;
   readonly attachments: Map<AttachmentId, StoredAttachment>;
+  /** Calendar entries the user created directly. */
+  readonly calendarEvents: Map<CalendarEntryId, SingleEvent | RepeatingEvent>;
+  /** Service orders, which are not calendar entries but are projected onto the calendar. */
+  readonly serviceOrders: Map<ServiceOrderId, StoredServiceOrder>;
   readonly lastCacheRefresh: DateTime.Utc | undefined;
   /** How many times the search index has been asked to rebuild since this process started. */
   readonly reindexAttempts: number;
   /** Requests the search vendor has served since its last window; it rate-limits after a burst. */
   readonly searchRequests: number;
+}
+
+/** A service order lives in its own resource; the calendar only borrows it. */
+export interface StoredServiceOrder {
+  readonly id: ServiceOrderId;
+  readonly assigneeId: UserId;
+  readonly title: CalendarTitle;
+  readonly customer: DisplayName;
+  readonly address: StreetAddress;
+  readonly scheduledFor: DateTime.Utc;
+  readonly status: "dispatched" | "accepted" | "completed";
 }
 
 const emptyState: State = {
@@ -53,6 +75,8 @@ const emptyState: State = {
   slugIndex: new Map(),
   comments: new Map(),
   attachments: new Map(),
+  calendarEvents: new Map(),
+  serviceOrders: new Map(),
   lastCacheRefresh: undefined,
   reindexAttempts: 0,
   searchRequests: 0,
@@ -279,6 +303,32 @@ export class Store extends Effect.Service<Store>()("Store", {
         return [undefined, { ...state, attachments }];
       }).pipe(Effect.flatMap((error) => (error ? Effect.fail(error) : Effect.void)));
 
+    const insertCalendarEvent = (event: SingleEvent | RepeatingEvent) =>
+      Ref.update(ref, (state) => ({
+        ...state,
+        calendarEvents: new Map(state.calendarEvents).set(event.id, event),
+      })).pipe(Effect.as(event));
+
+    const listCalendarEvents = (ownerId: UserId) =>
+      Ref.get(ref).pipe(
+        Effect.map((state) =>
+          Array.from(state.calendarEvents.values()).filter((event) => event.ownerId === ownerId),
+        ),
+      );
+
+    const insertServiceOrder = (order: StoredServiceOrder) =>
+      Ref.update(ref, (state) => ({
+        ...state,
+        serviceOrders: new Map(state.serviceOrders).set(order.id, order),
+      })).pipe(Effect.as(order));
+
+    const listServiceOrders = (assigneeId: UserId) =>
+      Ref.get(ref).pipe(
+        Effect.map((state) =>
+          Array.from(state.serviceOrders.values()).filter((order) => order.assigneeId === assigneeId),
+        ),
+      );
+
     const countStats = () =>
       Ref.get(ref).pipe(
         Effect.map((state) => ({
@@ -344,6 +394,10 @@ export class Store extends Effect.Service<Store>()("Store", {
       listAttachmentsByPost,
       getAttachment,
       deleteAttachment,
+      insertCalendarEvent,
+      listCalendarEvents,
+      insertServiceOrder,
+      listServiceOrders,
       countStats,
       recordReindexAttempt,
       recordSearchRequest,

@@ -31,3 +31,9 @@ export type SessionToken = typeof SessionToken.Type;
 
 export const AttachmentId = brandedUuid("AttachmentId");
 export type AttachmentId = typeof AttachmentId.Type;
+
+export const CalendarEntryId = brandedUuid("CalendarEntryId");
+export type CalendarEntryId = typeof CalendarEntryId.Type;
+
+export const ServiceOrderId = brandedUuid("ServiceOrderId");
+export type ServiceOrderId = typeof ServiceOrderId.Type;

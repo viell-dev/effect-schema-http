@@ -120,6 +120,31 @@ const routeTable: ReadonlyArray<Route> = [
     handle: ([username], _q, auth, xml) => run(routes.importAtom(username!, auth, xml as string)),
   },
   {
+    method: "GET",
+    pattern: /^\/api\/calendar$/,
+    bodyMode: "none",
+    handle: (_p, _q, auth) => run(routes.listCalendar(auth)),
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/calendar$/,
+    bodyMode: "json",
+    handle: (_p, _q, auth, json) => run(routes.createCalendarEvent(auth, json)),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/calendar\/([^/]+)$/,
+    bodyMode: "none",
+    handle: ([entryId], _q, auth) => run(routes.getCalendarEntry(entryId!, auth)),
+  },
+  {
+    // Dispatching work is a different resource; the calendar only reflects it.
+    method: "POST",
+    pattern: /^\/api\/service-orders$/,
+    bodyMode: "json",
+    handle: (_p, _q, auth, json) => run(routes.createServiceOrder(auth, json)),
+  },
+  {
     // The vendor search product, exposed through a proxy rule; see routes.ts.
     method: "GET",
     pattern: /^\/api\/search$/,

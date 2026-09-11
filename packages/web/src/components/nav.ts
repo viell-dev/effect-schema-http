@@ -13,6 +13,7 @@ export const renderNav = (): HTMLElement => {
       { class: "nav-links" },
       h("a", { href: "#/" }, "Feed"),
       h("a", { href: "#/search" }, "Search"),
+      session ? h("a", { href: "#/calendar" }, "Calendar") : null,
       session
         ? h(
             "span",

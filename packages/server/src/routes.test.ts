@@ -886,3 +886,148 @@ describe("the vendor search endpoint", () => {
   });
 });
 
+describe("the calendar", () => {
+  it("returns events, repeating events, and projected assignments in one list", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+
+      const single = yield* routes.createCalendarEvent(header, {
+        title: "Standup",
+        startsAt: "2026-01-02T09:00:00.000Z",
+        endsAt: "2026-01-02T09:15:00.000Z",
+      });
+      const repeating = yield* routes.createCalendarEvent(header, {
+        title: "Retro",
+        startsAt: "2026-01-02T16:00:00.000Z",
+        endsAt: "2026-01-02T17:00:00.000Z",
+        recurrence: { frequency: "weekly", interval: 1 },
+      });
+      const order = yield* routes.createServiceOrder(header, {
+        assignee: "ada",
+        title: "Replace the boiler",
+        customer: "Grace Hopper",
+        address: "1 Navy Yard",
+        scheduledFor: "2026-01-02T13:00:00.000Z",
+      });
+
+      const listed = yield* routes.listCalendar(header);
+      return { single, repeating, order, listed };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { single, repeating, order, listed } = await Effect.runPromise(
+      program as Effect.Effect<{
+        single: RouteResponse;
+        repeating: RouteResponse;
+        order: RouteResponse;
+        listed: RouteResponse;
+      }>,
+    );
+
+    // Supplying a recurrence produces a different shape, not a flag on the same one.
+    expect(jsonBody(single)).toMatchObject({ _tag: "event" });
+    expect(jsonBody(repeating)).toMatchObject({ _tag: "repeating", recurrence: { frequency: "weekly" } });
+    expect(jsonBody(order)).toMatchObject({ _tag: "assignment", customer: "Grace Hopper" });
+
+    const entries = (jsonBody(listed) as { entries: ReadonlyArray<{ _tag: string }> }).entries;
+    // One list, three shapes, ordered by when they start.
+    expect(entries.map((entry) => entry._tag)).toEqual(["event", "assignment", "repeating"]);
+  });
+
+  it("resolves a single entry of any shape, an assignment by its order id", async () => {
+    const program = Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+
+      const event = yield* routes.createCalendarEvent(header, {
+        title: "Standup",
+        startsAt: "2026-01-02T09:00:00.000Z",
+        endsAt: "2026-01-02T09:15:00.000Z",
+      });
+      const order = yield* routes.createServiceOrder(header, {
+        assignee: "ada",
+        title: "Replace the boiler",
+        customer: "Grace Hopper",
+        address: "1 Navy Yard",
+        scheduledFor: "2026-01-02T13:00:00.000Z",
+      });
+
+      const byEventId = yield* routes.getCalendarEntry((jsonBody(event) as { id: string }).id, header);
+      const byOrderId = yield* routes.getCalendarEntry(
+        (jsonBody(order) as { serviceOrderId: string }).serviceOrderId,
+        header,
+      );
+      const missing = yield* routes.getCalendarEntry("3f2504e0-4f89-41d3-9a0c-0305e82c3399", header);
+
+      return { byEventId, byOrderId, missing };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { byEventId, byOrderId, missing } = await Effect.runPromise(
+      program as Effect.Effect<{ byEventId: RouteResponse; byOrderId: RouteResponse; missing: RouteResponse }>,
+    );
+
+    expect(jsonBody(byEventId)).toMatchObject({ _tag: "event", title: "Standup" });
+    expect(jsonBody(byOrderId)).toMatchObject({ _tag: "assignment", address: "1 Navy Yard" });
+    expect(missing.status).toBe(404);
+  });
+
+  it("keeps one worker's calendar out of another's", async () => {
+    const program = Effect.gen(function* () {
+      const first = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const second = yield* routes.register({
+        username: "grace",
+        email: "grace@example.com",
+        password: "hopper1234",
+        displayName: "Grace Hopper",
+      });
+      const adaHeader = `Bearer ${(jsonBody(first) as { token: string }).token}`;
+      const graceHeader = `Bearer ${(jsonBody(second) as { token: string }).token}`;
+
+      yield* routes.createCalendarEvent(adaHeader, {
+        title: "Standup",
+        startsAt: "2026-01-02T09:00:00.000Z",
+        endsAt: "2026-01-02T09:15:00.000Z",
+      });
+      // Only the first registered account is an admin, so Grace cannot dispatch work.
+      const graceDispatch = yield* routes.createServiceOrder(graceHeader, {
+        assignee: "grace",
+        title: "Nope",
+        customer: "Nobody",
+        address: "Nowhere",
+        scheduledFor: "2026-01-02T13:00:00.000Z",
+      });
+
+      const graceCalendar = yield* routes.listCalendar(graceHeader);
+      const anonymous = yield* routes.listCalendar(undefined);
+      return { graceDispatch, graceCalendar, anonymous };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { graceDispatch, graceCalendar, anonymous } = await Effect.runPromise(
+      program as Effect.Effect<{
+        graceDispatch: RouteResponse;
+        graceCalendar: RouteResponse;
+        anonymous: RouteResponse;
+      }>,
+    );
+
+    expect(graceDispatch.status).toBe(403);
+    expect((jsonBody(graceCalendar) as { entries: ReadonlyArray<unknown> }).entries).toHaveLength(0);
+    expect(anonymous.status).toBe(401);
+  });
+});
+

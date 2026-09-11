@@ -13,6 +13,10 @@ import {
   AttachmentView,
   AuthResponse,
   BlogResponse,
+  CalendarEntry,
+  CalendarResponse,
+  CreateEventInput,
+  CreateServiceOrderInput,
   Comment,
   CommentsResponse,
   ConflictError,
@@ -208,6 +212,47 @@ export const search = api.createRequest({
     response({ _tag: "hits", status: 200 }, SearchHits),
     response({ _tag: "rateLimited", status: 429 }, Schema.Struct({ message: Schema.String })),
   ] as const,
+});
+
+/**
+ * The calendar, and the counter-example to everything else in this file: an endpoint that is not
+ * misbehaving at all, whose body is still one of three shapes.
+ *
+ * A worker's calendar holds ordinary events, repeating events, and assignments projected from
+ * service orders — a different resource entirely. Status and headers are identical for all three,
+ * so the transport cannot distinguish them and a response rule should not try. The distinction is
+ * a `_tag`-discriminated `Schema.Union` in `@realworld/domain`, matched with `Match.tag` over
+ * `body` once the envelope has already been matched with `Match.tag` over the result. Two layers,
+ * each exhaustive, neither substituting for the other.
+ *
+ * This is the normal case for a mixed collection, not a workaround for a bad API — which is worth
+ * saying because the v1 comment endpoint above needs the same mechanism for a much worse reason.
+ */
+export const listCalendar = api.createRequest({
+  method: "GET",
+  path: "/api/calendar",
+  responses: [response({ _tag: "ok", status: 200 }, CalendarResponse)],
+});
+
+/** The same union, for one entry; an assignment resolves by its service order id. */
+export const getCalendarEntry = api.createRequest({
+  method: "GET",
+  path: "/api/calendar/:entryId",
+  responses: [response({ _tag: "ok", status: 200 }, CalendarEntry)],
+});
+
+export const createCalendarEvent = api.createRequest({
+  method: "POST",
+  path: "/api/calendar",
+  body: CreateEventInput,
+  responses: [response({ _tag: "created", status: 201 }, CalendarEntry)],
+});
+
+export const createServiceOrder = api.createRequest({
+  method: "POST",
+  path: "/api/service-orders",
+  body: CreateServiceOrderInput,
+  responses: [response({ _tag: "created", status: 201 }, CalendarEntry)],
 });
 
 // -- Posts ----------------------------------------------------------------------------------

@@ -11,6 +11,11 @@ import {
   adminUserViewOfAccount,
   AdminUsersResponse,
   AtomFeedFromString,
+  CalendarEntry,
+  CalendarEntryId,
+  CalendarResponse,
+  CreateEventInput,
+  CreateServiceOrderInput,
   AttachmentCaption,
   AttachmentId,
   AttachmentsResponse,
@@ -49,9 +54,12 @@ import {
   PostRevision,
   PostView,
   ReindexAccepted,
+  type RepeatingEvent,
+  type SingleEvent,
   RefreshCacheInput,
   RegisterInput,
   SearchHits,
+  ServiceOrderId,
   SessionToken,
   Slug,
   UnauthorizedError,
@@ -927,3 +935,149 @@ export const search = (
 
     return { kind: "json", status: 200, headers, body: hits } satisfies RouteResponse;
   });
+
+// -- Calendar ----------------------------------------------------------------------------------
+
+/**
+ * The worker calendar. Everything here is deliberately well-behaved — correct statuses, one
+ * consistent envelope, ISO timestamps — because its point is not misbehaviour. Its point is that
+ * a correct API still answers with a *mixed list*: stored events, stored repeating events, and
+ * assignments projected from service orders, which are a different resource that happens to need
+ * showing on a calendar.
+ *
+ * The three shapes are genuinely different, not one shape with optional fields. An assignment has
+ * a customer and an address and no end time; an event has neither and does; a repeating event
+ * carries a recurrence rule. Flattening them would throw away exactly the facts a caller needs.
+ */
+export const listCalendar = (authHeader: string | undefined) =>
+  Effect.gen(function* () {
+    const ownerId = yield* requireSession(authHeader);
+    const store = yield* Store;
+    const [events, orders, owner] = yield* Effect.all([
+      store.listCalendarEvents(ownerId),
+      store.listServiceOrders(ownerId),
+      store.getAccount(ownerId),
+    ]);
+
+    const assignments = orders.map(
+      (order) =>
+        ({
+          _tag: "assignment" as const,
+          serviceOrderId: order.id,
+          assigneeId: order.assigneeId,
+          assigneeUsername: owner.username,
+          title: order.title,
+          customer: order.customer,
+          address: order.address,
+          scheduledFor: order.scheduledFor,
+          status: order.status,
+        }) satisfies CalendarEntry,
+    );
+
+    const startOf = (entry: CalendarEntry) =>
+      entry._tag === "assignment" ? entry.scheduledFor : entry.startsAt;
+
+    const entries = [...events, ...assignments].sort(
+      (left, right) => DateTime.toEpochMillis(startOf(left)) - DateTime.toEpochMillis(startOf(right)),
+    );
+
+    return { entries };
+  }).pipe(respondWith(CalendarResponse, 200));
+
+/** One entry, still any one of the three shapes; an assignment resolves by its service order id. */
+export const getCalendarEntry = (entryIdParam: string, authHeader: string | undefined) =>
+  Effect.gen(function* () {
+    const ownerId = yield* requireSession(authHeader);
+    const store = yield* Store;
+    const [events, orders, owner] = yield* Effect.all([
+      store.listCalendarEvents(ownerId),
+      store.listServiceOrders(ownerId),
+      store.getAccount(ownerId),
+    ]);
+
+    const event = events.find((candidate) => candidate.id === entryIdParam);
+    if (event) return event satisfies CalendarEntry;
+
+    const order = orders.find((candidate) => candidate.id === entryIdParam);
+    if (order) {
+      return {
+        _tag: "assignment" as const,
+        serviceOrderId: order.id,
+        assigneeId: order.assigneeId,
+        assigneeUsername: owner.username,
+        title: order.title,
+        customer: order.customer,
+        address: order.address,
+        scheduledFor: order.scheduledFor,
+        status: order.status,
+      } satisfies CalendarEntry;
+    }
+
+    return yield* Effect.fail(new NotFoundError({ resource: "CalendarEntry", id: entryIdParam }));
+  }).pipe(respondWith(CalendarEntry, 200));
+
+export const createCalendarEvent = (authHeader: string | undefined, json: unknown) =>
+  Effect.gen(function* () {
+    const ownerId = yield* requireSession(authHeader);
+    const input = yield* decodeBody(CreateEventInput, json);
+    if (DateTime.toEpochMillis(input.endsAt) <= DateTime.toEpochMillis(input.startsAt)) {
+      return yield* Effect.fail(
+        new ValidationError({ message: "request body failed validation", issues: ["endsAt: must be after startsAt"] }),
+      );
+    }
+
+    const store = yield* Store;
+    // The recurrence rule is what makes it a different shape, not a flag on the same one.
+    const entry: SingleEvent | RepeatingEvent = input.recurrence
+      ? {
+          _tag: "repeating" as const,
+          id: CalendarEntryId.make(randomUUID()),
+          ownerId,
+          title: input.title,
+          startsAt: input.startsAt,
+          endsAt: input.endsAt,
+          recurrence: input.recurrence,
+        }
+      : {
+          _tag: "event" as const,
+          id: CalendarEntryId.make(randomUUID()),
+          ownerId,
+          title: input.title,
+          startsAt: input.startsAt,
+          endsAt: input.endsAt,
+        };
+
+    return yield* store.insertCalendarEvent(entry);
+  }).pipe(respondWith(CalendarEntry, 201));
+
+/** Dispatching work is an admin action against a *different* resource; the calendar only reflects it. */
+export const createServiceOrder = (authHeader: string | undefined, json: unknown) =>
+  Effect.gen(function* () {
+    yield* requireAdmin(authHeader);
+    const input = yield* decodeBody(CreateServiceOrderInput, json);
+    const store = yield* Store;
+    const assignee = yield* store.findAccountByUsername(input.assignee);
+    if (!assignee) return yield* Effect.fail(new NotFoundError({ resource: "User", id: input.assignee }));
+
+    const order = yield* store.insertServiceOrder({
+      id: ServiceOrderId.make(randomUUID()),
+      assigneeId: assignee.id,
+      title: input.title,
+      customer: input.customer,
+      address: input.address,
+      scheduledFor: input.scheduledFor,
+      status: "dispatched",
+    });
+
+    return {
+      _tag: "assignment" as const,
+      serviceOrderId: order.id,
+      assigneeId: order.assigneeId,
+      assigneeUsername: assignee.username,
+      title: order.title,
+      customer: order.customer,
+      address: order.address,
+      scheduledFor: order.scheduledFor,
+      status: order.status,
+    } satisfies CalendarEntry;
+  }).pipe(respondWith(CalendarEntry, 201));

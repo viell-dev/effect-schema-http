@@ -2,6 +2,7 @@ import "./style.css";
 import { addRoute, startRouter } from "./router.js";
 import { renderFeedPage } from "./pages/feed.js";
 import { renderSearchPage } from "./pages/search.js";
+import { renderCalendarPage } from "./pages/calendar.js";
 import { renderLoginPage } from "./pages/login.js";
 import { renderRegisterPage } from "./pages/register.js";
 import { renderBlogPage } from "./pages/blog.js";
@@ -15,6 +16,7 @@ if (!app) throw new Error("#app root element is missing from index.html");
 
 addRoute("/", () => void renderFeedPage(app));
 addRoute("/search", () => renderSearchPage(app));
+addRoute("/calendar", () => void renderCalendarPage(app));
 addRoute("/login", () => renderLoginPage(app));
 addRoute("/register", () => renderRegisterPage(app));
 addRoute("/admin", () => void renderAdminPage(app));

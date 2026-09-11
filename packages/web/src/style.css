@@ -393,3 +393,18 @@ th {
 .attempt-trail li {
   margin: 0.15rem 0;
 }
+
+.calendar-entry {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.calendar-entry .badge {
+  margin-right: 0.5rem;
+}
+
+.calendar-entry p {
+  margin: 0.25rem 0 0;
+}
