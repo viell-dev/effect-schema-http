@@ -470,7 +470,29 @@ the review findings left for a subsequent pass.
    promising response cases or executability that runtime configuration does not guarantee.
 8. **Supported runtime matrix.** Is Node.js 20 still an intended compatibility target for the first beta, and are
    browsers or alternative runtimes release requirements? Choose the matrix and validate an installed tarball there
-   before strengthening compatibility claims or publishing to a registry.
+   before strengthening compatibility claims or publishing to a registry. One consuming project has since driven a
+   packed tarball through a real browser against a live backend, covering JSON, text, byte, form-data, and no-body
+   codecs, gate interruption, and mapped non-2xx responses; that is evidence for the browser row rather than a decision
+   about the matrix, and Node.js 20 itself is still unverified.
 9. **Dot-segment path values.** Should interpolation reject resulting whole `.` and `..` segments? URL parsing
    normalizes them, so percent-encoding alone cannot preserve their identity as opaque path values. Define the policy
    for adjacent placeholders and placeholders inside larger segments before tightening validation.
+
+10. **Keyed gate retention.** A gate retains one latest success, so a filter-as-you-type caller — the motivating
+    example in the README — almost never hits the cache: each keystroke is a distinct key, and it must cancel the
+    previous flight anyway. Should gates optionally retain a bounded number of entries keyed by their key function, or
+    is single-entry retention the deliberate whole of the feature, with multi-entry caching left to `Effect.cachedFunction`
+    and friends? A bounded map changes eviction, invalidation scope, and the meaning of `reload` and `peek`.
+11. **Cancellation scope.** `cancel` and `invalidate` both act on every request the gate owns. A caller that runs
+    several keys concurrently — a dashboard with independent panels behind one gate — may want to supersede only the
+    flights matching one key. Should either operation accept an optional input or key, or should such callers use one
+    gate per key instead? The current whole-gate scope is the simpler contract and matches the single-entry cache.
+12. **Provider presets.** The Fetch provider's tracing propagation is documented, but every browser consumer has to
+    write the same `HttpClient.withTracerPropagation(false)` transform or the same server allow-list. Should the
+    library ship an opinionated browser preset — a documented recipe, an exported client transform, or a layer — or
+    does that overstep a library whose stated position is that the application chooses its transport?
+13. **Typestate-changing transformations.** `RequestPlanTransform` covers plan operations that preserve `Body`,
+    `Rules`, and `BodyReady`. Reusable transformations that add a response rule or supply a body change those
+    parameters, so they can only be expressed per endpoint through `mapEndpoint`. Is a type-level counterpart — one
+    that expresses "adds this rule to whatever rules the plan already has" — worth the inference complexity, or should
+    such transformations stay endpoint-specific by design?
