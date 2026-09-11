@@ -26,12 +26,23 @@ public class Routes {
     private final AuthMiddleware auth;
     private final String fileServerUrl;
     private final Gson gson;
+    private Legacy legacy;
 
     public Routes(Store store, AuthMiddleware auth, String fileServerUrl) {
         this.store = store;
         this.auth = auth;
         this.fileServerUrl = fileServerUrl;
         this.gson = new GsonBuilder().disableHtmlEscaping().create();
+    }
+
+    /**
+     * Shares the pagination and method-override rules with the older handlers.
+     *
+     * <p>Both live in {@link Legacy} because both arrived with the gateway, years after
+     * the handlers in this file were written.
+     */
+    public void withLegacy(Legacy legacy) {
+        this.legacy = legacy;
     }
 
     // -----------------------------------------------------------------------
@@ -231,6 +242,12 @@ public class Routes {
         var owner = params.getOrDefault("owner", null);
         var projects = store.listProjects(owner);
 
+        // Pagination is opt-in: a caller that sends no page parameter gets everything,
+        // because that is what every existing consumer already depended on.
+        if (params.containsKey("page") || params.containsKey("pageSize")) {
+            projects = legacy.paginate(exchange, projects);
+        }
+
         var arr = new JsonArray();
         for (var p : projects) arr.add(projectToJson(p));
         sendJson(exchange, 200, gson.toJson(arr));
@@ -324,7 +341,19 @@ public class Routes {
     }
 
     private void dispatchTasks(HttpExchange exchange) throws Exception {
-        var method = exchange.getRequestMethod().toUpperCase();
+        // Quirk: the gateway strips DELETE, so a raw DELETE never reaches this service
+        // in production. It is refused here too, so the client cannot depend on a path
+        // that only works in development.
+        if ("DELETE".equalsIgnoreCase(exchange.getRequestMethod())) {
+            exchange.getResponseHeaders().add("Allow", "GET, POST, PATCH");
+            sendError4xx(
+                exchange,
+                405,
+                "METHOD_NOT_ALLOWED",
+                "The gateway strips DELETE; resend as POST with X-HTTP-Method-Override: DELETE");
+            return;
+        }
+        var method = legacy.methodFor(exchange);
         var path = exchange.getRequestURI().getPath();
         // /api/tasks?projectId=xxx or /api/tasks/{id}
         var taskId = pathSegment(exchange, 3);

@@ -18,6 +18,8 @@ public class Main {
         var fileServerUrl = System.getenv().getOrDefault("FILE_SERVER_URL", "http://localhost:4200");
         var auth = new AuthMiddleware(idServerUrl);
         var routes = new Routes(store, auth, fileServerUrl);
+        var legacy = new Legacy(store, auth);
+        routes.withLegacy(legacy);
 
         var server = HttpServer.create(new InetSocketAddress(4300), 0);
         server.setExecutor(Executors.newFixedThreadPool(10));
@@ -42,6 +44,14 @@ public class Main {
         server.createContext("/api/search", routes::handleSearch);
         // File attachment proxy
         server.createContext("/api/files", routes::handleFiles);
+
+        // Endpoints that predate the ones above — see Legacy.java.
+        server.createContext("/api/odata/Orders", legacy::handleOrders);
+        server.createContext("/api/reports/grid", legacy::handleGrid);
+        server.createContext("/api/v2/projects", legacy::handleVersionedProject);
+        server.createContext("/api/batch", legacy::handleBatch);
+        server.createContext("/api/imports", legacy::handleImports);
+        server.createContext("/api/lookup", legacy::handleLookup);
 
         server.start();
         System.out.println("API Server listening on http://localhost:4300");
