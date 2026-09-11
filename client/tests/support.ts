@@ -70,17 +70,27 @@ export const providers = {
   none: Layer.empty,
 };
 
-/** Reports whether the backend services this suite needs are listening. */
+/**
+ * Reports whether the backend services this suite needs are listening.
+ *
+ * Two attempts with a generous timeout, because these checks run while other test files
+ * are hammering the same five processes — one of which deliberately holds a connection
+ * open for five seconds — and a suite that silently skips itself under load is worse
+ * than one that waits.
+ */
 export const servicesUp = async (ports: ReadonlyArray<number>): Promise<boolean> => {
-  const checks = await Promise.all(
-    ports.map(async (port) => {
+  const reachable = async (port: number): Promise<boolean> => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const response = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(1500) });
-        return response.ok;
+        const response = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(5000) });
+        if (response.ok) return true;
       } catch {
-        return false;
+        // Fall through to the retry.
       }
-    }),
-  );
+    }
+    return false;
+  };
+
+  const checks = await Promise.all(ports.map(reachable));
   return checks.every(Boolean);
 };

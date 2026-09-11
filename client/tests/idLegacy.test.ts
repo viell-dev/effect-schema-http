@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { RequestBody } from "viell-effect-schema-http";
 import { beforeAll, describe, expect, it } from "vitest";
 import { forceFresh, withNonce, withScopeLines } from "../src/plans/transforms.js";
+import { HttpDate, RetryAfterSeconds } from "../src/schemas/common.js";
 import { EdgeCacheStatus, TokenProbeHeaders } from "../src/schemas/idLegacy.js";
 import {
   directoryEntry,
@@ -11,6 +12,7 @@ import {
   getUserInfo,
   probeToken,
   register,
+  requestToken,
   resetSessionEcho,
   revokeToken,
   scopedToken,
@@ -199,6 +201,32 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
       expect(ok.body.scope_lines).toEqual(["openid", "projects:read"]);
       expect(ok.body.scope).toEqual(["openid", "projects:read"]);
     });
+  });
+
+  describe("the rate limiter, which is a reverse-proxy configuration", () => {
+    it("answers 429 with an HTTP-date Retry-After, which the library honours unaided", async () => {
+      // The limiter keys on X-Forwarded-For and trusts it, so this burst gets its own
+      // bucket and does not starve the rest of the suite. That is a real flaw in every
+      // limiter deployed this way, and it is what makes the test possible.
+      const bucket = `203.0.113.${Math.floor(Math.random() * 250) + 1}`;
+      const burst = () =>
+        requestToken()
+          .setBody({ grant_type: "password", username, password: "wrong-on-purpose" })
+          .setHeader("x-forwarded-for", bucket);
+
+      let retryAfter: string | undefined;
+      for (let attempt = 0; attempt < 70 && retryAfter === undefined; attempt += 1) {
+        const result = await callAny(burst());
+        if (result._tag === "RateLimited") retryAfter = result.headers["retry-after"];
+      }
+
+      expect(retryAfter).toBeDefined();
+      // Seconds is what RFC 9110 suggests first and what every client assumes. This
+      // limiter sends the other legal form, because devops copied an Apache example.
+      expect(retryAfter).toMatch(/GMT$/u);
+      expect(Schema.decodeUnknownSync(RetryAfterSeconds)(retryAfter!)).toBeGreaterThanOrEqual(0);
+      expect(Schema.decodeUnknownSync(HttpDate)(retryAfter!)).toBeDefined();
+    }, 30_000);
   });
 
   it("treats RFC 7009's empty 200 as a response, not as malformed JSON", async () => {

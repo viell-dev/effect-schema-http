@@ -267,8 +267,14 @@ async fn token(
     let mut store = store.write().await;
 
     // Rate limiting on the token endpoint.
+    //
+    // Quirk: the limiter is a reverse-proxy configuration, so it keys on
+    // `X-Forwarded-For` and trusts it completely. Anyone who can set the header can
+    // choose their own bucket, which is the flaw in every rate limiter deployed this
+    // way and the reason the burst test can exercise the limiter without starving
+    // every other caller.
     let ip = get_remote_ip(&headers);
-    if let Err(retry_after) = store.check_rate_limit(&ip, 10, 60) {
+    if let Err(retry_after) = store.check_rate_limit(&ip, 60, 60) {
         // Quirk: Retry-After is an HTTP-date, not seconds. The devops team configured
         // this based on an Apache mod_ratelimit example that used dates.
         let retry_header = format_http_date(retry_after);

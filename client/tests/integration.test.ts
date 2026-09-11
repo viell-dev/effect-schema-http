@@ -15,8 +15,9 @@ import { Cents } from "../src/schemas/apiLegacy.js";
 import { createProject } from "../src/services/apiClient.js";
 import { register, requestToken } from "../src/services/idClient.js";
 import { run } from "../src/runtime.js";
-import { setSession } from "../src/session.js";
-import { call, servicesUp } from "./support.js";
+import { reportLogin } from "../src/services/reportClient.js";
+import { setReportSession, setSession } from "../src/session.js";
+import { call, expectTag, servicesUp } from "./support.js";
 
 const allUp = await servicesUp([4100, 4200, 4300, 4400, 4500]);
 
@@ -174,6 +175,16 @@ describe("moving a value from one service to another", () => {
   });
 
   describe.runIf(allUp)("a request gate spanning two services", () => {
+    beforeAll(async () => {
+      // The gate reads from the Perl gateway, which has its own session and has never
+      // heard of the OAuth one. Each suite signs in to every service it touches.
+      const gateway = await call(
+        reportLogin().setUrlParam("user", "gate-reader").setUrlParam("pass", "hunter2"),
+        "ok",
+      );
+      setReportSession(expectTag(gateway.body, "session").session);
+    });
+
     it("reuses a retained success and refreshes past it on demand", async () => {
       const program = Effect.gen(function* () {
         const gate = yield* makeReconciliationGate();
