@@ -1,88 +1,117 @@
+import { Effect, Fiber } from "effect";
 import { toEffect } from "viell-effect-schema-http";
-import { append, h } from "../dom.js";
-import { run } from "../runtime.js";
-import { search } from "../services/apiClient.js";
+import { h } from "../dom.js";
+import { makeReconciliationGate, type ReconciliationView } from "../integration/gates.js";
+import { runReconciliation } from "../integration/saga.js";
+import { run, runFork } from "../runtime.js";
+import { createProject } from "../services/apiClient.js";
+import { reportLogin } from "../services/reportClient.js";
+import { getReportSession, setReportSession } from "../session.js";
+import { actionPanel, describeFailure, field, type Action } from "./panel.js";
 
+/**
+ * The reconciliation screen: a filter-as-you-type box over two services at once, and the
+ * five-service saga underneath it.
+ *
+ * The filter box is the library's own motivating example for `makeRequestGate`, built
+ * against a client that has to ask two backends and translate one into the other before
+ * it can render a row.
+ */
 export const renderSearchView = (): HTMLElement => {
-  const logBox = h("div", { class: "log-box" }, "Ready for search...");
+  const term = h("input", { type: "text", placeholder: "filter the live system and the nightly extract…" }) as HTMLInputElement;
+  const status = h("p", { class: "blurb" }, "Type to search. Every keystroke cancels the previous flight.");
+  const results = h("pre", { class: "output" }, "Ready.");
 
-  const appendLog = (msg: string) => {
-    logBox.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n\n${logBox.textContent}`;
+  // One gate, one fiber at a time. `cancel` before each `run` is the documented pattern
+  // for superseding an in-flight request while keeping what the gate already has.
+  const gate = Effect.runSync(makeReconciliationGate());
+  let inFlight: Fiber.RuntimeFiber<ReconciliationView, unknown> | undefined;
+
+  const render = (view: ReconciliationView) => {
+    results.textContent = [
+      `term: ${view.term}`,
+      `live matches on the Java service: ${view.liveMatches}`,
+      "",
+      "drafts translated from the 1999 nightly extract:",
+      ...(view.drafts.length === 0
+        ? ["  (none)"]
+        : view.drafts.map((draft) => `  ${draft.status.padEnd(12)} p${draft.priority}  ${draft.title}\n    ${draft.description}`)),
+    ].join("\n");
   };
 
-  const searchInput = h("input", { type: "text", placeholder: "Search query (e.g. 'Project', 'Task', 'Alpha')", value: "Project" });
-  const resultsContainer = h("div", {}, "Enter a query to search across projects and tasks.");
-
-  const executeSearch = async () => {
-    const q = searchInput.value.trim();
-    if (!q) return;
-
-    try {
-      resultsContainer.textContent = "Searching...";
-      appendLog(`Dispatching search query: "${q}"...`);
-
-      const res = await run(search(q).pipe(toEffect));
-      const hits = res.body;
-
-      appendLog(`✓ Search succeeded! Returned ${hits.length} normalized hits.`);
-      appendLog(`⚠️ QUIRK OBSERVED: If the server matched exactly 1 item, the wire JSON was a bare object, NOT an array. Our Effect Schema transform normalized it into an array seamlessly.`);
-
-      resultsContainer.replaceChildren();
-      if (hits.length === 0) {
-        resultsContainer.textContent = "No items matched the query.";
-        return;
-      }
-
-      for (const hit of hits) {
-        const isProject = hit.type === "project";
-        const card = h(
-          "div",
-          { class: "item-card" },
-          h(
-            "div",
-            { class: "item-header" },
-            h("strong", {}, isProject ? hit.name : hit.title),
-            h("span", { class: `badge ${isProject ? "badge-python" : "badge-rust"}` }, hit.type.toUpperCase()),
-          ),
-          h("p", { style: "margin: 0.25rem 0;" }, hit.description),
-          h("div", { class: "item-meta" }, `ID: ${hit.id} | Updated: ${hit.updatedAt.toLocaleString()}`),
-        );
-        resultsContainer.appendChild(card);
-      }
-    } catch (err) {
-      resultsContainer.textContent = `Search failed: ${String(err)}`;
-      appendLog(`✗ Search error: ${String(err)}`);
+  term.oninput = () => {
+    const value = term.value;
+    if (value.trim() === "") {
+      results.textContent = "Ready.";
+      return;
     }
+    status.textContent = `searching for “${value}”…`;
+    if (inFlight !== undefined) Effect.runFork(Fiber.interrupt(inFlight));
+    inFlight = runFork(
+      gate.cancel.pipe(
+        Effect.zipRight(gate.run(value)),
+        Effect.tap((view: ReconciliationView) =>
+          Effect.sync(() => {
+            status.textContent = `showing “${view.term}”`;
+            render(view);
+          }),
+        ),
+      ),
+    );
   };
 
-  const searchBtn = h("button", { class: "btn btn-primary" }, "Search");
-  searchBtn.onclick = () => void executeSearch();
+  const actions: ReadonlyArray<Action> = [
+    {
+      label: "Sign in to the gateway",
+      note: "The reporting gateway has its own session and has never heard of the identity server.",
+      run: async () => {
+        const result = await run(
+          reportLogin().setUrlParam("user", "reconciler").setUrlParam("pass", "hunter2").pipe(toEffect),
+        );
+        if (result._tag !== "ok" || result.body._tag !== "session") return "the gateway refused";
+        setReportSession(result.body.session);
+        return `gateway session ${result.body.session}`;
+      },
+    },
+    {
+      label: "Run the month-end reconciliation",
+      note: "Five services, five languages: Perl in, Java out, Python for the bytes, Ruby to announce it.",
+      run: async () => {
+        if (getReportSession() === undefined) return "sign in to the gateway first";
+        const owner = `saga_${Date.now().toString(36)}`;
+        const project = await run(
+          createProject().setBody({ name: `Reconciliation ${owner}`, description: "" }).pipe(toEffect),
+        );
+        if (project._tag !== "created") return "could not create the project to reconcile into";
 
-  searchInput.onkeydown = (e) => {
-    if (e.key === "Enter") void executeSearch();
-  };
+        try {
+          const report = await run(runReconciliation(owner, "saga_password_123", project.body.id));
+          return [
+            `1. Rust    signed in as ${report.username}`,
+            `2. Perl    read ${report.extractedRecords} records, control total ${(report.controlTotal / 100).toFixed(2)}`,
+            `3.         translated each one into a task the Java server accepts`,
+            `4. Java    created ${report.createdTaskIds.length} tasks`,
+            `5. Python  stored the re-encoded extract as ${report.soapFileId}`,
+            `6. Java    proxied the same bytes as SOAP: ${report.proxyStatus}`,
+            `7. Ruby    announced it, signed: "${report.notificationText}"`,
+            `8. Java    search finds ${report.foundInSearch} match(es)`,
+          ].join("\n");
+        } catch (error) {
+          return `the saga failed and rolled the tasks back:\n${describeFailure(error)}`;
+        }
+      },
+    },
+  ];
 
   return h(
     "div",
     {},
-    h(
-      "div",
-      { class: "quirk-callout" },
-      h("strong", {}, "Historical Quirks on Search Endpoint:"),
-      h("br"),
-      "1. Jackson 'WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED': When exactly 1 result matches, the server returns an unwrapped object, NOT an array.",
-      h("br"),
-      "2. When multiple results match, it returns an array of objects.",
-      h("br"),
-      "3. Effect Schema's SearchResults transform handles both shapes automatically so the UI only ever sees an array.",
+    h("div", { class: "fields" }, field("").row),
+    h("section", { class: "panel" }, h("h2", {}, "Filter as you type, across two services"), status, term, results),
+    actionPanel(
+      "The month-end reconciliation",
+      "Reading a value from one service, translating it into another service's own schema, writing it, and announcing it to a third — with a compensation, because no transaction spans five processes.",
+      actions,
     ),
-    h(
-      "div",
-      { class: "panel" },
-      h("div", { class: "panel-title" }, "Multi-Service Search"),
-      h("div", { style: "display: flex; gap: 0.5rem; margin-bottom: 1rem;" }, searchInput, searchBtn),
-      resultsContainer,
-    ),
-    h("div", { class: "panel" }, h("div", { class: "panel-title" }, "Activity Log"), logBox),
   );
 };

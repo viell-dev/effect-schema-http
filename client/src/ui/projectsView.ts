@@ -1,280 +1,251 @@
+import { DateTime, Effect } from "effect";
 import { toEffect } from "viell-effect-schema-http";
-import { append, h } from "../dom.js";
+import { h } from "../dom.js";
+import { tunnelMethod } from "../plans/transforms.js";
 import { run } from "../runtime.js";
 import {
-  createComment,
   createProject,
   createTask,
-  deleteProject,
-  listComments,
+  deleteTask,
   listProjects,
   listTasks,
   patchProject,
+  search,
 } from "../services/apiClient.js";
-import { getSession } from "../session.js";
+import {
+  batchGet,
+  getVersionedProject,
+  gridReport,
+  importStatus,
+  listOrders,
+  listProjectsPage,
+  lookup,
+  putVersionedProject,
+  startImport,
+} from "../services/apiLegacyClient.js";
+import { actionPanel, field, show, type Action } from "./panel.js";
 
+/** Every call in this view goes to the Java business API on :4300. */
 export const renderProjectsView = (): HTMLElement => {
-  const logBox = h("div", { class: "log-box" }, "Ready for project actions...");
+  const projectName = field("project name", `Web project ${new Date().toISOString().slice(11, 19)}`);
+  const projectId = field("project id", "");
+  const taskTitle = field("task title", "Reconcile the extract");
 
-  const appendLog = (msg: string) => {
-    logBox.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n\n${logBox.textContent}`;
-  };
-
-  const projectListContainer = h("div", {}, "Click 'Refresh Projects' to load...");
-
-  const loadProjects = async () => {
-    try {
-      projectListContainer.textContent = "Loading projects...";
-      const res = await run(listProjects().pipe(toEffect));
-      const projects = res.body;
-
-      projectListContainer.replaceChildren();
-      if (projects.length === 0) {
-        projectListContainer.textContent = "No projects found. Create one!";
-        return;
-      }
-
-      for (const p of projects) {
-        const pCard = h(
-          "div",
-          { class: "item-card" },
-          h(
-            "div",
-            { class: "item-header" },
-            h("strong", {}, p.name),
-            h(
-              "div",
-              { style: "display: flex; gap: 0.5rem;" },
-              h(
-                "button",
-                {
-                  class: "btn btn-outline",
-                  onclick: async () => {
-                    const newName = prompt("Enter new project name:", `${p.name} (Updated)`);
-                    if (!newName) return;
-                    try {
-                      appendLog(`Sending PATCH /api/projects/${p.id} with name: "${newName}"...`);
-                      const patchRes = await run(
-                        patchProject({ id: p.id })
-                          .setBody({ name: newName })
-                          .pipe(toEffect),
-                      );
-                      appendLog(
-                        `⚠️ QUIRK OBSERVED: PATCH returned OLD state!\nReturned name in response: "${patchRes.body.name}" (old name)\nNow re-fetching project to show actual database update...`,
-                      );
-                      await loadProjects();
-                    } catch (err) {
-                      appendLog(`✗ Patch failed: ${String(err)}`);
-                    }
-                  },
-                },
-                "Rename (Test PATCH Quirk)",
-              ),
-              h(
-                "button",
-                {
-                  class: "btn btn-danger",
-                  onclick: async () => {
-                    if (!confirm(`Delete project "${p.name}"?`)) return;
-                    try {
-                      await run(deleteProject({ id: p.id }).pipe(toEffect));
-                      appendLog(`✓ Deleted project ${p.id} (Quirk: 204 with JSON body)`);
-                      await loadProjects();
-                    } catch (err) {
-                      appendLog(`✗ Delete failed: ${String(err)}`);
-                    }
-                  },
-                },
-                "Delete",
-              ),
-            ),
-          ),
-          h("div", { class: "item-meta" }, `Owner: ${p.owner} | Created: ${p.createdAt.toLocaleString()} (Quirk: decoded from epoch-ms number)`),
-          h("p", { style: "margin: 0.5rem 0;" }, p.description),
-          // Task section for this project
-          renderTaskSection(p.id, appendLog),
+  const actions: ReadonlyArray<Action> = [
+    {
+      label: "Create a project",
+      note: "Authorization: Token, not Bearer. This API predates RFC 6750 and never migrated.",
+      run: async () => {
+        const result = await run(
+          createProject().setBody({ name: projectName.input.value, description: "created from the web client" }).pipe(toEffect),
         );
-        projectListContainer.appendChild(pCard);
-      }
-    } catch (err) {
-      projectListContainer.textContent = `Failed to load projects: ${String(err)}`;
-      appendLog(`✗ Error loading projects: ${String(err)}`);
-    }
-  };
-
-  const renderTaskSection = (projectId: string, log: (msg: string) => void): HTMLElement => {
-    const taskContainer = h("div", { style: "margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 0.75rem;" });
-    const taskList = h("div", {}, "Loading tasks...");
-
-    const loadTasks = async () => {
-      try {
-        const res = await run(listTasks(projectId).pipe(toEffect));
-        taskList.replaceChildren();
-        if (res.body.length === 0) {
-          taskList.textContent = "No tasks yet.";
-          return;
-        }
-        for (const t of res.body) {
-          taskList.appendChild(
-            h(
-              "div",
-              { style: "background: var(--code-bg); padding: 0.5rem; border-radius: 4px; margin-bottom: 0.5rem;" },
-              h("div", { style: "display: flex; justify-content: space-between;" },
-                h("strong", {}, t.title),
-                h("span", { class: "badge badge-rust" }, `Status: ${t.status}`),
-              ),
-              h("div", { class: "item-meta" }, `Assignee: ${t.assignee || "Unassigned"} | Quirk: Status sent as string "${t.status}", stored as int, decoded back to "${t.status}"`),
-              renderCommentSection(t.id, log),
-            ),
-          );
-        }
-      } catch (err) {
-        taskList.textContent = `Error loading tasks: ${String(err)}`;
-      }
-    };
-
-    const taskTitleInput = h("input", { type: "text", placeholder: "New task title", style: "width: auto; flex: 1;" });
-    const taskAddBtn = h("button", { class: "btn btn-primary" }, "Add Task");
-    taskAddBtn.onclick = async () => {
-      if (!taskTitleInput.value.trim()) return;
-      try {
-        log(`Creating task "${taskTitleInput.value}" with string status "OPEN"...`);
-        const res = await run(
+        if (result._tag !== "created") return `${result._tag}: ${show(result.body)}`;
+        projectId.input.value = result.body.id;
+        return `created ${result.body.id}\ncreatedAt arrived as epoch milliseconds and decoded to ${DateTime.formatIso(result.body.createdAt)}`;
+      },
+    },
+    {
+      label: "Rename it (PATCH)",
+      note: "PATCH answers with the state the resource had before the write. Deliberately.",
+      run: async () => {
+        const renamed = `${projectName.input.value} (renamed)`;
+        const patched = await run(patchProject({ id: projectId.input.value }).setBody({ name: renamed }).pipe(toEffect));
+        if (patched._tag !== "ok") return `${patched._tag}: ${show(patched.body)}`;
+        const listed = await run(listProjects().pipe(toEffect));
+        const current = listed._tag === "ok" ? listed.body.find((item) => item.id === projectId.input.value) : undefined;
+        return `PATCH returned "${patched.body.name}"\nthe stored value is "${current?.name ?? "unknown"}"\n\nA developer read "return the resource" as "return what it was", and the mobile app now depends on it.`;
+      },
+    },
+    {
+      label: "Add a task",
+      note: "The request sends a status name; the response answers with its ordinal.",
+      run: async () => {
+        const result = await run(
           createTask()
+            .setBody({ projectId: projectId.input.value, title: taskTitle.input.value, status: "IN_PROGRESS", priority: 3 })
+            .pipe(toEffect),
+        );
+        if (result._tag !== "created") return `${result._tag}: ${show(result.body)}`;
+        return `created ${result.body.id}\nsent "IN_PROGRESS", received 1, decoded back to "${result.body.status}"`;
+      },
+    },
+    {
+      label: "List its tasks",
+      note: "Plain JSON in and out — the case the library needs no configuration for at all.",
+      run: async () => {
+        const result = await run(listTasks(projectId.input.value).pipe(toEffect));
+        return result._tag === "ok"
+          ? result.body.map((task) => `${task.id}  ${task.status.padEnd(12)} ${task.title}`).join("\n") || "no tasks"
+          : show(result.body);
+      },
+    },
+    {
+      label: "Delete a task (blocked, then tunnelled)",
+      note: "The gateway strips DELETE. The same plan works with X-HTTP-Method-Override.",
+      run: async () => {
+        const tasks = await run(listTasks(projectId.input.value).pipe(toEffect));
+        const target = tasks._tag === "ok" ? tasks.body[0] : undefined;
+        if (target === undefined) return "no task to delete";
+        const blocked = await run(deleteTask({ id: target.id }).pipe(toEffect));
+        const tunnelled = await run(deleteTask({ id: target.id }).pipe(tunnelMethod("DELETE"), toEffect));
+        return `raw DELETE:   ${blocked._tag} (${blocked.status})\ntunnelled:    ${tunnelled._tag} (${tunnelled.status})`;
+      },
+    },
+    {
+      label: "Conditional read and write",
+      note: "The one endpoint here that is correct: a strong ETag, a real 304, and a 412.",
+      run: async () => {
+        const first = await run(getVersionedProject({ id: projectId.input.value }).pipe(toEffect));
+        if (first._tag !== "ok") return `${first._tag}: ${show(first.body)}`;
+        const etag = first.headers.etag ?? "";
+        const repeated = await run(
+          getVersionedProject({ id: projectId.input.value }).setHeader("if-none-match", etag).pipe(toEffect),
+        );
+        const stale = await run(
+          putVersionedProject({ id: projectId.input.value })
+            .setBody({ name: "should not apply" })
+            .setHeader("if-match", '"stale"')
+            .pipe(tunnelMethod("PUT"), toEffect),
+        );
+        const written = await run(
+          putVersionedProject({ id: projectId.input.value })
+            .setBody({ name: `${projectName.input.value} (conditional)` })
+            .setHeader("if-match", etag)
+            .pipe(tunnelMethod("PUT"), toEffect),
+        );
+        return [
+          `read:            200 with ETag ${etag}`,
+          `If-None-Match:   ${repeated._tag} (${repeated.status}), body ${String(repeated.body)}`,
+          `stale If-Match:  ${stale._tag} (${stale.status})`,
+          `fresh If-Match:  ${written._tag} (${written.status})`,
+        ].join("\n");
+      },
+    },
+    {
+      label: "Read the orders (64-bit ids)",
+      note: "Read as text and parsed with a different JSON dialect, because JSON.parse rounds them.",
+      run: async () => {
+        const result = await run(listOrders().pipe(toEffect));
+        if (result._tag !== "ok") return show(result.body);
+        const first = result.body.orders[0];
+        if (first === undefined) return "no orders";
+        return [
+          `id kept exact:     ${first.id}`,
+          `JSON.parse gives:  ${String(Number(first.id))}`,
+          `amount:            ${first.amount} cents, from "${"$" + (first.amount / 100).toLocaleString("en-US")}"`,
+          `orderDate:         ${DateTime.formatIso(first.orderDate)} from an ASP.NET /Date()/`,
+          `cancelledOn:       ${first.cancelledOn === null ? "null, from the MySQL zero date" : DateTime.formatIso(first.cancelledOn)}`,
+          `creditLimit:       ${show(first.creditLimit)}`,
+          `customerRef:       ${show(first.customerRef)}`,
+          `total:             ${result.body.total} (arrived as the string "__count" inside a "d" envelope)`,
+        ].join("\n");
+      },
+    },
+    {
+      label: "Read the report grid",
+      note: "Positional rows behind an unregistered text/json content type, checked against their header.",
+      run: async () => {
+        const result = await run(gridReport().pipe(toEffect));
+        if (result._tag !== "ok") return show(result.body);
+        return (
+          result.body.rows
+            .slice(0, 12)
+            .map((row) => `${row.id}  ${row.status.padEnd(12)} p${row.priority}  ${row.title}`)
+            .join("\n") || "no rows"
+        );
+      },
+    },
+    {
+      label: "Batch three reads",
+      note: "One 200 carrying three outcomes, discriminated in the schema because the envelope cannot.",
+      run: async () => {
+        const result = await run(
+          batchGet()
             .setBody({
-              projectId,
-              title: taskTitleInput.value.trim(),
-              status: "OPEN",
+              requests: [
+                { id: "mine", path: `/api/projects/${projectId.input.value}` },
+                { id: "gone", path: "/api/projects/does-not-exist" },
+                { id: "odd", path: "/api/unsupported" },
+              ],
             })
             .pipe(toEffect),
         );
-        log(`✓ Created task (ID: ${res.body.id}). Quirk: request used string status "OPEN", response ordinal 0 transformed to "${res.body.status}".`);
-        taskTitleInput.value = "";
-        await loadTasks();
-      } catch (err) {
-        log(`✗ Create task failed: ${String(err)}`);
-      }
-    };
-
-    void loadTasks();
-
-    append(taskContainer, [
-      h("div", { style: "display: flex; gap: 0.5rem; margin-bottom: 0.5rem;" }, taskTitleInput, taskAddBtn),
-      taskList,
-    ]);
-    return taskContainer;
-  };
-
-  const renderCommentSection = (taskId: string, log: (msg: string) => void): HTMLElement => {
-    const commentContainer = h("div", { style: "margin-top: 0.5rem; padding-left: 1rem; border-left: 2px solid var(--border);" });
-    const commentList = h("div", {}, "Loading comments...");
-
-    const loadComments = async () => {
-      try {
-        const res = await run(listComments(taskId).pipe(toEffect));
-        commentList.replaceChildren();
-        if (res.body.length === 0) {
-          commentList.textContent = "No comments.";
-          return;
+        if (result._tag !== "ok") return show(result.body);
+        return result.body.responses
+          .map((item) =>
+            item._tag === "found" ? `${item.id}: found ${item.project.name}` : `${item.id}: ${item.status} ${item.code}`,
+          )
+          .join("\n");
+      },
+    },
+    {
+      label: "Start an import and follow it",
+      note: "202 with a relative Location, then a poll that is a loop over a cold plan, not a retry.",
+      run: async () => {
+        const accepted = await run(startImport().setBody({ source: "web.csv" }).pipe(toEffect));
+        if (accepted._tag !== "accepted") return show(accepted.body);
+        const resolved = new URL(accepted.headers.location ?? "", "http://localhost:4300");
+        const trail = [`202 Location: ${accepted.headers.location} -> ${resolved.href}`];
+        const poll = Effect.promise(() => run(importStatus({ id: accepted.body.id }).pipe(toEffect)));
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          const status = await Effect.runPromise(poll);
+          if (status._tag !== "ok") return `${trail.join("\n")}\n${show(status.body)}`;
+          trail.push(`poll ${attempt + 1}: ${status.body.state} ${status.body.progress}%`);
+          if (status.body.state === "done") break;
         }
-        for (const c of res.body) {
-          commentList.appendChild(
-            h("div", { style: "font-size: 0.85rem; margin-bottom: 0.25rem;" },
-              h("span", { style: "font-weight: 600;" }, `${c.author}: `),
-              h("span", {}, c.body),
-            ),
-          );
-        }
-      } catch (err) {
-        commentList.textContent = `Error loading comments: ${String(err)}`;
-      }
-    };
-
-    const commentInput = h("input", { type: "text", placeholder: "Write comment...", style: "width: auto; flex: 1; font-size: 0.8rem;" });
-    const commentBtn = h("button", { class: "btn btn-outline", style: "font-size: 0.8rem; padding: 0.25rem 0.5rem;" }, "Comment");
-    commentBtn.onclick = async () => {
-      if (!commentInput.value.trim()) return;
-      try {
-        log(`Posting comment to task ${taskId}...`);
-        const res = await run(
-          createComment()
-            .setBody({
-              taskId,
-              body: commentInput.value.trim(),
-            })
-            .pipe(toEffect),
-        );
-        log(`✓ Comment posted! Quirk: Server returned 200 OK (not 201 Created) with relative Location header.`);
-        commentInput.value = "";
-        await loadComments();
-      } catch (err) {
-        log(`✗ Post comment failed: ${String(err)}`);
-      }
-    };
-
-    void loadComments();
-
-    append(commentContainer, [
-      h("div", { style: "display: flex; gap: 0.5rem; margin-bottom: 0.25rem;" }, commentInput, commentBtn),
-      commentList,
-    ]);
-    return commentContainer;
-  };
-
-  // Create Project Form
-  const projName = h("input", { type: "text", placeholder: "Project Name", value: "New Initiative" });
-  const projDesc = h("input", { type: "text", placeholder: "Project Description", value: "A multi-service platform test" });
-  const createProjBtn = h("button", { class: "btn btn-primary" }, "Create Project");
-  createProjBtn.onclick = async () => {
-    try {
-      appendLog(`Creating project "${projName.value}"...`);
-      const res = await run(
-        createProject()
-          .setBody({
-            name: projName.value,
-            description: projDesc.value,
-          })
-          .pipe(toEffect),
-      );
-      appendLog(`✓ Created project: ${res.body.id} at ${res.body.createdAt.toISOString()}`);
-      await loadProjects();
-    } catch (err) {
-      appendLog(`✗ Create project failed (Ensure you are logged in!): ${String(err)}`);
-    }
-  };
-
-  const refreshBtn = h("button", { class: "btn btn-outline" }, "Refresh Projects");
-  refreshBtn.onclick = () => void loadProjects();
+        return trail.join("\n");
+      },
+    },
+    {
+      label: "Look something up (errors in a header)",
+      note: "Two rules at 200 separated only by X-Error-Code; the header-bearing one ranks first.",
+      run: async () => {
+        const good = await run(lookup().setUrlParam("q", projectName.input.value).pipe(toEffect));
+        const bad = await run(lookup().setUrlParam("q", 'name:"unbalanced').pipe(toEffect));
+        return [
+          `plain query:  ${good._tag} (${good.status})`,
+          good._tag === "ok" ? `  ${good.body.matches.length} match(es)` : "",
+          `bad syntax:   ${bad._tag} (${bad.status})`,
+          bad._tag === "LookupSyntaxError" ? `  ${bad.body.message}` : "",
+        ]
+          .filter((line) => line !== "")
+          .join("\n");
+      },
+    },
+    {
+      label: "Page through projects",
+      note: "The query parameter is 1-based; the Link header is 0-based. Both are the contract.",
+      run: async () => {
+        const first = await run(listProjectsPage().setUrlParam("page", "1").setUrlParam("pageSize", "2").pipe(toEffect));
+        if (first._tag !== "ok") return show(first.body);
+        return [
+          `X-Total-Count: ${first.headers["x-total-count"]}`,
+          `Link: ${first.headers.link}`,
+          "",
+          ...first.body.map((project) => `${project.id}  ${project.name}`),
+        ].join("\n");
+      },
+    },
+    {
+      label: "Search (one hit is not an array)",
+      note: "Jackson's WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED, normalized by a union in the schema.",
+      run: async () => {
+        const result = await run(search(taskTitle.input.value).pipe(toEffect));
+        return result._tag === "ok"
+          ? `${result.body.length} hit(s)\n${result.body.map((hit) => `${hit.type}  ${hit.id}`).join("\n")}`
+          : show(result.body);
+      },
+    },
+  ];
 
   return h(
     "div",
     {},
-    h(
-      "div",
-      { class: "quirk-callout" },
-      h("strong", {}, "Historical Quirks on API Server (Port 4300):"),
-      h("br"),
-      "1. Authorization header requires scheme 'Token <token>', NOT 'Bearer <token>' (pre-RFC 6750 legacy).",
-      h("br"),
-      "2. All timestamps are epoch milliseconds as JSON numbers (Java System.currentTimeMillis()).",
-      h("br"),
-      "3. PATCH on projects/tasks returns the OLD state, not the new state.",
-      h("br"),
-      "4. Task status: request sends string name ('OPEN'), response returns integer ordinal (0).",
-      h("br"),
-      "5. Creating comments returns 200 OK (not 201) and a relative Location header.",
-      h("br"),
-      "6. DELETE returns 204 No Content with a non-empty body {'deleted': true}.",
+    h("div", { class: "fields" }, projectName.row, projectId.row, taskTitle.row),
+    actionPanel(
+      "Java business API, :4300",
+      "Epoch-millisecond timestamps, two error shapes, a PATCH that answers with the past, an OData envelope, 64-bit ids, and a gateway that strips half the methods.",
+      actions,
     ),
-    h(
-      "div",
-      { class: "panel" },
-      h("div", { class: "panel-title" }, "Create New Project"),
-      h("div", { class: "form-group" }, h("label", {}, "Name"), projName),
-      h("div", { class: "form-group" }, h("label", {}, "Description"), projDesc),
-      h("div", { style: "display: flex; gap: 0.5rem;" }, createProjBtn, refreshBtn),
-    ),
-    h("div", { class: "panel" }, h("div", { class: "panel-title" }, "Projects & Tasks"), projectListContainer),
-    h("div", { class: "panel" }, h("div", { class: "panel-title" }, "Activity Log"), logBox),
   );
 };

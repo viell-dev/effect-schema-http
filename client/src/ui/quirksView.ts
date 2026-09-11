@@ -1,374 +1,106 @@
-import { HttpClientRequest } from "@effect/platform";
-import { Schema } from "effect";
-import { toEffect } from "viell-effect-schema-http";
 import { h } from "../dom.js";
-import { run } from "../runtime.js";
-import {
-  createComment,
-  createProject,
-  createTask,
-  listProjects,
-  patchProject,
-  search,
-} from "../services/apiClient.js";
-import {
-  downloadFile,
-  listFiles,
-  uploadFile,
-} from "../services/fileClient.js";
-import {
-  getUserInfo,
-  register,
-  requestToken,
-} from "../services/idClient.js";
-import { setSession } from "../session.js";
 
-interface QuirkResult {
-  id: string;
-  server: string;
-  title: string;
-  description: string;
-  passed: boolean;
-  evidence: string;
+/**
+ * The inventory: every deliberate misbehaviour in the five services, what a tidy API
+ * would have done, and what it cost the client.
+ *
+ * This view makes no requests. It is the table from the README, rendered, so the running
+ * application and the document cannot drift apart without someone noticing.
+ */
+
+interface Quirk {
+  readonly service: string;
+  readonly quirk: string;
+  readonly tidy: string;
+  readonly cost: string;
 }
 
+const QUIRKS: ReadonlyArray<Quirk> = [
+  { service: "Rust", quirk: "Three spellings of “bearer” from three code paths", tidy: "One spelling", cost: "One transformOrFail that fails on a fourth scheme rather than guessing" },
+  { service: "Rust", quirk: "Opaque access tokens, JWT refresh tokens", tidy: "One token strategy", cost: "Nothing; the client never looks inside either" },
+  { service: "Rust", quirk: "OAuth error shape on /token, {message} on /userinfo", tidy: "One envelope", cost: "Exact-status rules that outrank the API-wide predicate" },
+  { service: "Rust", quirk: "429 with an HTTP-date Retry-After", tidy: "Delay-seconds", cost: "Nothing; the library honours both forms" },
+  { service: "Rust", quirk: "expires_in as a string on the form grant", tidy: "A number", cost: "Schema.NumberFromString" },
+  { service: "Rust", quirk: "RFC 7009 revocation: 200, JSON content type, zero bytes", tidy: "204", cost: "ResponseBody.none with Schema.Void" },
+  { service: "Rust", quirk: "A HEAD probe whose facts are all in headers", tidy: "A GET with a body", cost: "A schema applied to envelope.headers" },
+  { service: "Rust", quirk: "JWKS behind a proxy that ignores Cache-Control", tidy: "Honour request directives", cost: "setCache plus a computed cache-busting parameter" },
+  { service: "Rust", quirk: "Query-parameter authentication on the directory", tidy: "A header", cost: "A computed url parameter, and removeHeaders so no credential travels twice" },
+  { service: "Rust", quirk: "SCREAMING field names, Y/N, LDAP time, blanks for absent", tidy: "JSON conventions", cost: "A wire schema and a transform into the domain shape" },
+  { service: "Rust", quirk: "A missing user is 200 with ACTIVE: N", tidy: "404", cost: "Nulls in the domain type and a boolean nobody can ignore" },
+  { service: "Rust", quirk: "Scopes as repeated X-Scope request lines", tidy: "One comma-joined value", cost: "A node:http provider; Fetch cannot send them" },
+  { service: "Rust", quirk: "A nonce that must strictly increase", tidy: "Idempotency keys", cost: "setRetries(0) and a loop over the plan — the one real trade" },
+  { service: "Rust", quirk: "grant_types_supported as a space-delimited string", tidy: "An array", cost: "The same combinator that reads scope" },
+  { service: "Python", quirk: "Outcome inside a 200, in <FaultCode>", tidy: "Real statuses", cost: "A soapResult combinator producing a tagged union" },
+  { service: "Python", quirk: "SOAPAction required and required to be quoted", tidy: "Anything", cost: "One declared header per action" },
+  { service: "Python", quirk: "Single-element lists wrapped in an extra <Result>", tidy: "Consistent arrays", cost: "Read every <File> wherever it sits" },
+  { service: "Python", quirk: "MM/dd/yyyy HH:mm:ss with no timezone", tidy: "ISO 8601", cost: "A transform that refuses anything looser" },
+  { service: "Python", quirk: "?wsdl accepted only as a bare key", tidy: "Either form", cost: "Nothing; the library distinguishes true from \"\"" },
+  { service: "Python", quirk: "SOAP 1.2 carries the action in the content type", tidy: "One protocol", cost: "Change the body codec, not the header — the codec owns it" },
+  { service: "Python", quirk: "One action answers a real soap:Fault with 500", tidy: "Consistency", cost: "One more rule" },
+  { service: "Python", quirk: "ISO-8859-1 documents under a bare text/xml", tidy: "A charset", cost: "ResponseBody.uint8Array and read the encoding from the document" },
+  { service: "Python", quirk: "PROPFIND and 207 Multi-Status", tidy: "The same, honestly", cost: "Nothing; methods are strings and statuses are numbers" },
+  { service: "Python", quirk: "A multipart bundle of metadata and bytes", tidy: "Two requests", cost: "ResponseBody.formData and an effectful schema transform" },
+  { service: "Java", quirk: "Authorization: Token, not Bearer", tidy: "RFC 6750", cost: "One computed header" },
+  { service: "Java", quirk: "Epoch-millisecond timestamps", tidy: "ISO 8601", cost: "One transform, shared with the Ruby service" },
+  { service: "Java", quirk: "4xx is {error:{code,message}}, 5xx is {error:string}", tidy: "One envelope", cost: "Two rules" },
+  { service: "Java", quirk: "PATCH answers with the state before the write", tidy: "The new state", cost: "Re-read, and never trust the response" },
+  { service: "Java", quirk: "A status name in, an ordinal out", tidy: "One representation", cost: "One transform used in both directions" },
+  { service: "Java", quirk: "Comments answer 200 with a relative Location", tidy: "201 and an absolute URI", cost: "Resolve it against the base URL" },
+  { service: "Java", quirk: "Search unwraps a single-element array", tidy: "Always an array", cost: "A union normalized to an array" },
+  { service: "Java", quirk: "64-bit ids above 2^53", tidy: "String ids", cost: "ResponseBody.text and a JSON dialect that quotes long integers" },
+  { service: "Java", quirk: "An OData v2 {d:{results}} envelope with a stringified count", tidy: "The array", cost: "One transform, and no view ever sees it" },
+  { service: "Java", quirk: "/Date(…)/, 0000-00-00, -1 for unlimited, $1,234.50", tidy: "Real types", cost: "One transform each, all reversible" },
+  { service: "Java", quirk: "Four spellings of “no value” in one object", tidy: "One", cost: "Collapsed into Option at the boundary" },
+  { service: "Java", quirk: "Positional report rows behind text/json", tidy: "Records", cost: "A transform that checks the column header rather than trusting it" },
+  { service: "Java", quirk: "A batch endpoint whose envelope is always 200", tidy: "Real statuses", cost: "Discrimination in the schema, because the envelope cannot" },
+  { service: "Java", quirk: "202 with a relative Location, then polling", tidy: "The same, honestly", cost: "A loop over a cold plan — not a retry" },
+  { service: "Java", quirk: "Errors signalled by X-Error-Code on a 200", tidy: "A status", cost: "A header-matched rule, which ranks above the plain one" },
+  { service: "Java", quirk: "1-based pages, 0-based Link offsets", tidy: "One base", cost: "The arithmetic, in one schema" },
+  { service: "Java", quirk: "The gateway strips PUT and DELETE", tidy: "Let them through", cost: "A transform that rewrites the method and sets an override header" },
+  { service: "Java", quirk: "A 204 that still tries to write a debug body", tidy: "No body", cost: "Nothing — the container has silently dropped it since 2015" },
+  { service: "Perl", quirk: "Credentials in a query string", tidy: "A POST", cost: "Nothing the client can fix; the password is in every log" },
+  { service: "Perl", quirk: "XML-RPC, faults inside 200s", tidy: "JSON and statuses", cost: "A text codec and an rpcResult combinator" },
+  { service: "Perl", quirk: "Fixed-width Latin-1 records with no delimiters", tidy: "Anything", cost: "ResponseBody.uint8Array, positional parsing, and a checked control total" },
+  { service: "Perl", quirk: "A CSV with a BOM, CRLF, semicolons and a decimal comma", tidy: "RFC 4180", cost: "Strip the BOM before it becomes part of a column name" },
+  { service: "Perl", quirk: "Every failure is a 200", tidy: "Statuses", cost: "A header-matched rule, or a union in the schema" },
+  { service: "Ruby", quirk: "HMAC over the encoded body", tidy: "A bearer token", cost: "mapClient with an effectful request transform — a computed header cannot" },
+  { service: "Ruby", quirk: "A double-submitted CSRF token", tidy: "Nothing, for an API", cost: "Fetch it first, echo it in a header" },
+  { service: "Ruby", quirk: "A )]}', guard before every JSON payload", tidy: "JSON", cost: "A text codec; the JSON codec fails on the first byte" },
+  { service: "Ruby", quirk: "JSONP for a partner that predates CORS", tidy: "CORS", cost: "Match the exact wrapper and refuse anything else" },
+  { service: "Ruby", quirk: "JSON served as text/html", tidy: "The right type", cost: "A header matcher that says so, and a text codec" },
+  { service: "Ruby", quirk: "420 Enhance Your Calm", tidy: "429", cost: "retry.while, which is exactly what it is for" },
+  { service: "Ruby", quirk: "A long poll that holds the connection open", tidy: "The same, honestly", cost: "setTimeout, and a TimeoutException rather than a response" },
+  { service: "Ruby", quirk: "An absolutized Location, where Java sends a relative one", tidy: "Agreement", cost: "Resolve it either way; the container decides, not the code" },
+];
+
 export const renderQuirksView = (): HTMLElement => {
-  const resultsTable = h("div", {}, "Click 'Run All Quirk Verifications' to test every quirk across all 3 servers.");
-  const runBtn = h("button", { class: "btn btn-primary" }, "Run All Quirk Verifications");
-
-  const runAllTests = async () => {
-    resultsTable.textContent = "Running live verification against all 3 backend servers...";
-    const results: QuirkResult[] = [];
-
-    const username = `test_${Date.now()}`;
-    const password = "password123";
-
-    // 1. ID Server: Register 201 with User body
-    try {
-      const reg = await run(
-        register()
-          .setBody({ username, email: `${username}@example.com`, password })
-          .pipe(toEffect),
-      );
-      results.push({
-        id: "id-register-201",
-        server: "Rust ID Server (4100)",
-        title: "Register returns 201 Created with full user body",
-        description: "Registration was written first; returns user entity directly in 201 body.",
-        passed: reg.status === 201 && reg.body.username === username,
-        evidence: `HTTP 201, User: ${reg.body.username} (ID: ${reg.body.id})`,
-      });
-    } catch (e) {
-      results.push({
-        id: "id-register-201",
-        server: "Rust ID Server (4100)",
-        title: "Register returns 201 Created with full user body",
-        description: "Registration was written first; returns user entity directly in 201 body.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 2. ID Server: Password grant returns lowercase "bearer", refresh grant returns "Bearer"
-    let accessToken = "";
-    let refreshToken = "";
-    try {
-      const tokRes = await run(
-        requestToken()
-          .setBody({ grant_type: "password", username, password })
-          .pipe(toEffect),
-      );
-      accessToken = tokRes.body.access_token;
-      refreshToken = tokRes.body.refresh_token;
-
-      // Now refresh with refresh_token grant
-      const refRes = await run(
-        requestToken()
-          .setBody({ grant_type: "refresh_token", refresh_token: refreshToken })
-          .pipe(toEffect),
-      );
-      accessToken = refRes.body.access_token;
-
-      setSession({
-        accessToken,
-        refreshToken: refRes.body.refresh_token,
-        tokenType: "Bearer",
-        username,
-      });
-
-      results.push({
-        id: "id-token-type-casing",
-        server: "Rust ID Server (4100)",
-        title: "Token type casing inconsistency handled by schema",
-        description: "Password grant returns 'bearer' (lowercase), refresh grant returns 'Bearer'. Schema normalizes both to 'Bearer'.",
-        passed: tokRes.body.token_type === "Bearer" && refRes.body.token_type === "Bearer",
-        evidence: `Both normalized to "Bearer". Raw password grant was lowercase, refresh was uppercase.`,
-      });
-    } catch (e) {
-      results.push({
-        id: "id-token-type-casing",
-        server: "Rust ID Server (4100)",
-        title: "Token type casing inconsistency handled by schema",
-        description: "Password grant returns 'bearer', refresh grant returns 'Bearer'.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 3. ID Server: SimpleError on /userinfo
-    try {
-      // Intentionally call with invalid token
-      const oldSession = { accessToken: "invalid_token_xyz", refreshToken: "", tokenType: "Bearer" };
-      setSession(oldSession);
-      await run(getUserInfo().pipe(toEffect));
-      results.push({
-        id: "id-error-split",
-        server: "Rust ID Server (4100)",
-        title: "Error shape split: /userinfo returns SimpleError {message}",
-        description: "Userinfo endpoint uses {message}, unlike OAuth endpoints which use {error, error_description}.",
-        passed: false,
-        evidence: "Expected error but request succeeded",
-      });
-    } catch (err: any) {
-      const isSimple = String(err).includes("SimpleError") || String(err).includes("Invalid or expired");
-      results.push({
-        id: "id-error-split",
-        server: "Rust ID Server (4100)",
-        title: "Error shape split: /userinfo returns SimpleError {message}",
-        description: "Userinfo endpoint uses {message}, unlike OAuth endpoints which use {error, error_description}.",
-        passed: isSimple,
-        evidence: `Decoded error: ${String(err)}`,
-      });
-      // Restore valid session
-      setSession({ accessToken, refreshToken, tokenType: "Bearer", username });
-    }
-
-    // 4. API Server: Token scheme + epoch ms
-    let projId = "";
-    try {
-      const pRes = await run(
-        createProject()
-          .setBody({ name: "Quirk Project", description: "Testing quirks" })
-          .pipe(toEffect),
-      );
-      projId = pRes.body.id;
-      const isDate = pRes.body.createdAt instanceof Date;
-      results.push({
-        id: "api-token-scheme-epoch",
-        server: "Java API Server (4300)",
-        title: "Authorization: Token scheme & Epoch-ms timestamps",
-        description: "Pre-RFC 6750 'Token' header accepted; Java System.currentTimeMillis() epoch-ms decoded to Date.",
-        passed: isDate && Boolean(projId),
-        evidence: `Created ${projId}, createdAt decoded to ${pRes.body.createdAt.toISOString()}`,
-      });
-    } catch (e) {
-      results.push({
-        id: "api-token-scheme-epoch",
-        server: "Java API Server (4300)",
-        title: "Authorization: Token scheme & Epoch-ms timestamps",
-        description: "Pre-RFC 6750 'Token' header accepted; epoch-ms decoded to Date.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 5. API Server: PATCH returns OLD state
-    try {
-      const patchRes = await run(
-        patchProject({ id: projId })
-          .setBody({ name: "Updated Name" })
-          .pipe(toEffect),
-      );
-      // The quirk: returned name is the OLD name!
-      const returnedOldName = patchRes.body.name === "Quirk Project";
-      results.push({
-        id: "api-patch-old-state",
-        server: "Java API Server (4300)",
-        title: "PATCH returns OLD resource state, not updated state",
-        description: "Legacy developer misread 'return the resource' as 'return what it was'.",
-        passed: returnedOldName,
-        evidence: `Sent new name 'Updated Name', but PATCH response returned old name '${patchRes.body.name}'.`,
-      });
-    } catch (e) {
-      results.push({
-        id: "api-patch-old-state",
-        server: "Java API Server (4300)",
-        title: "PATCH returns OLD resource state, not updated state",
-        description: "Legacy developer misread 'return the resource' as 'return what it was'.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 6. API Server: Task status asymmetry (request string, response int ordinal)
-    let taskId = "";
-    try {
-      const taskRes = await run(
-        createTask()
-          .setBody({ projectId: projId, title: "Quirk Task", status: "OPEN" })
-          .pipe(toEffect),
-      );
-      taskId = taskRes.body.id;
-      results.push({
-        id: "api-task-status-asymmetry",
-        server: "Java API Server (4300)",
-        title: "Task status enum asymmetry (String request vs Ordinal response)",
-        description: "Jackson serialization bug: ordinal (0) on wire, string ('OPEN') in request.",
-        passed: taskRes.body.status === "OPEN",
-        evidence: `Sent string "OPEN", server returned ordinal 0, schema decoded back to "OPEN".`,
-      });
-    } catch (e) {
-      results.push({
-        id: "api-task-status-asymmetry",
-        server: "Java API Server (4300)",
-        title: "Task status enum asymmetry",
-        description: "Jackson serialization bug: ordinal on wire, string in request.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 7. API Server: Comments return 200 OK with relative Location header
-    try {
-      const cRes = await run(
-        createComment()
-          .setBody({ taskId, body: "Quirk comment" })
-          .pipe(toEffect),
-      );
-      results.push({
-        id: "api-comments-200-relative",
-        server: "Java API Server (4300)",
-        title: "Comments return 200 OK (not 201) with relative Location header",
-        description: "Servlet container legacy: relative /api/comments/:id in Location header.",
-        passed: cRes.status === 200 && Boolean(cRes.body.id),
-        evidence: `Status 200 OK, comment ID: ${cRes.body.id}`,
-      });
-    } catch (e) {
-      results.push({
-        id: "api-comments-200-relative",
-        server: "Java API Server (4300)",
-        title: "Comments return 200 OK (not 201)",
-        description: "Servlet container legacy: relative /api/comments/:id.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 8. API Server: Search unwrapped object quirk
-    try {
-      const searchRes = await run(search("Quirk Task").pipe(toEffect));
-      const isArray = Array.isArray(searchRes.body);
-      const hasItem = searchRes.body.length === 1;
-      results.push({
-        id: "api-search-unwrapped-single",
-        server: "Java API Server (4300)",
-        title: "Search single result unwrapped bare object normalized to array",
-        description: "Jackson WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED returns { } instead of [ { } ].",
-        passed: isArray && hasItem,
-        evidence: `Wire format was a bare object; SearchResults schema decoded it to Array length ${searchRes.body.length}.`,
-      });
-    } catch (e) {
-      results.push({
-        id: "api-search-unwrapped-single",
-        server: "Java API Server (4300)",
-        title: "Search single result unwrapped bare object",
-        description: "Jackson WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED returns bare object.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 9. File Server: SOAP upload & ListFiles 3 shapes & US date format
-    let fileId = "";
-    try {
-      const b64 = btoa("SOAP file content test");
-      const upRes = await run(uploadFile("test.txt", "text/plain", b64).pipe(toEffect));
-      fileId = upRes.body.fileId;
-
-      const listRes = await run(listFiles().pipe(toEffect));
-      const targetFile = listRes.body.find((f) => f.id === fileId);
-      const isDate = targetFile?.lastModified instanceof Date;
-
-      results.push({
-        id: "file-soap-shapes-date",
-        server: "Python File Server (4200)",
-        title: "SOAP FaultCode 0, 3-shape ListFiles, US-format dates",
-        description: "WCF port: HTTP 200 always with FaultCode, single file in <Result><File>, date MM/dd/yyyy HH:mm:ss.",
-        passed: Boolean(fileId) && isDate,
-        evidence: `Uploaded fileId ${fileId}. LastModified parsed from US format to ${targetFile?.lastModified.toISOString()}.`,
-      });
-    } catch (e) {
-      results.push({
-        id: "file-soap-shapes-date",
-        server: "Python File Server (4200)",
-        title: "SOAP FaultCode 0, 3-shape ListFiles, US-format dates",
-        description: "WCF port: HTTP 200 always with FaultCode, single file in <Result><File>, date MM/dd/yyyy HH:mm:ss.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // 10. File Server: GET with SOAP XML body download
-    try {
-      const dlRes = await run(downloadFile(fileId).pipe(toEffect));
-      const text = new TextDecoder().decode(dlRes.body);
-      results.push({
-        id: "file-get-with-body",
-        server: "Python File Server (4200)",
-        title: "GET carrying SOAP XML body for file download",
-        description: "WCF service used SOAP headers; Python port accepts GET with XML body; client uses mapRequest.",
-        passed: text === "SOAP file content test",
-        evidence: `Downloaded "${text}" via HTTP GET with XML body.`,
-      });
-    } catch (e) {
-      results.push({
-        id: "file-get-with-body",
-        server: "Python File Server (4200)",
-        title: "GET carrying SOAP XML body for file download",
-        description: "WCF service used SOAP headers; Python port accepts GET with XML body.",
-        passed: false,
-        evidence: String(e),
-      });
-    }
-
-    // Render results
-    resultsTable.replaceChildren();
-    for (const r of results) {
-      const row = h(
-        "div",
-        {
-          class: "item-card",
-          style: `border-left: 5px solid ${r.passed ? "var(--success)" : "var(--danger)"};`,
-        },
-        h(
-          "div",
-          { class: "item-header" },
-          h("strong", {}, `${r.passed ? "✓" : "✗"} ${r.title}`),
-          h("span", { class: "badge badge-rust" }, r.server),
-        ),
-        h("p", { style: "font-size: 0.85rem; color: var(--muted);" }, r.description),
-        h("div", { class: "item-meta", style: "margin-top: 0.5rem; font-family: var(--font-mono);" }, `Evidence: ${r.evidence}`),
-      );
-      resultsTable.appendChild(row);
-    }
-  };
-
-  runBtn.onclick = () => void runAllTests();
+  const rows = QUIRKS.map((quirk) =>
+    h(
+      "tr",
+      {},
+      h("td", { class: `service service-${quirk.service.toLowerCase()}` }, quirk.service),
+      h("td", {}, quirk.quirk),
+      h("td", {}, quirk.tidy),
+      h("td", {}, quirk.cost),
+    ),
+  );
 
   return h(
-    "div",
-    {},
+    "section",
+    { class: "panel" },
+    h("h2", {}, `Every deliberate misbehaviour (${QUIRKS.length})`),
     h(
-      "div",
-      { class: "panel" },
-      h("div", { class: "panel-title" }, "Live Quirk Verification Suite"),
-      h(
-        "p",
-        { style: "margin-bottom: 1rem; color: var(--muted); font-size: 0.9rem;" },
-        "This suite runs real-world operations across all three servers to verify each historical quirk and the client library's handling of it.",
-      ),
-      runBtn,
+      "p",
+      { class: "blurb" },
+      "Each of these exists in a production system right now. The interesting column is the last one: " +
+        "what the client had to do about it. Most of them cost a declaration or a schema; three cost " +
+        "something real, and one cannot be fixed from this side at all.",
     ),
-    h("div", { class: "panel" }, h("div", { class: "panel-title" }, "Verification Results"), resultsTable),
+    h(
+      "table",
+      { class: "quirks" },
+      h("thead", {}, h("tr", {}, h("th", {}, "Service"), h("th", {}, "The oddity"), h("th", {}, "A tidy API would have"), h("th", {}, "What the client needed"))),
+      h("tbody", {}, ...rows),
+    ),
   );
 };

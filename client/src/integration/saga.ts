@@ -1,5 +1,5 @@
 import type { HttpClient } from "@effect/platform";
-import { Effect, Schema } from "effect";
+import { DateTime, Effect, Schema } from "effect";
 import { toEffect, type UnhandledResponse } from "viell-effect-schema-http";
 import { signed } from "../plans/signing.js";
 import { CreateTaskInput } from "../schemas/apiServer.js";
@@ -154,8 +154,8 @@ export const runReconciliation = (
         status: extract.body.records[0]?.status ?? "OPEN",
         assignee: username,
         priority: 1,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: DateTime.unsafeMake(Date.now()),
+        updatedAt: DateTime.unsafeMake(Date.now()),
       });
 
       const announced = yield* createNotification()

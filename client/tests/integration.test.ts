@@ -92,8 +92,8 @@ describe("moving a value from one service to another", () => {
         status: "REVIEW",
         assignee: "ada",
         priority: 2,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: DateTime.unsafeMake(Date.now()),
+        updatedAt: DateTime.unsafeMake(Date.now()),
       });
 
       expect(notification.text).toBe('"Ship the reconciliation" is assigned to ada and now review');

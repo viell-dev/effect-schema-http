@@ -1,20 +1,16 @@
 import { Schema } from "effect";
-import { taggedBody } from "./common.js";
+import { EpochMillis, taggedBody } from "./common.js";
 
 /**
- * Quirk: Timestamps are epoch milliseconds as JSON numbers.
- * The Java 8 backend used System.currentTimeMillis() everywhere.
- * We transform it into a Date.
+ * Timestamps are epoch milliseconds as JSON numbers, because the 2014 backend called
+ * `System.currentTimeMillis()` and nobody ever changed it.
+ *
+ * The transform itself lives in `common.ts`, because the Ruby notification service
+ * copied this convention from here and the two now have to agree. One fact, one
+ * definition — which is the only part of the "shared schema" model that survives when
+ * the services are written in five different languages.
  */
-export const EpochMsToDate = Schema.transform(
-  Schema.Number,
-  Schema.DateFromSelf,
-  {
-    strict: true,
-    decode: (ms) => new Date(ms),
-    encode: (date) => date.getTime(),
-  },
-);
+export const EpochMsToDate = EpochMillis;
 
 /**
  * Quirk: Task status asymmetry:
@@ -60,8 +56,8 @@ export const Project = Schema.Struct({
   name: Schema.String,
   description: Schema.String,
   owner: Schema.String,
-  createdAt: EpochMsToDate,
-  updatedAt: EpochMsToDate,
+  createdAt: EpochMillis,
+  updatedAt: EpochMillis,
 });
 export type Project = typeof Project.Type;
 
@@ -73,8 +69,8 @@ export const Task = Schema.Struct({
   status: TaskStatusFromOrdinal,
   assignee: Schema.String,
   priority: Schema.Number,
-  createdAt: EpochMsToDate,
-  updatedAt: EpochMsToDate,
+  createdAt: EpochMillis,
+  updatedAt: EpochMillis,
 });
 export type Task = typeof Task.Type;
 
@@ -83,7 +79,7 @@ export const Comment = Schema.Struct({
   taskId: Schema.String,
   author: Schema.String,
   body: Schema.String,
-  createdAt: EpochMsToDate,
+  createdAt: EpochMillis,
 });
 export type Comment = typeof Comment.Type;
 
@@ -155,7 +151,7 @@ export const ProjectSearchHit = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   description: Schema.String,
-  updatedAt: EpochMsToDate,
+  updatedAt: EpochMillis,
 });
 
 export const TaskSearchHit = Schema.Struct({
@@ -164,7 +160,7 @@ export const TaskSearchHit = Schema.Struct({
   title: Schema.String,
   description: Schema.String,
   status: TaskStatusFromOrdinal,
-  updatedAt: EpochMsToDate,
+  updatedAt: EpochMillis,
 });
 
 export const SearchHit = Schema.Union(ProjectSearchHit, TaskSearchHit);

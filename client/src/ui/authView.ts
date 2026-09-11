@@ -1,200 +1,202 @@
-import { Effect } from "effect";
+import { DateTime, Schema } from "effect";
 import { toEffect } from "viell-effect-schema-http";
 import { h } from "../dom.js";
+import { forceFresh, withNonce, withScopeLines } from "../plans/transforms.js";
+import { EdgeCacheStatus, TokenProbeHeaders } from "../schemas/idLegacy.js";
 import { run } from "../runtime.js";
 import {
+  directoryEntry,
+  discovery,
+  formLogin,
+  getJwks,
   getUserInfo,
+  probeToken,
+  purgeJwksCache,
   register,
   requestToken,
+  resetSessionEcho,
+  revokeToken,
+  scopedToken,
+  sessionEcho,
 } from "../services/idClient.js";
 import { clearSession, getSession, setSession } from "../session.js";
+import { actionPanel, field, show, type Action } from "./panel.js";
 
+/** Every call in this view goes to the Rust identity server on :4100. */
 export const renderAuthView = (): HTMLElement => {
-  const logBox = h("div", { class: "log-box" }, "Ready for auth actions...");
+  const suggested = `web_${Date.now().toString(36)}`;
+  const username = field("username", getSession()?.username ?? suggested);
+  const password = field("password", "web_password_123");
 
-  const appendLog = (msg: string) => {
-    logBox.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n\n${logBox.textContent}`;
-  };
+  const credentials = () => ({ username: username.input.value, password: password.input.value });
 
-  // Register Form
-  const regUser = h("input", { type: "text", placeholder: "Username", value: "carol" });
-  const regEmail = h("input", { type: "email", placeholder: "Email", value: "carol@example.com" });
-  const regPass = h("input", { type: "password", placeholder: "Password", value: "secret123" });
-  const regBtn = h("button", { class: "btn btn-primary" }, "Register (ID Server)");
-
-  regBtn.onclick = async () => {
-    try {
-      appendLog(`Sending register request for user "${regUser.value}"...`);
-      const res = await run(
-        register()
-          .setBody({
-            username: regUser.value,
-            email: regEmail.value,
-            password: regPass.value,
-            display_name: regUser.value,
-          })
-          .pipe(toEffect),
-      );
-      appendLog(`✓ Registered 201 Created: ${JSON.stringify(res.body, null, 2)}`);
-    } catch (err) {
-      appendLog(`✗ Register failed: ${String(err)}`);
-    }
-  };
-
-  // Login Form
-  const loginUser = h("input", { type: "text", placeholder: "Username", value: "carol" });
-  const loginPass = h("input", { type: "password", placeholder: "Password", value: "secret123" });
-  const loginBtn = h("button", { class: "btn btn-primary" }, "Login (Password Grant)");
-
-  loginBtn.onclick = async () => {
-    try {
-      appendLog(`Authenticating "${loginUser.value}"...`);
-      const res = await run(
-        requestToken()
-          .setBody({
-            grant_type: "password",
-            username: loginUser.value,
-            password: loginPass.value,
-          })
-          .pipe(toEffect),
-      );
-
-      const tokenData = res.body;
-      setSession({
-        accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token,
-        tokenType: tokenData.token_type,
-        username: loginUser.value,
-        expiresAt: Date.now() + tokenData.expires_in * 1000,
-      });
-
-      appendLog(`✓ Login succeeded!\nAccess Token: ${tokenData.access_token}\nToken Type: ${tokenData.token_type} (Quirk: normalized from raw wire value)\nRefresh Token: ${tokenData.refresh_token.slice(0, 30)}...`);
-    } catch (err) {
-      appendLog(`✗ Login failed: ${String(err)}`);
-    }
-  };
-
-  // Refresh Token Form
-  const refreshBtn = h("button", { class: "btn btn-outline" }, "Refresh Token (JWT Grant)");
-  refreshBtn.onclick = async () => {
-    const session = getSession();
-    if (!session?.refreshToken) {
-      appendLog("✗ No refresh token in session. Please login first.");
-      return;
-    }
-    try {
-      appendLog("Requesting token refresh with JWT refresh token...");
-      const res = await run(
-        requestToken()
-          .setBody({
-            grant_type: "refresh_token",
-            refresh_token: session.refreshToken,
-          })
-          .pipe(toEffect),
-      );
-      const tokenData = res.body;
-      setSession({
-        ...session,
-        accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token,
-        tokenType: tokenData.token_type,
-        expiresAt: Date.now() + tokenData.expires_in * 1000,
-      });
-      appendLog(`✓ Token refreshed!\nAccess Token: ${tokenData.access_token}\nQuirk: Refresh grant returned "Bearer" with capital B`);
-    } catch (err) {
-      appendLog(`✗ Refresh failed: ${String(err)}`);
-    }
-  };
-
-  // Userinfo
-  const userInfoBtn = h("button", { class: "btn btn-outline" }, "Fetch User Info (GET /userinfo)");
-  userInfoBtn.onclick = async () => {
-    try {
-      appendLog("Fetching userinfo from ID server...");
-      const res = await run(getUserInfo().pipe(toEffect));
-      appendLog(`✓ User Info: ${JSON.stringify(res.body, null, 2)}`);
-    } catch (err) {
-      appendLog(`✗ Userinfo failed (Quirk: decoded as SimpleError if 401/404): ${String(err)}`);
-    }
-  };
-
-  // Logout
-  const logoutBtn = h("button", { class: "btn btn-danger" }, "Logout / Clear Session");
-  logoutBtn.onclick = () => {
-    clearSession();
-    appendLog("✓ Session cleared.");
-  };
-
-  // Trigger rate limit
-  const rateLimitBtn = h("button", { class: "btn btn-outline" }, "Trigger Rate Limit (12 quick requests)");
-  rateLimitBtn.onclick = async () => {
-    appendLog("Sending 12 rapid token requests to trigger rate limit (max 10/min)...");
-    for (let i = 1; i <= 12; i++) {
-      try {
-        await run(
-          requestToken()
-            .setBody({
-              grant_type: "password",
-              username: "carol",
-              password: "wrongpassword",
-            })
-            .pipe(toEffect),
+  const actions: ReadonlyArray<Action> = [
+    {
+      label: "Register",
+      note: "201 with the whole user, unlike /token which answers with neither a user nor a 201.",
+      run: async () => {
+        const { username: name, password: secret } = credentials();
+        const result = await run(
+          register().setBody({ username: name, email: `${name}@example.invalid`, password: secret }).pipe(toEffect),
         );
-      } catch (err: any) {
-        appendLog(`Attempt ${i}: ${String(err?.message || err)}`);
-        if (String(err).includes("429") || String(err).includes("rate_limited")) {
-          appendLog("✓ Quirk hit: 429 Too Many Requests with HTTP-date Retry-After!");
-          break;
+        return result._tag === "created"
+          ? `created ${result.body.username} (${result.body.id})`
+          : `${result._tag}: ${show(result.body)}`;
+      },
+    },
+    {
+      label: "Log in (JSON)",
+      note: 'The 2019 grant. token_type is "bearer" here, lower case, from one of three code paths.',
+      run: async () => {
+        const { username: name, password: secret } = credentials();
+        const result = await run(
+          requestToken().setBody({ grant_type: "password", username: name, password: secret }).pipe(toEffect),
+        );
+        if (result._tag !== "ok") return `${result._tag}: ${show(result.body)}`;
+        setSession({
+          accessToken: result.body.access_token,
+          refreshToken: result.body.refresh_token,
+          tokenType: result.body.token_type,
+          username: name,
+        });
+        return `signed in\ntoken_type decoded as ${result.body.token_type}\naccess token ${result.body.access_token}`;
+      },
+    },
+    {
+      label: "Log in (form-encoded)",
+      note: "The RFC 6749 grant this service had first. RequestBody.urlParams, and every value a string.",
+      run: async () => {
+        const { username: name, password: secret } = credentials();
+        const result = await run(
+          formLogin().setBody({ grant_type: "password", username: name, password: secret }).pipe(toEffect),
+        );
+        if (result._tag !== "ok") return `${result._tag}: ${show(result.body)}`;
+        setSession({
+          accessToken: result.body.access_token,
+          refreshToken: "",
+          tokenType: result.body.token_type,
+          username: name,
+        });
+        return `signed in\ntoken_type on the wire was BEARER, decoded as ${result.body.token_type}\nexpires_in arrived as a string, decoded as ${result.body.expires_in}\nscope ${result.body.scope.join(", ")}`;
+      },
+    },
+    {
+      label: "Probe the token (HEAD)",
+      note: "A bodyless response whose facts are all in headers, decoded with an ordinary schema.",
+      run: async () => {
+        const result = await run(probeToken().pipe(toEffect));
+        if (result._tag !== "valid") return "the token is not valid";
+        const facts = Schema.decodeUnknownSync(TokenProbeHeaders)(result.headers);
+        const lines = result.headerEntries.filter(([name]) => name.toLowerCase() === "x-token-scope");
+        return `${show(facts)}\n\nThe server wrote ${facts["x-token-scope"].length} separate X-Token-Scope lines; Fetch delivered ${lines.length}.`;
+      },
+    },
+    {
+      label: "Read the profile",
+      note: "The endpoint with its own error format, which is why it declares exact-status rules.",
+      run: async () => {
+        const result = await run(getUserInfo().pipe(toEffect));
+        return result._tag === "ok" ? show(result.body) : `${result._tag}: ${show(result.body)}`;
+      },
+    },
+    {
+      label: "Look up in the directory",
+      note: "Query-parameter authentication, SCREAMING field names, LDAP time, and no 404s ever.",
+      run: async () => {
+        const result = await run(directoryEntry({ username: credentials().username }).pipe(toEffect));
+        if (result._tag !== "ok") return `${result._tag}: ${show(result.body)}`;
+        const created = result.body.createdAt === null ? "none" : DateTime.formatIso(result.body.createdAt);
+        return `${show({ ...result.body, createdAt: created })}\n\nA missing user is a 200 with ACTIVE: "N", because operations asked for no 404s in the log.`;
+      },
+    },
+    {
+      label: "Fetch the key set",
+      note: "Behind a proxy that ignores Cache-Control. Watch X-Cache across three calls.",
+      run: async () => {
+        await run(purgeJwksCache().pipe(toEffect));
+        const first = await run(getJwks().pipe(toEffect));
+        const second = await run(getJwks().pipe(toEffect));
+        const bypassed = await run(getJwks().pipe(forceFresh, toEffect));
+        const status = (headers: Record<string, string | undefined>) =>
+          Schema.decodeUnknownSync(EdgeCacheStatus)(headers);
+        return [
+          `after a purge:      ${status(first.headers)["x-cache"]}`,
+          `immediately again:  ${status(second.headers)["x-cache"]}  (setCache alone changes nothing)`,
+          `with forceFresh:    ${status(bypassed.headers)["x-cache"]}  (a computed cache-busting parameter)`,
+        ].join("\n");
+      },
+    },
+    {
+      label: "Narrow the scopes",
+      note: "Needs repeated X-Scope header lines, which Fetch joins. Expect a rejection here.",
+      run: async () => {
+        const result = await run(scopedToken().pipe(withScopeLines(["openid", "projects:read"]), toEffect));
+        return result._tag === "ok"
+          ? `narrowed to ${result.body.scope.join(", ")}`
+          : `rejected: ${result.body.error_description}\n\nThe plan retained two entries; the Fetch provider combined them. A node:http provider that reads getHeaderEntries preserves them — see repeatedHeaderClient.ts.`;
+      },
+    },
+    {
+      label: "Correlate with a nonce (built-in retry)",
+      note: "The 503 is retried automatically; the nonce cannot change, so the replay check refuses it.",
+      run: async () => {
+        await run(resetSessionEcho().pipe(toEffect));
+        const result = await run(
+          sessionEcho().setBody({ message: "built-in retry" }).pipe(withNonce(Date.now()), toEffect).pipe(),
+        );
+        return result._tag === "ok"
+          ? `unexpectedly succeeded on attempt ${result.body.attempt}`
+          : `${result._tag}: ${show(result.body)}\n\nRequest encoding runs once per evaluation, so all attempts carried the same X-Nonce.`;
+      },
+    },
+    {
+      label: "Correlate with a nonce (own loop)",
+      note: "setRetries(0) and a loop over the cold plan, with a new nonce each time.",
+      run: async () => {
+        await run(resetSessionEcho().pipe(toEffect));
+        const trail: Array<string> = [];
+        let nonce = Date.now();
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const result = await run(
+            sessionEcho().setBody({ message: "own loop" }).pipe(withNonce(nonce), toEffect),
+          );
+          trail.push(`nonce ${nonce} -> ${result._tag}`);
+          if (result._tag === "ok") return `${trail.join("\n")}\n\nsucceeded on attempt ${result.body.attempt}`;
+          nonce += 1;
         }
-      }
-    }
-  };
+        return trail.join("\n");
+      },
+    },
+    {
+      label: "Read the discovery document",
+      note: "grant_types_supported is a space-delimited string where the spec requires an array.",
+      run: async () => {
+        const result = await run(discovery().pipe(toEffect));
+        return result._tag === "ok" ? show(result.body) : show(result.body);
+      },
+    },
+    {
+      label: "Revoke and sign out",
+      note: "RFC 7009: 200, a JSON content type, and zero bytes. ResponseBody.none is the declaration.",
+      run: async () => {
+        const session = getSession();
+        if (session === undefined) return "not signed in";
+        const revoked = await run(revokeToken().setBody({ token: session.accessToken }).pipe(toEffect));
+        const after = await run(getUserInfo().pipe(toEffect));
+        clearSession();
+        return `${revoked._tag} (${revoked.status}), and the profile now answers ${after._tag}`;
+      },
+    },
+  ];
 
   return h(
     "div",
     {},
-    h(
-      "div",
-      { class: "quirk-callout" },
-      h("strong", {}, "Historical Quirks on ID Server (Port 4100):"),
-      h("br"),
-      "1. Access tokens are opaque strings (security team 2019), but refresh tokens are JWTs (contractor 2020).",
-      h("br"),
-      "2. Password grant returns token_type 'bearer' (lowercase), refresh grant returns 'Bearer' (capitalized).",
-      h("br"),
-      "3. Error shapes: /token uses OAuth2 spec {error, error_description}, while /userinfo uses {message}.",
-      h("br"),
-      "4. Rate limiter (429) returns Retry-After as an HTTP-date string (RFC 1123), not seconds.",
+    h("div", { class: "fields" }, username.row, password.row),
+    actionPanel(
+      "Rust identity server, :4100",
+      "Opaque access tokens, JWT refresh tokens, three spellings of “bearer”, two error formats, and a directory gateway that answers 200 to everything.",
+      actions,
     ),
-    h(
-      "div",
-      { class: "grid" },
-      h(
-        "div",
-        { class: "panel" },
-        h("div", { class: "panel-title" }, "Register Account"),
-        h("div", { class: "form-group" }, h("label", {}, "Username"), regUser),
-        h("div", { class: "form-group" }, h("label", {}, "Email"), regEmail),
-        h("div", { class: "form-group" }, h("label", {}, "Password"), regPass),
-        regBtn,
-      ),
-      h(
-        "div",
-        { class: "panel" },
-        h("div", { class: "panel-title" }, "Login & Session"),
-        h("div", { class: "form-group" }, h("label", {}, "Username"), loginUser),
-        h("div", { class: "form-group" }, h("label", {}, "Password"), loginPass),
-        h(
-          "div",
-          { style: "display: flex; gap: 0.5rem; flex-wrap: wrap;" },
-          loginBtn,
-          refreshBtn,
-          userInfoBtn,
-          logoutBtn,
-        ),
-        h("div", { style: "margin-top: 1rem;" }, rateLimitBtn),
-      ),
-    ),
-    h("div", { class: "panel" }, h("div", { class: "panel-title" }, "Activity Log"), logBox),
   );
 };

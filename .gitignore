@@ -22,3 +22,6 @@ client/dist/
 Thumbs.db
 *.swp
 *~
+
+# Vite build output
+client/dist/
