@@ -69,3 +69,18 @@ export const getReportSession = (): string | undefined => reportSession;
 export const setReportSession = (session: string | undefined): void => {
   reportSession = session;
 };
+
+/**
+ * The notification service's CSRF token.
+ *
+ * A third credential, in a third format, for a third trust domain. It is double-submitted
+ * — set as a cookie and returned in the body — and this client is cross-origin, so the
+ * cookie never comes back and the body is the only half that works.
+ */
+let csrfToken: string | undefined;
+
+export const getCsrfToken = (): string | undefined => csrfToken;
+
+export const setCsrfToken = (token: string | undefined): void => {
+  csrfToken = token;
+};

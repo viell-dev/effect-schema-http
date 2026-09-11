@@ -41,13 +41,19 @@ echo "Starting Report Gateway (Perl/raw sockets on :4400)..."
 (cd "$ROOT_DIR/services/report-server" && perl report-gateway.pl) &
 PIDS+=($!)
 
+# 5. Ruby Notification Service (Port 4500)
+echo "Starting Notify Service (Ruby/WEBrick on :4500)..."
+(cd "$ROOT_DIR/services/notify-server" && ruby notify-service.rb) &
+PIDS+=($!)
+
 # Wait for backend servers to become available
 echo "Waiting for backend services to be healthy..."
 for i in {1..30}; do
   if curl -s http://localhost:4100/health >/dev/null 2>&1 && \
      curl -s http://localhost:4200/health >/dev/null 2>&1 && \
      curl -s http://localhost:4300/health >/dev/null 2>&1 && \
-     curl -s http://localhost:4400/health >/dev/null 2>&1; then
+     curl -s http://localhost:4400/health >/dev/null 2>&1 && \
+     curl -s http://localhost:4500/health >/dev/null 2>&1; then
     echo "✓ All backend services healthy!"
     break
   fi
@@ -66,6 +72,7 @@ echo "    ID Server (Rust):   http://localhost:4100"
 echo "    File Server (Py):   http://localhost:4200"
 echo "    API Server (Java):  http://localhost:4300"
 echo "    Report GW (Perl):   http://localhost:4400"
+echo "    Notify (Ruby):      http://localhost:4500"
 echo "    Web Client (Vite):  http://localhost:5173"
 echo "=========================================================="
 echo "Press Ctrl+C to terminate all services."
