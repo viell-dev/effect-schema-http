@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { createApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
 import {
+  AdminSummaryLine,
   ExcelCsv,
   FixedWidthExtract,
   GatewayErrorLine,
@@ -93,6 +94,24 @@ export const rpcUnknownMethod = (session: string) =>
   rpcCall()
     .setBody(methodCall("report.doesNotExist", [session]))
     .setResponseSchema({ _tag: "ok", status: 200 }, rpcResult(Schema.Unknown), { codec: ResponseBody.text });
+
+/**
+ * `GET /cgi-bin/admin.pl` — behind HTTP Digest authentication, 1997 edition.
+ *
+ * Both outcomes are declared, because both are ordinary: the `401` carries the challenge
+ * the client needs in order to build its answer, and it is a *value* here rather than an
+ * error. That is what makes the two-round-trip flow ten lines of plain code — read the
+ * challenge off the first response, set one header, execute the same cold plan again.
+ */
+export const adminSummary = reportApi.createRequest({
+  method: "GET",
+  path: "/cgi-bin/admin.pl",
+  removeUrlParams: ["session"],
+  responses: [
+    response({ _tag: "challenge", status: 401 }, GatewayErrorLine, { codec: ResponseBody.text }),
+    response({ _tag: "ok", status: 200 }, AdminSummaryLine, { codec: ResponseBody.text }),
+  ],
+});
 
 /**
  * `GET /cgi-bin/report.pl` — the fixed-width extract, over HTTP this time.

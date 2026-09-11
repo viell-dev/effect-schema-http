@@ -1,7 +1,9 @@
 import { DateTime, Schema } from "effect";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ExcelCsv, FixedWidthExtract, XmlRpcDateTime } from "../src/schemas/reportGateway.js";
+import { digestAuthorization, parseDigestChallenge } from "../src/plans/signing.js";
 import {
+  adminSummary,
   exportCsv,
   fetchExtract,
   reportLogin,
@@ -156,6 +158,69 @@ describe.runIf(up)("Report gateway — XML-RPC, fixed-width tape records, and a 
       // The BOM is written back, because the spreadsheet on the other end needs it.
       expect(bytes[0]).toBe(0xef);
       expect(Schema.decodeSync(ExcelCsv)(bytes)).toEqual(ok.body);
+    });
+  });
+
+  describe("HTTP Digest, which needs two round trips and always will", () => {
+    it("answers a challenge first, as a declared response rather than an error", async () => {
+      const challenge = await call(adminSummary(), "challenge");
+
+      expect(challenge.status).toBe(401);
+      const fields = parseDigestChallenge(challenge.headers["www-authenticate"]);
+      expect(fields["realm"]).toBe("Report Gateway");
+      expect(fields["nonce"]).toMatch(/^[0-9a-f]{32}$/u);
+      // The body is the gateway's usual pipe-delimited error line, because this service
+      // has exactly one error format and uses it for everything.
+      expect(challenge.body.code).toBe("E401");
+    });
+
+    it("answers the challenge by executing the same cold plan again", async () => {
+      const challenge = await call(adminSummary(), "challenge");
+      const fields = parseDigestChallenge(challenge.headers["www-authenticate"]);
+
+      // Nothing is rebuilt: the plan is cold and re-executable, so answering a challenge
+      // is one setter and a second execution. With a throwing client this is a catch
+      // block that has to re-derive the status, re-parse the header, and re-enter the
+      // happy path from outside it.
+      const ok = await call(
+        adminSummary().setHeader(
+          "authorization",
+          digestAuthorization(fields, "finance", "ledger99", "GET", "/cgi-bin/admin.pl"),
+        ),
+        "ok",
+      );
+
+      expect(ok.body.user).toBe("finance");
+      expect(ok.body.records).toBe(4);
+      expect(ok.headers["x-authenticated-user"]).toBe("finance");
+    });
+
+    it("refuses the same nonce twice, so every call costs two round trips forever", async () => {
+      const challenge = await call(adminSummary(), "challenge");
+      const fields = parseDigestChallenge(challenge.headers["www-authenticate"]);
+      const authorization = digestAuthorization(fields, "finance", "ledger99", "GET", "/cgi-bin/admin.pl");
+
+      await call(adminSummary().setHeader("authorization", authorization), "ok");
+
+      // The nonce was spent by the successful call. A replay gets a fresh challenge
+      // marked stale, which is how a client is told to retry rather than to prompt for a
+      // password again.
+      const replayed = await call(adminSummary().setHeader("authorization", authorization), "challenge");
+      expect(replayed.headers["www-authenticate"]).toContain("stale=true");
+    });
+
+    it("refuses a wrong password", async () => {
+      const challenge = await call(adminSummary(), "challenge");
+      const fields = parseDigestChallenge(challenge.headers["www-authenticate"]);
+
+      const refused = await call(
+        adminSummary().setHeader(
+          "authorization",
+          digestAuthorization(fields, "finance", "not-the-password", "GET", "/cgi-bin/admin.pl"),
+        ),
+        "challenge",
+      );
+      expect(refused.status).toBe(401);
     });
   });
 

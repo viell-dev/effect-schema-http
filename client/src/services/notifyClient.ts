@@ -134,6 +134,42 @@ export const listNotificationsUnmodelled = notifyApi.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, Schema.Array(Notification))],
 });
 
+/**
+ * `GET /legacy/notifications` — the 2011 path, permanently moved in 2013.
+ *
+ * The `301` rule is declarable and, with the default Fetch provider, **unreachable**:
+ * `fetch` follows redirects unless its `redirect` option says otherwise, so the client
+ * sees the `200` from the new path and the rule never matches. The library has no plan
+ * setter for that option — it belongs to the transport, not to the request — so the only
+ * way to observe the redirect is to configure the provider. See `legacyRedirect.test.ts`.
+ */
+export const legacyNotifications = notifyApi.createRequest({
+  method: "GET",
+  path: "/legacy/notifications",
+  responses: [
+    response({ _tag: "moved", status: 301 }, Schema.Struct({ moved: Schema.String, since: Schema.String })),
+    // What actually arrives, because the provider followed the Location for us.
+    response({ _tag: "followed", status: 200 }, XssiGuarded(Schema.Array(Notification)), { codec: ResponseBody.text }),
+  ],
+});
+
+/**
+ * `GET /session/whoami` — reads the *cookie*, not the header.
+ *
+ * There is no cookie jar in Node's `fetch` and no cross-origin cookie in a browser
+ * without `credentials: "include"` and a server that allows them. Either way the caller
+ * ends up setting the header by hand, which is what `setHeader("cookie", …)` is for.
+ */
+export const whoAmI = notifyApi.createRequest({
+  method: "GET",
+  path: "/session/whoami",
+  removeHeaders: ["x-csrf-token"],
+  responses: [
+    response({ _tag: "ok", status: 200 }, Schema.Struct({ token: Schema.String, valid: Schema.Boolean })),
+    response({ _tag: "noCookie", status: 401 }, Schema.Struct({ error: Schema.String, detail: Schema.String })),
+  ],
+});
+
 /** `GET /notifications/poll` — holds the connection open, which is the point. */
 export const pollNotifications = notifyApi.createRequest({
   method: "GET",

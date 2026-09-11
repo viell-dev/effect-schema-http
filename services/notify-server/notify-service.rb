@@ -141,6 +141,47 @@ server.mount_proc "/notifications.json" do |_request, response|
 end
 
 # ---------------------------------------------------------------------------
+# GET /legacy/notifications — the old path, permanently moved
+# ---------------------------------------------------------------------------
+#
+# The 2011 path. It was renamed in 2013 and this redirect has been here ever since,
+# because the partner integration's URL is compiled into a desktop application that was
+# last built in 2014.
+#
+# A 301 is a perfectly ordinary response that a client may want to *see* — to update a
+# stored URL, or to warn that a link is stale. Whether it can is entirely up to the
+# transport: `fetch` follows redirects unless told not to.
+server.mount_proc "/legacy/notifications" do |_request, response|
+  cors_headers(response)
+  response.status = 301
+  response["Location"] = "/notifications.json"
+  response["Content-Type"] = "application/json"
+  response.body = JSON.generate({ "moved" => "/notifications.json", "since" => "2013-06-01" })
+end
+
+# ---------------------------------------------------------------------------
+# GET /session/whoami — reads the cookie rather than the header
+# ---------------------------------------------------------------------------
+#
+# The half of the double-submit that a browser is supposed to provide automatically. A
+# cross-origin `fetch` sends no cookies unless the caller asks for them and the server
+# allows credentials, and Node has no cookie jar at all — so anything outside a
+# same-origin browser page has to set the header by hand.
+server.mount_proc "/session/whoami" do |request, response|
+  cookie = request.cookies.find { |item| item.name == "notify_csrf" }
+  if cookie.nil?
+    send_json(response, 401, {
+      "error" => "no_cookie",
+      "detail" => "the notify_csrf cookie is required; a header is not the same thing",
+    })
+    next
+  end
+
+  known = CSRF_TOKENS.key?(cookie.value)
+  send_json(response, known ? 200 : 403, known ? { "token" => cookie.value, "valid" => true } : { "error" => "unknown_session" })
+end
+
+# ---------------------------------------------------------------------------
 # GET /notifications.js — JSONP
 # ---------------------------------------------------------------------------
 #

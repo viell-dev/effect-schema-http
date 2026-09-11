@@ -80,6 +80,22 @@ export const GatewayErrorLine = Schema.transformOrFail(
   },
 );
 
+/** `OK|USER|<name>|RECORDS|<n>` — the administrative summary, in the same field format. */
+export const AdminSummaryLine = Schema.transformOrFail(
+  Schema.String,
+  Schema.Struct({ user: Schema.String, records: Schema.Number }),
+  {
+    strict: true,
+    decode: (raw, _options, ast) => {
+      const [outcome, userLabel, user, recordsLabel, records] = raw.trim().split("|");
+      return outcome === "OK" && userLabel === "USER" && recordsLabel === "RECORDS"
+        ? ParseResult.succeed({ user: user ?? "", records: Number(records ?? "0") })
+        : ParseResult.fail(new ParseResult.Type(ast, raw, "expected an OK|USER|…|RECORDS|… line"));
+    },
+    encode: (summary) => ParseResult.succeed(`OK|USER|${summary.user}|RECORDS|${summary.records}`),
+  },
+);
+
 // ---------------------------------------------------------------------------
 // XML-RPC
 // ---------------------------------------------------------------------------

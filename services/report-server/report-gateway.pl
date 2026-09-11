@@ -22,6 +22,7 @@ use warnings;
 use IO::Socket::INET;
 use MIME::Base64 qw(encode_base64);
 use POSIX qw(strftime);
+use Digest::MD5 qw(md5_hex);
 
 my $PORT = 4400;
 
@@ -35,6 +36,14 @@ my @TASKS = (
 );
 
 my %SESSIONS;
+
+# Nonces handed out by the Digest challenge, and whether each has been spent. The
+# administrative export sits behind HTTP Digest authentication (RFC 2069, the 1997
+# version, without qop) because that is what the Apache module offered when the
+# controller asked for "a password on the finance export" in 1999.
+my %DIGEST_NONCES;
+my $DIGEST_REALM = 'Report Gateway';
+my %DIGEST_USERS = (finance => 'ledger99', audit => 'audit99');
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,6 +129,87 @@ sub handle_login {
     send_response($client, 200, 'OK',
         [['Content-Type', 'text/plain'], ['X-Session-Id', $session]],
         "OK|SESSION|$session|USER|$user\n");
+}
+
+# ---------------------------------------------------------------------------
+# GET /cgi-bin/admin.pl — HTTP Digest authentication, 1997 edition
+# ---------------------------------------------------------------------------
+#
+# Digest was the answer to Basic sending the password in the clear, and it works by
+# challenge and response: the server answers 401 with a realm and a nonce, and the client
+# answers with an MD5 of the password, the nonce, and the request. Two round trips per
+# request, MD5, and a nonce the server has to remember.
+#
+# This is the RFC 2069 form, with no `qop`, no client nonce and no nonce count, because
+# that is what the 1999 Apache module implemented.
+sub parse_digest_header {
+    my ($header) = @_;
+    my %fields;
+    return %fields unless defined $header && $header =~ /^Digest\s+(.*)$/is;
+    my $rest = $1;
+    while ($rest =~ /([a-zA-Z]+)\s*=\s*(?:"([^"]*)"|([^,\s]+))/g) {
+        $fields{lc $1} = defined $2 ? $2 : $3;
+    }
+    return %fields;
+}
+
+sub digest_challenge {
+    my ($client, $stale) = @_;
+    my $nonce = md5_hex(rand() . time() . $$);
+    $DIGEST_NONCES{$nonce} = 0;
+    my $challenge = qq{Digest realm="$DIGEST_REALM", nonce="$nonce"};
+    $challenge .= ', stale=true' if $stale;
+    send_response(
+        $client, 401, 'Unauthorized',
+        [['WWW-Authenticate', $challenge], ['Content-Type', 'text/plain']],
+        "ERROR|E401|authentication required\n"
+    );
+}
+
+sub handle_admin {
+    my ($client, $method, $target, $headers) = @_;
+
+    my %digest = parse_digest_header($headers->{authorization});
+    if (!%digest) {
+        digest_challenge($client, 0);
+        return;
+    }
+
+    my $nonce = $digest{nonce} // '';
+    if (!exists $DIGEST_NONCES{$nonce}) {
+        # Quirk: an unknown nonce is answered with a fresh challenge marked stale, which
+        # is what tells a client to retry rather than to prompt for a password again.
+        digest_challenge($client, 1);
+        return;
+    }
+
+    my $user = $digest{username} // '';
+    my $password = $DIGEST_USERS{$user};
+    if (!defined $password) {
+        digest_challenge($client, 0);
+        return;
+    }
+
+    # RFC 2069: HA1 = MD5(user:realm:password), HA2 = MD5(method:uri),
+    # response = MD5(HA1:nonce:HA2).
+    my $ha1 = md5_hex("$user:$DIGEST_REALM:$password");
+    my $ha2 = md5_hex(uc($method) . ':' . ($digest{uri} // $target));
+    my $expected = md5_hex("$ha1:$nonce:$ha2");
+
+    if (($digest{response} // '') ne $expected) {
+        digest_challenge($client, 0);
+        return;
+    }
+
+    # Quirk: each nonce is good for exactly one request, so every call costs two round
+    # trips forever. Nobody ever implemented nonce reuse.
+    delete $DIGEST_NONCES{$nonce};
+
+    send_response(
+        $client, 200, 'OK',
+        [['Content-Type', 'text/plain'], ['X-Authenticated-User', $user]],
+        "OK|USER|$user|RECORDS|" . scalar(@TASKS) . "\n"
+    );
 }
 
 # ---------------------------------------------------------------------------
@@ -367,6 +457,8 @@ sub handle_connection {
         handle_login($client, \%params);
     } elsif ($path eq '/cgi-bin/rpc.pl' && $method eq 'POST') {
         handle_rpc($client, $body);
+    } elsif ($path eq '/cgi-bin/admin.pl') {
+        handle_admin($client, $method, $target, \%headers);
     } elsif ($path eq '/cgi-bin/report.pl') {
         handle_report($client, \%params);
     } elsif ($path eq '/cgi-bin/export.pl') {
