@@ -277,6 +277,16 @@ pub async fn jwks(State(store): State<AppState>, RawQuery(query): RawQuery) -> R
         .into_response()
 }
 
+/// `POST /jwks.json/purge` — the CDN's purge API.
+///
+/// Every cache in front of a real service has one of these, and it is always a
+/// different shape from the cache's own configuration: this one is a bare POST with no
+/// body, no authentication, and a `204`, because it was added during an incident.
+pub async fn purge_jwks(State(store): State<AppState>) -> Response {
+    store.write().await.jwks_cache = None;
+    StatusCode::NO_CONTENT.into_response()
+}
+
 // ---------------------------------------------------------------------------
 // GET /directory/:username — the LDAP gateway's shape
 // ---------------------------------------------------------------------------

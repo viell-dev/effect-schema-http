@@ -10,6 +10,7 @@ import {
   formLogin,
   getJwks,
   getUserInfo,
+  purgeJwksCache,
   probeToken,
   register,
   requestToken,
@@ -118,6 +119,11 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
   });
 
   it("goes around a reverse proxy that ignores request cache directives", async () => {
+    // A cache in front of a service is shared by every reader, so an assertion about a
+    // MISS has to start from a known state. Purging is how that is done in production
+    // too, and the purge API is nothing like the cache's own configuration.
+    await call(purgeJwksCache(), "purged");
+
     const first = await call(getJwks(), "ok");
     const second = await call(getJwks(), "ok");
     const bypassed = await call(getJwks().pipe(forceFresh), "ok");

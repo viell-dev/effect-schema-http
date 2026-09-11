@@ -185,6 +185,19 @@ export const getJwks = publicIdApi.createRequest({
 });
 
 /**
+ * `POST /jwks.json/purge` — the cache's purge API.
+ *
+ * Every cache in front of a real service has one, and it never looks like the cache's
+ * own configuration: no body, no credential, and a `204`, because it was added during an
+ * incident at two in the morning.
+ */
+export const purgeJwksCache = publicIdApi.createRequest({
+  method: "POST",
+  path: "/jwks.json/purge",
+  responses: [response({ _tag: "purged", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
+});
+
+/**
  * `GET /directory/:username` — the LDAP gateway, authenticated by query parameter.
  *
  * `removeHeaders` is not cosmetic here: this endpoint is the one place in the client

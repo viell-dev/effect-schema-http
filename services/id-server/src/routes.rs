@@ -50,6 +50,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/revoke", post(legacy::revoke))
         .route("/userinfo/probe", axum::routing::head(legacy::userinfo_probe))
         .route("/jwks.json", get(legacy::jwks))
+        .route("/jwks.json/purge", post(legacy::purge_jwks))
         .route("/directory/{username}", get(legacy::directory_entry))
         .route("/session/echo", post(legacy::session_echo))
         .route("/session/echo/reset", post(legacy::session_echo_reset))
