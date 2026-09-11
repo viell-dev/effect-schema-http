@@ -165,6 +165,17 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
   `.setBody`. `Schema.Uint8ArrayFromSelf` does the same for `ResponseBody.uint8Array` when nothing
   needs to further parse the bytes (an attachment download, as opposed to `AdminStatsFromBytes`,
   which does parse them). See `packages/web/src/api.ts`'s `uploadAttachment`/`getAttachmentBytes`.
+- **A schema whose *encoded* type is the codec's input, with no transformation**: `LegacyLoginForm`
+  (`legacy.ts`) is an ordinary `Schema.Struct` of branded strings plus a `grant_type` literal, and
+  its encoded form — a flat record of strings — already satisfies `RequestBody.urlParams`'s
+  "record of coercible values". The same idea as the identity schemas above, one step less
+  obvious: nothing was written *for* the codec, the existing shape simply already fits.
+- **The same transformation used in both directions across the wire**: `AtomFeedFromString` is
+  encoded by the client for the import endpoint and decoded by the server, then decoded by the
+  client for the feed endpoint and encoded by the server — four uses, one definition, and a
+  malformed document is rejected identically at either end. `PostExportFromMarkdown` (`export.ts`)
+  does the same for a Markdown document with YAML-ish front matter, where the *body* may itself
+  contain the `---` delimiter (covered by `export.test.ts`).
 - **Extending a schema by reusing its `.fields`**: `CurrentUser` (`user.ts`) is
   `Schema.Struct({ ...Profile.fields, role: AdminRole })` — a real reuse of `Profile`'s field
   definitions for the one extra fact only the authenticated user can see about themselves, not a
