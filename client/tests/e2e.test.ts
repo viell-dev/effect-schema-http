@@ -75,7 +75,9 @@ describe.runIf(await servicesUp([4100, 4200, 4300]))("end to end across three se
       "created",
     );
     expect(created.body.owner).toBe(username);
-    expect(created.body.createdAt).toBeInstanceOf(Date);
+    // An Effect DateTime.Utc, not a bare Date: the transform lives in common.ts because
+    // the Ruby service copied this convention and the two now have to agree.
+    expect(DateTime.isDateTime(created.body.createdAt)).toBe(true);
     projectId = created.body.id;
   });
 
