@@ -150,6 +150,14 @@ them a perfectly correct `200`:
 ```ts
 const CalendarEntry = Schema.Union(SingleEvent, RepeatingEvent, AssignmentEntry); // each with its own `_tag`
 
+// The usual case: one response carrying a mix of all three.
+const listCalendar = api.createRequest({
+  method: "GET",
+  path: "/calendar",
+  responses: [response({ _tag: "ok", status: 200 }, Schema.Struct({ entries: Schema.Array(CalendarEntry) }))],
+});
+
+// The exception: a single entry, still any one of the three shapes.
 const getEntry = api.createRequest({
   method: "GET",
   path: "/calendar/:entryId",
