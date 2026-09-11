@@ -10,6 +10,7 @@ import {
   deleteAttachment,
   deleteComment,
   deletePost,
+  exportPostAs,
   getPost,
   listAttachments,
   listComments,
@@ -199,6 +200,48 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
         h("button", { type: "submit" }, "Upload"),
       );
 
+      /**
+       * Two representations of the same post at the same `200`, told apart only by their
+       * `content-type`. The response rules in `api.ts` decide which schema decodes the body; this
+       * handler just picks an `Accept` and then matches on the tag it gets back. `Match.exhaustive`
+       * would be wrong here — the shared domain-error rules are part of the union too — so the
+       * usual `domainErrorMessage`-then-`Match.orElse` shape applies.
+       */
+      const exportLine = h("pre", { class: "export-output hidden" });
+      const exportAs = (format: "json" | "markdown") => {
+        exportLine.classList.remove("hidden");
+        exportLine.textContent = "Exporting…";
+        void run(exportPostAs(slug, format).pipe(withAuth, toEffect))
+          .then((result) => {
+            const message = domainErrorMessage(result);
+            if (message) {
+              exportLine.textContent = message;
+              return;
+            }
+            Match.value(result).pipe(
+              // The JSON rule decoded a `PostExport` struct...
+              Match.tag("json", ({ body }) => {
+                exportLine.textContent = JSON.stringify(body, null, 2);
+              }),
+              // ...and the Markdown rule decoded the *same* struct back out of a Markdown
+              // document, through `ResponseBody.text` and `PostExportFromMarkdown`.
+              Match.tag("markdown", ({ body }) => {
+                exportLine.textContent = `slug: ${body.slug}\ntitle: ${body.title}\nauthor: ${body.author}\n\n${body.body}`;
+              }),
+              Match.tag("serverError", ({ body }) => {
+                exportLine.textContent = `Server error: ${body.message}`;
+              }),
+              Match.orElse(() => {
+                exportLine.textContent = "Unexpected response from the server.";
+              }),
+            );
+          })
+          .catch((error: unknown) => {
+            console.error("post export failed", error);
+            exportLine.textContent = "Could not reach the server. Is it running?";
+          });
+      };
+
       mount(
         main,
         h(
@@ -247,6 +290,18 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
                 ),
               )
             : null,
+        ),
+        h(
+          "section",
+          { class: "card" },
+          h("h2", {}, "Export"),
+          h(
+            "p",
+            { class: "actions" },
+            h("button", { class: "link-button", onclick: () => exportAs("json") }, "As JSON"),
+            h("button", { class: "link-button", onclick: () => exportAs("markdown") }, "As Markdown"),
+          ),
+          exportLine,
         ),
         h("h2", {}, `Attachments (${attachments.length})`),
         attachments.length === 0

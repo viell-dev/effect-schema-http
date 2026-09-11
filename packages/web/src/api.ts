@@ -21,11 +21,16 @@ import {
   CurrentUser,
   FeedResponse,
   ForbiddenError,
+  ImportSummary,
+  LegacyLoginForm,
   LoginInput,
   NotFoundError,
+  PostExport,
+  PostExportFromMarkdown,
   PostView,
   RefreshCacheInput,
   RegisterInput,
+  ReindexAccepted,
   UnauthorizedError,
   UpdatePostInput,
   ValidationError,
@@ -71,6 +76,20 @@ export const login = api.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, AuthResponse)],
 });
 
+/**
+ * The same credentials, `application/x-www-form-urlencoded` instead of JSON. `RequestBody.urlParams`
+ * takes a record of coercible values, and `LegacyLoginForm`'s encoded type — a struct of plain
+ * strings — already *is* one, so no transformation is needed: the same "identity schema" trick
+ * that makes `Schema.instanceOf(FormData)` work for multipart, one wire format down.
+ */
+export const legacyLogin = api.createRequest({
+  method: "POST",
+  path: "/api/users/login/legacy",
+  body: LegacyLoginForm,
+  bodyCodec: RequestBody.urlParams,
+  responses: [response({ _tag: "ok", status: 200 }, AuthResponse)],
+});
+
 export const currentUser = api.createRequest({
   method: "GET",
   path: "/api/user",
@@ -104,6 +123,23 @@ export const getBlogFeed = api.createRequest({
   ],
 });
 
+/**
+ * The feed endpoint's mirror image, and the reason `AtomFeedFromString` is worth defining as a
+ * transformation rather than a parser: here the *client* encodes a domain value into that XML with
+ * `RequestBody.text`, and the server decodes it with the identical schema. One definition of the
+ * format, used in four places — encode and decode, on both ends.
+ *
+ * The explicit `content-type` matters: `RequestBody.text(contentType)` writes it, and without it
+ * this would be announced as `text/plain`.
+ */
+export const importBlogFeed = api.createRequest({
+  method: "POST",
+  path: "/api/blogs/:username/import.atom",
+  body: AtomFeedFromString,
+  bodyCodec: RequestBody.text("application/atom+xml"),
+  responses: [response({ _tag: "ok", status: 200 }, ImportSummary)],
+});
+
 export const listFeed = api.createRequest({
   method: "GET",
   path: "/api/posts",
@@ -131,6 +167,50 @@ export const updatePost = api.createRequest({
   body: UpdatePostInput,
   responses: [response({ _tag: "ok", status: 200 }, PostView)],
 });
+
+/**
+ * The one endpoint here whose response shape genuinely varies at runtime, and therefore the one
+ * place the library's response-rule precedence is load-bearing rather than decorative. Two rules
+ * share `status: 200` and are separated only by a `content-type` matcher; a third matches any 5xx
+ * through a status *predicate*. Per the library's documented ranking — "rules with more matched
+ * headers rank first. Among rules with the same number of matched headers, an exact status ranks
+ * above a status predicate" — the two header-bearing rules are tried first, and the predicate rule
+ * can never shadow them no matter what order they are declared in.
+ *
+ * `Accept` is the caller's job: a rule-specific codec does not change the request header, because
+ * rules are selected after the response arrives. `exportPostAs` below sets it per call site.
+ */
+export const exportPost = api.createRequest({
+  method: "GET",
+  path: "/api/posts/:slug/export",
+  responses: [
+    response(
+      {
+        _tag: "json",
+        status: 200,
+        headers: { "content-type": (value) => value?.startsWith("application/json") ?? false },
+      },
+      PostExport,
+    ),
+    response(
+      {
+        _tag: "markdown",
+        status: 200,
+        headers: { "content-type": (value) => value?.startsWith("text/markdown") ?? false },
+      },
+      PostExportFromMarkdown,
+      { codec: ResponseBody.text },
+    ),
+    response(
+      { _tag: "serverError", status: (status) => status >= 500 },
+      Schema.Struct({ message: Schema.String }),
+    ),
+  ] as const,
+});
+
+/** Picks a representation by setting `Accept`; the rules above then select the matching decoder. */
+export const exportPostAs = (slug: string, format: "json" | "markdown") =>
+  exportPost({ slug }).setHeader("accept", format === "markdown" ? "text/markdown" : "application/json");
 
 export const deletePost = api.createRequest({
   method: "DELETE",
@@ -192,6 +272,21 @@ export const getAttachmentBytes = api.createRequest({
   ],
 });
 
+/**
+ * The only endpoint here whose *response* is form data. `ResponseBody.formData` hands the decoded
+ * `FormData` straight to `Schema.instanceOf(FormData)` — the same identity schema the upload
+ * endpoint uses for its request — and the caller pulls the parts out itself, because what a
+ * multipart response's parts mean is application knowledge, not something a codec can infer.
+ */
+export const getAttachmentBundle = api.createRequest({
+  method: "GET",
+  path: "/api/posts/:slug/attachments/:attachmentId/bundle",
+  headers: { accept: "multipart/form-data" },
+  responses: [
+    response({ _tag: "ok", status: 200 }, Schema.instanceOf(FormData), { codec: ResponseBody.formData }),
+  ],
+});
+
 export const deleteAttachment = api.createRequest({
   method: "DELETE",
   path: "/api/posts/:slug/attachments/:attachmentId",
@@ -216,6 +311,28 @@ export const adminStats = api.createRequest({
   method: "GET",
   path: "/api/admin/stats",
   responses: [response({ _tag: "ok", status: 200 }, AdminStatsFromBytes, { codec: ResponseBody.uint8Array })],
+});
+
+/**
+ * The warm-standby search cluster answers `503` with a `Retry-After` until it is up, which is
+ * exactly the case the library's retry policy already classifies as transient — no custom `while`
+ * predicate needed. `times: 3` permits four attempts in total, `respectRetryAfter` (the default)
+ * treats the header as a *minimum* delay over the jittered backoff, and the intermediate `503`
+ * bodies are drained by the library rather than buffered.
+ *
+ * Retries are declared here, on the endpoint, rather than at each call site precisely because this
+ * endpoint's flakiness is a property of the endpoint. It is also safe to replay: reindexing is
+ * idempotent, which is the question the library's docs tell you to answer before enabling retries
+ * on a non-GET method.
+ */
+export const adminReindex = api.createRequest({
+  method: "POST",
+  path: "/api/admin/search/reindex",
+  retry: { times: 3 },
+  responses: [
+    response({ _tag: "accepted", status: 202 }, ReindexAccepted),
+    response({ _tag: "warmingUp", status: 503 }, Schema.Struct({ message: Schema.String })),
+  ] as const,
 });
 
 /** `205 Reset Content`, not `204 No Content`: per HTTP semantics this tells the caller to reset
