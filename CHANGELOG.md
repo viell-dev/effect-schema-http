@@ -19,6 +19,7 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 
 - Documented local beta consumption, execution boundaries, body ownership, and gate semantics.
 - Documented the schema each body codec pairs with, backed by a typechecked example and runtime coverage.
+- Documented the Fetch client's `traceparent`/`b3` propagation, its CORS consequences, and how to disable it.
 - Marked the repository private until registry publication is planned; recorded deferred review findings and questions.
 
 ### Added

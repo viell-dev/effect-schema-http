@@ -322,6 +322,32 @@ Effect Platform normalizes headers. Plans retain repeated header entries separat
 combine them on the wire. APIs that require repeated physical header field lines need a provider that reads
 `getHeaderEntries(request)` and preserves that representation.
 
+### Browsers and CORS
+
+`FetchHttpClient` opens a client span for every request and, with tracer propagation enabled — the Effect Platform
+default — writes that span into `traceparent` and `b3` request headers. Neither is CORS-safelisted, so a cross-origin
+server must name both in `Access-Control-Allow-Headers` (or reflect `Access-Control-Request-Headers`) or every call
+fails at the preflight. Combined with the `authorization` and `content-type` headers most APIs already need, a
+browser application should expect a preflight on essentially every request.
+
+A rejected preflight reaches the caller as an Effect Platform `RequestError` with `reason: "Transport"`, whose cause is
+the browser's deliberately opaque `TypeError: Failed to fetch`; the specific header is named only in the browser
+console. Check the console first when a request that works from `curl` or Node fails in a browser.
+
+Turn propagation off when the server is not under your control:
+
+```ts
+import { HttpClient } from "@effect/platform";
+
+const api = createApi("https://api.example.com", {
+  transformClient: HttpClient.withTracerPropagation(false),
+});
+```
+
+`transformClient` is available on API and endpoint declarations, and `.mapClient(...)` applies the same change to one
+plan. Prefer allowing the headers when you own the server: the propagated span is what links a browser request to its
+server-side trace.
+
 ## API overview
 
 | API                                        | Purpose                                                       |

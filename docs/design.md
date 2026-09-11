@@ -390,6 +390,15 @@ while later callers await its result. Synchronous throws while constructing the 
 they still complete shared waiters and remove the flight so future calls can recover. Key and equivalence callbacks
 should be pure. Inputs, keys, and results are retained by reference, so callers must not mutate them.
 
+The chosen provider, not this library, decides which headers actually reach the wire. `FetchHttpClient` opens a client
+span per request and, under Effect Platform's default tracer propagation, writes `traceparent` and `b3` headers into
+it. In a browser this interacts with CORS: neither name is safelisted, so a cross-origin server must allow both or the
+preflight fails before the request is sent, and the failure reaches the caller only as a transport error with the
+browser's opaque cause. `transformClient` at API or endpoint scope and `.mapClient(...)` at plan scope accept
+`HttpClient.withTracerPropagation(false)` for servers whose allow-list cannot be changed. This is provider behavior
+rather than plan state, but it is documented here because it is only reachable through the provider seam this library
+requires callers to fill.
+
 Gate cancellation and ordinary request cancellation use Effect interruption rather than a transport-specific
 `AbortController`. `FetchHttpClient` translates interruption to its internal abort signal. Other providers must make
 their transport Effects interruptible. At a Promise boundary, callers can pass an external signal directly through

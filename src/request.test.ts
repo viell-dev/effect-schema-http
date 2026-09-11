@@ -225,6 +225,33 @@ describe("createRequest", () => {
     expect(requests.map((request) => request.headers.get("x-request-source"))).toEqual(["test", "test"]);
   });
 
+  it("sends the Fetch client's tracing headers unless propagation is disabled", async () => {
+    // Guards the browser guidance in the README: Effect Platform's client propagates its span on every request, so a
+    // cross-origin server must allow these names or the application must turn propagation off.
+    const requests: Array<Request> = [];
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return Response.json({ id: 1, name: "Ada" });
+      }),
+    );
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/1",
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+
+    await Effect.all([getUser().effect, getUser().mapClient(HttpClient.withTracerPropagation(false)).effect]).pipe(
+      Effect.provide(layer),
+      Effect.runPromise,
+    );
+
+    expect(requests[0]?.headers.get("traceparent")).toMatch(/^00-[\da-f]{32}-[\da-f]{16}-0[01]$/);
+    expect(requests[0]?.headers.get("b3")).toMatch(/^[\da-f]{32}-[\da-f]{16}-[01]$/);
+    expect(requests[1]?.headers.get("traceparent")).toBeNull();
+    expect(requests[1]?.headers.get("b3")).toBeNull();
+  });
+
   it("constructs a fresh Effect only when a plan effect is read", () => {
     const getUser = createRequest({
       method: "GET",
