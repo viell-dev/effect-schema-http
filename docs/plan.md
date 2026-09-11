@@ -95,21 +95,21 @@ all plausible — these are things that exist in production right now.
   class files, Node modules, OS files)
 - [x] Create root `README.md` explaining the project purpose and architecture
 - [x] Copy the `vendor/` tarball from `test-llm1`
-- [ ] Commit: "Initial repository setup with plan and gitignore"
+- [x] Commit: "Initial repository setup with plan and gitignore"
 
 ### Phase 1: ID Server (Rust/Axum)
 
-- [ ] Initialize Cargo project in `services/id-server/` with Axum, serde, jsonwebtoken, uuid,
+- [x] Initialize Cargo project in `services/id-server/` with Axum, serde, jsonwebtoken, uuid,
   tokio dependencies
-- [ ] Implement in-memory user store (registration + hashed passwords)
-- [ ] Implement OAuth2-style `/token` endpoint (password grant + refresh grant)
-- [ ] Implement `/userinfo` endpoint (requires valid access token)
-- [ ] Implement `/introspect` endpoint (for server-to-server token validation)
-- [ ] Implement `/register` endpoint
-- [ ] Wire in all historical quirks (casing inconsistency, error format split, rate limiting with
+- [x] Implement in-memory user store (registration + hashed passwords)
+- [x] Implement OAuth2-style `/token` endpoint (password grant + refresh grant)
+- [x] Implement `/userinfo` endpoint (requires valid access token)
+- [x] Implement `/introspect` endpoint (for server-to-server token validation)
+- [x] Implement `/register` endpoint
+- [x] Wire in all historical quirks (casing inconsistency, error format split, rate limiting with
   HTTP-date, etc.)
-- [ ] Add CORS middleware with the intentional omission on one endpoint
-- [ ] Test with `curl` / write a small integration test
+- [x] Add CORS middleware with the intentional omission on one endpoint
+- [x] Test with `curl` / write a small integration test
 - [ ] Commit: "ID Server (Rust/Axum) — complete with historical quirks"
 
 ### Phase 2: File Server (Python/stdlib)
