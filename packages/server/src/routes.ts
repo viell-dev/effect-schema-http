@@ -26,6 +26,8 @@ import {
   ConflictError,
   CreateCommentInput,
   CreatePostInput,
+  LegacyCommentRequest,
+  LegacyCommentResponse,
   CurrentUser,
   currentUserOfAccount,
   DiagnosticsReport,
@@ -760,3 +762,86 @@ export const adminDiagnostics = (
       body: dump,
     } satisfies RouteResponse;
   }).pipe(Effect.catchAll(domainErrorToResponse));
+
+// -- The original comment endpoint ------------------------------------------------------------
+
+/**
+ * `POST /api/v1/comments`: always `200`, outcome in the body, `snake_case` fields, epoch-seconds
+ * timestamps, post identified in the payload. See `packages/domain/src/legacyComments.ts` for why
+ * it is like this and why it is not going to change.
+ *
+ * Note what this handler does *not* do: it never calls `respondWith`, because that maps domain
+ * errors onto statuses, which is exactly the behaviour this endpoint predates. Every path below
+ * ends in a `200`.
+ */
+export const legacyCreateComment = (
+  authHeader: string | undefined,
+  json: unknown,
+): Effect.Effect<RouteResponse, never, Store> => {
+  const ok = (comment: Comment) =>
+    Schema.encode(LegacyCommentResponse)({
+      status: "ok" as const,
+      comment_id: comment.id,
+      created_at: comment.createdAt,
+    }).pipe(
+      Effect.map((body): RouteResponse => ({ kind: "json", status: 200, body })),
+      Effect.orDie,
+    );
+
+  const failure = (code: "invalid" | "not_found" | "forbidden", message: string) =>
+    Schema.encode(LegacyCommentResponse)({
+      status: "error" as const,
+      error_code: code,
+      error_message: message,
+    }).pipe(
+      Effect.map((body): RouteResponse => ({ kind: "json", status: 200, body })),
+      Effect.orDie,
+    );
+
+  return Effect.gen(function* () {
+    const viewerId = yield* optionalSession(authHeader).pipe(Effect.orElseSucceed(() => undefined));
+    const input = yield* decodeBody(LegacyCommentRequest, json);
+    const store = yield* Store;
+    const post = yield* store.getPostBySlug(input.post_slug);
+    if (!visibleToViewer(post, viewerId)) {
+      return yield* Effect.fail(new NotFoundError({ resource: "Post", id: input.post_slug }));
+    }
+
+    const author: CommentAuthor = yield* Effect.gen(function* () {
+      if (viewerId) {
+        const account = yield* store.getAccount(viewerId);
+        return { _tag: "registered" as const, userId: account.id, username: account.username };
+      }
+      if (input.display_name) return { _tag: "anonymous" as const, displayName: input.display_name };
+      return yield* Effect.fail(
+        new ValidationError({
+          message: "request body failed validation",
+          issues: ["display_name: anonymous comments require a display_name"],
+        }),
+      );
+    });
+
+    const comment = new Comment({
+      id: CommentId.make(randomUUID()),
+      postId: post.id,
+      author,
+      body: input.comment_body,
+      createdAt: DateTime.unsafeNow(),
+    });
+    return yield* store.insertComment(comment);
+  }).pipe(
+    Effect.flatMap(ok),
+    // Every domain error is flattened into the body shape this endpoint has always used.
+    Effect.catchAll((error: DomainError) => {
+      switch (error._tag) {
+        case "NotFoundError":
+          return failure("not_found", `no post named ${error.id}`);
+        case "ForbiddenError":
+        case "UnauthorizedError":
+          return failure("forbidden", error.message);
+        default:
+          return failure("invalid", "message" in error ? error.message : "the request could not be processed");
+      }
+    }),
+  );
+};

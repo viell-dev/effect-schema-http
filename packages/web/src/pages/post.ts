@@ -1,6 +1,6 @@
 import { DateTime, Match } from "effect";
 import { toEffect } from "viell-effect-schema-http";
-import { CreateCommentInput } from "@realworld/domain";
+import { CreateCommentInput, LegacyCommentRequest } from "@realworld/domain";
 import { h, mount } from "../dom.js";
 import { renderNav } from "../components/nav.js";
 import { renderComment } from "../components/commentList.js";
@@ -11,6 +11,7 @@ import {
   deleteComment,
   deletePost,
   exportPostAs,
+  legacyCreateComment,
   getPost,
   listAttachments,
   listComments,
@@ -68,6 +69,9 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
       const commentBodyInput = h("textarea", { name: "body", rows: "3", required: "true" });
       const guestNameInput = session ? null : h("input", { type: "text", name: "displayName", required: "true" });
       const commentError = h("p", { class: "error hidden" });
+      // The old mobile client still posts to `/api/v1/comments`; this toggle sends the same
+      // comment through it, so the shape that endpoint answers with stays exercised.
+      const legacyToggle = h("input", { type: "checkbox", name: "legacyComment" });
 
       const showCommentError = (message: string): void => {
         commentError.textContent = message;
@@ -81,6 +85,46 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
           onsubmit: (event: Event) => {
             event.preventDefault();
             commentError.classList.add("hidden");
+
+            if (legacyToggle.checked) {
+              const decodedLegacy = decodeForm(LegacyCommentRequest, {
+                post_slug: slug,
+                comment_body: commentBodyInput.value,
+                display_name: guestNameInput ? guestNameInput.value || undefined : undefined,
+              });
+              if (decodedLegacy._tag === "failure") {
+                showCommentError(decodedLegacy.issues.join("; "));
+                return;
+              }
+
+              void run(legacyCreateComment().setBody(decodedLegacy.value).pipe(toEffect))
+                .then((result) => {
+                  // Two levels of discrimination, which is the price of an endpoint that puts its
+                  // outcome in the body. First the envelope tag — the API-wide error rules are
+                  // still inherited here even though this endpoint never uses them, because an
+                  // endpoint cannot opt out of an inherited rule. Then the body's own `status`,
+                  // which is where this endpoint actually says what happened.
+                  Match.value(result).pipe(
+                    Match.tag("legacy", ({ body }) =>
+                      Match.value(body).pipe(
+                        Match.discriminator("status")("ok", () => rerender()),
+                        Match.discriminator("status")("error", ({ error_code, error_message }) =>
+                          showCommentError(`${error_code}: ${error_message}`),
+                        ),
+                        Match.exhaustive,
+                      ),
+                    ),
+                    Match.orElse(() => {
+                      showCommentError(domainErrorMessage(result) ?? "Unexpected response from the server.");
+                    }),
+                  );
+                })
+                .catch((error: unknown) => {
+                  console.error("legacy comment submission failed", error);
+                  showCommentError("Could not reach the server. Is it running?");
+                });
+              return;
+            }
 
             const decoded = decodeForm(CreateCommentInput, {
               body: commentBodyInput.value,
@@ -113,6 +157,7 @@ export const renderPostPage = async (root: HTMLElement, slug: string): Promise<v
         commentError,
         guestNameInput ? h("label", {}, "Your name", guestNameInput) : null,
         h("label", {}, "Comment", commentBodyInput),
+        h("label", { class: "checkbox" }, legacyToggle, " Post through the v1 endpoint"),
         h("button", { type: "submit" }, "Post comment"),
       );
 

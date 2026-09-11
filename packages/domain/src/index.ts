@@ -9,6 +9,7 @@ export * from "./attachment.js";
 export * from "./feed.js";
 export * from "./admin.js";
 export * from "./legacy.js";
+export * from "./legacyComments.js";
 export * from "./export.js";
 export * from "./adminUsers.js";
 export * from "./api.js";

@@ -741,3 +741,75 @@ describe("optimistic concurrency on post updates", () => {
     expect(result.stale.status).toBe(409);
   });
 });
+
+describe("the original comment endpoint", () => {
+  const seed = () =>
+    Effect.gen(function* () {
+      const auth = yield* routes.register({
+        username: "ada",
+        email: "ada@example.com",
+        password: "lovelace1",
+        displayName: "Ada Lovelace",
+      });
+      const header = `Bearer ${(jsonBody(auth) as { token: string }).token}`;
+      yield* routes.createPost(header, { title: "Hello world", body: "First.", visibility: "public" });
+      return header;
+    });
+
+  it("answers 200 for every outcome, with the result in the body", async () => {
+    const program = Effect.gen(function* () {
+      const header = yield* seed();
+
+      const ok = yield* routes.legacyCreateComment(header, {
+        post_slug: "hello-world",
+        comment_body: "Nice post.",
+      });
+      const missingPost = yield* routes.legacyCreateComment(header, {
+        post_slug: "no-such-post",
+        comment_body: "Hello?",
+      });
+      const invalid = yield* routes.legacyCreateComment(header, { post_slug: "hello-world" });
+      const anonymousWithoutName = yield* routes.legacyCreateComment(undefined, {
+        post_slug: "hello-world",
+        comment_body: "Drive-by.",
+      });
+
+      return { ok, missingPost, invalid, anonymousWithoutName };
+    }).pipe(Effect.provide(Store.Default));
+
+    const { ok, missingPost, invalid, anonymousWithoutName } = await Effect.runPromise(
+      program as Effect.Effect<{
+        ok: RouteResponse;
+        missingPost: RouteResponse;
+        invalid: RouteResponse;
+        anonymousWithoutName: RouteResponse;
+      }>,
+    );
+
+    // The defining sin: not one of these is anything but 200.
+    expect([ok.status, missingPost.status, invalid.status, anonymousWithoutName.status]).toEqual([200, 200, 200, 200]);
+
+    expect(jsonBody(ok)).toMatchObject({ status: "ok" });
+    // Epoch seconds on the wire, not ISO.
+    const created = (jsonBody(ok) as { created_at: number }).created_at;
+    expect(typeof created).toBe("number");
+    expect(created).toBeLessThan(4_000_000_000);
+
+    expect(jsonBody(missingPost)).toMatchObject({ status: "error", error_code: "not_found" });
+    expect(jsonBody(invalid)).toMatchObject({ status: "error", error_code: "invalid" });
+    expect(jsonBody(anonymousWithoutName)).toMatchObject({ status: "error", error_code: "invalid" });
+  });
+
+  it("stores a comment the modern endpoint can read back", async () => {
+    const program = Effect.gen(function* () {
+      const header = yield* seed();
+      yield* routes.legacyCreateComment(header, { post_slug: "hello-world", comment_body: "Via v1." });
+      return yield* routes.listComments("hello-world", header);
+    }).pipe(Effect.provide(Store.Default));
+
+    const listed = await Effect.runPromise(program as Effect.Effect<RouteResponse>);
+    expect(listed.status).toBe(200);
+    expect((jsonBody(listed) as { comments: ReadonlyArray<{ body: string }> }).comments[0]?.body).toBe("Via v1.");
+  });
+});
+

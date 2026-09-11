@@ -163,6 +163,13 @@ const routeTable: ReadonlyArray<Route> = [
     handle: ([slug], _q, auth, json) => run(routes.createComment(slug!, auth, json)),
   },
   {
+    // The original comment endpoint: always 200, outcome in the body, post named in the payload.
+    method: "POST",
+    pattern: /^\/api\/v1\/comments$/,
+    bodyMode: "json",
+    handle: (_p, _q, auth, json) => run(routes.legacyCreateComment(auth, json)),
+  },
+  {
     method: "DELETE",
     pattern: /^\/api\/posts\/([^/]+)\/comments\/([^/]+)$/,
     bodyMode: "none",

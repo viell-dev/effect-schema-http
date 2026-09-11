@@ -23,6 +23,8 @@ import {
   FeedResponse,
   ForbiddenError,
   ImportSummary,
+  LegacyCommentRequest,
+  LegacyCommentResponse,
   LegacyLoginForm,
   LoginInput,
   NotFoundError,
@@ -262,6 +264,25 @@ export const createComment = api.createRequest({
   path: "/api/posts/:slug/comments",
   body: CreateCommentInput,
   responses: [response({ _tag: "created", status: 201 }, Comment)],
+});
+
+/**
+ * The original comment endpoint, and the one place in this client where the library's response
+ * rules cannot do the discriminating. Rule selection happens before decoding, on status and
+ * headers, and this endpoint answers `200` whether it worked or not — so both outcomes have to
+ * live in a single rule whose schema is a `Schema.Union`, and the caller matches on the body's own
+ * `status` field afterwards.
+ *
+ * That is the honest limit of the envelope model, and it is worth being precise about what is
+ * actually lost: the union is still exhaustive and still decoded, so nothing is unsafe. What goes
+ * is the ability to give the two outcomes different envelope tags — and with it the uniformity
+ * that lets `domainErrorMessage` handle every other endpoint's failures in one place.
+ */
+export const legacyCreateComment = api.createRequest({
+  method: "POST",
+  path: "/api/v1/comments",
+  body: LegacyCommentRequest,
+  responses: [response({ _tag: "legacy", status: 200 }, LegacyCommentResponse)],
 });
 
 export const deleteComment = api.createRequest({
