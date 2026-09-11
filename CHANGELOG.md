@@ -25,6 +25,7 @@ Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release h
 - Lazy, immutable, pipeable HTTP request plans backed by Effect Platform `HttpClient`.
 - Schema-based request encoding and tag-discriminated response decoding.
 - API defaults, sub-API extension, path parameters, and call-site overrides.
+- `RequestPlanTransform`, the public type for plan setters shared across endpoints.
 - JSON, text, byte, form-data, and explicit no-body response codecs.
 - Retry schedules, timeouts, cache controls, response matching, and repeated-field support.
 - Single-entry request gates with in-flight de-duplication, refresh, reload, cancellation, and invalidation.

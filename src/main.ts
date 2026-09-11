@@ -65,6 +65,7 @@ export {
   type RequestMethod,
   type RequestOptions,
   type RequestPlan,
+  type RequestPlanTransform,
   type QueryParamValue,
   type QueryParamsInput,
   type QueryParamRemoval,

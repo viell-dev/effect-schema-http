@@ -25,6 +25,7 @@ import {
   setResponseSchema as withResponseSchema,
   setUrlParam as withUrlParam,
   type Endpoint,
+  type RequestPlanTransform,
   type ResponseOf,
   type ResponseBodyCodec,
   toEffect,
@@ -171,6 +172,57 @@ describe("createRequest", () => {
     const thinPlan = getThinUsers({ teamId: "team-1" });
     type ThinResult = Effect.Effect.Success<typeof thinPlan.effect>;
     expectTypeOf<ThinResult["body"]>().toEqualTypeOf<ReadonlyArray<typeof ThinUser.Type>>();
+  });
+
+  it("reuses one plan transformation across endpoints with different type parameters", async () => {
+    const requests: Array<Request> = [];
+
+    /** The documented shape of a cross-endpoint setter: annotate the helper, not each call site. */
+    const withAuth =
+      (token: string): RequestPlanTransform =>
+      (plan) =>
+        plan.setHeader("authorization", `Bearer ${token}`).appendHeader("x-request-source", "test");
+
+    const getUser = createRequest({
+      method: "GET",
+      path: "https://example.test/users/:userId",
+      responses: [response({ _tag: "ok", status: 200 }, User)],
+    });
+    const createUser = createRequest({
+      method: "POST",
+      path: "https://example.test/users",
+      body: Schema.Struct({ name: Schema.String }),
+      responses: [response({ _tag: "created", status: 201 }, User), response({ _tag: "gone", status: 410 }, Gone)],
+    });
+
+    // Body typestate, response rules, and path arguments all survive the shared helper.
+    const readPlan = getUser({ userId: "1" }).pipe(withAuth("read-token"));
+    const writePlan = createUser().pipe(withAuth("write-token"));
+    expectTypeOf(writePlan.effect).toEqualTypeOf<RequestBodyRequired>();
+    const readyWritePlan = writePlan.setBody({ name: "Ada" });
+    type WriteResult = Effect.Effect.Success<typeof readyWritePlan.effect>;
+    expectTypeOf<WriteResult["_tag"]>().toEqualTypeOf<"created" | "gone">();
+
+    const layer = fetchLayer(
+      mockFetch(async (request) => {
+        requests.push(request);
+        return request.method === "GET"
+          ? Response.json({ id: 1, name: "Ada" })
+          : Response.json({ id: 2, name: "Grace" }, { status: 201 });
+      }),
+    );
+
+    const results = await Effect.all([readPlan.effect, readyWritePlan.effect]).pipe(
+      Effect.provide(layer),
+      Effect.runPromise,
+    );
+
+    expect(results.map((result) => result._tag)).toEqual(["ok", "created"]);
+    expect(requests.map((request) => request.headers.get("authorization"))).toEqual([
+      "Bearer read-token",
+      "Bearer write-token",
+    ]);
+    expect(requests.map((request) => request.headers.get("x-request-source"))).toEqual(["test", "test"]);
   });
 
   it("constructs a fresh Effect only when a plan effect is read", () => {

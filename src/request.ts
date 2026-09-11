@@ -1102,7 +1102,31 @@ export const setRequestBodyCodec =
   ): RequestPlan<Body, Rules, BodyReady> =>
     plan.setRequestBodyCodec(codec as RequestBodyCodec<Schema.Schema.Encoded<Body>>);
 
-type PlanTransform = <
+/**
+ * A reusable plan transformation that works on any endpoint's plans.
+ *
+ * @remarks
+ * `Body`, `Rules`, and `BodyReady` differ per endpoint, so a helper written against one concrete
+ * {@link RequestPlan} instantiation is not reusable across endpoints. This is the type every pipeable setter already
+ * returns, and annotating a cross-endpoint helper with it keeps the helper polymorphic without casts:
+ *
+ * ```ts
+ * const withAuth =
+ *   (token: string): RequestPlanTransform =>
+ *   (plan) =>
+ *     plan.setHeader("authorization", `Bearer ${token}`).setHeader("x-request-source", "web");
+ *
+ * const plan = getUser({ userId }).pipe(withAuth(token), setUrlParam("expand", "profile"));
+ * ```
+ *
+ * A transformation that only adds a header or query parameter needs no helper at all: the pipeable setters are
+ * already values of this type. A transformation that must also change response rules or supply a body cannot use
+ * this type, because those operations change the plan's type parameters; compose those with `mapEndpoint` per
+ * endpoint instead.
+ *
+ * @public
+ */
+export type RequestPlanTransform = <
   Body extends AnySchema | undefined,
   Rules extends ReadonlyArray<AnyResponseRule>,
   BodyReady extends boolean,
@@ -1111,17 +1135,17 @@ type PlanTransform = <
 ) => RequestPlan<Body, Rules, BodyReady>;
 
 /** Pipeable form of {@link RequestPlan.setUrlParam}. */
-export function setUrlParam(key: string, value: QueryParamValue): PlanTransform;
+export function setUrlParam(key: string, value: QueryParamValue): RequestPlanTransform;
 export function setUrlParam(
   key: string,
   currentValue: QueryParamValue,
   replacementValue: QueryParamValue,
-): PlanTransform;
+): RequestPlanTransform;
 export function setUrlParam(
   key: string,
   currentValue: QueryParamValue,
   replacementValue?: QueryParamValue,
-): PlanTransform {
+): RequestPlanTransform {
   return (plan) =>
     replacementValue === undefined
       ? plan.setUrlParam(key, currentValue)
@@ -1130,31 +1154,27 @@ export function setUrlParam(
 
 /** Pipeable form of {@link RequestPlan.setUrlParams}. */
 export const setUrlParams =
-  (params: QueryParamsInput) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (params: QueryParamsInput): RequestPlanTransform =>
+  (plan) =>
     plan.setUrlParams(params);
 
 /** Pipeable form of {@link RequestPlan.appendUrlParam}. */
 export const appendUrlParam =
-  (key: string, value: QueryParamValue) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (key: string, value: QueryParamValue): RequestPlanTransform =>
+  (plan) =>
     plan.appendUrlParam(key, value);
 
 /** Pipeable form of {@link RequestPlan.removeUrlParam}. */
-export function removeUrlParam(key: string): PlanTransform;
-export function removeUrlParam(key: string, value: QueryParamValue): PlanTransform;
-export function removeUrlParam(key: string, value?: QueryParamValue): PlanTransform {
+export function removeUrlParam(key: string): RequestPlanTransform;
+export function removeUrlParam(key: string, value: QueryParamValue): RequestPlanTransform;
+export function removeUrlParam(key: string, value?: QueryParamValue): RequestPlanTransform {
   return (plan) => (value === undefined ? plan.removeUrlParam(key) : plan.removeUrlParam(key, value));
 }
 
 /** Pipeable form of {@link RequestPlan.setHeader}. */
-export function setHeader(name: string, value: string): PlanTransform;
-export function setHeader(name: string, currentValue: string, replacementValue: string): PlanTransform;
-export function setHeader(name: string, currentValue: string, replacementValue?: string): PlanTransform {
+export function setHeader(name: string, value: string): RequestPlanTransform;
+export function setHeader(name: string, currentValue: string, replacementValue: string): RequestPlanTransform;
+export function setHeader(name: string, currentValue: string, replacementValue?: string): RequestPlanTransform {
   return (plan) =>
     replacementValue === undefined
       ? plan.setHeader(name, currentValue)
@@ -1163,97 +1183,77 @@ export function setHeader(name: string, currentValue: string, replacementValue?:
 
 /** Pipeable form of {@link RequestPlan.setHeaders}. */
 export const setHeaders =
-  (headers: HeaderInput) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (headers: HeaderInput): RequestPlanTransform =>
+  (plan) =>
     plan.setHeaders(headers);
 
 /** Pipeable form of {@link RequestPlan.appendHeader}. */
 export const appendHeader =
-  (name: string, value: string) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (name: string, value: string): RequestPlanTransform =>
+  (plan) =>
     plan.appendHeader(name, value);
 
 /** Pipeable form of {@link RequestPlan.removeHeader}. */
-export function removeHeader(name: string): PlanTransform;
-export function removeHeader(name: string, value: string): PlanTransform;
-export function removeHeader(name: string, value?: string): PlanTransform {
+export function removeHeader(name: string): RequestPlanTransform;
+export function removeHeader(name: string, value: string): RequestPlanTransform;
+export function removeHeader(name: string, value?: string): RequestPlanTransform {
   return (plan) => (value === undefined ? plan.removeHeader(name) : plan.removeHeader(name, value));
 }
 
 /** Pipeable form of {@link RequestPlan.setCache}. */
 export const setCache =
-  (cache: CachePolicy | undefined) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (cache: CachePolicy | undefined): RequestPlanTransform =>
+  (plan) =>
     plan.setCache(cache);
 
 /** Pipeable form of {@link RequestPlan.setResponseCodec}. */
 export const setResponseCodec =
-  (codec: DefaultResponseBodyCodec) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (codec: DefaultResponseBodyCodec): RequestPlanTransform =>
+  (plan) =>
     plan.setResponseCodec(codec);
 
 /** Pipeable form of {@link RequestPlan.setUnhandledResponseBody}. */
 export const setUnhandledResponseBody =
-  (policy: UnhandledResponseBodyPolicy) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (policy: UnhandledResponseBodyPolicy): RequestPlanTransform =>
+  (plan) =>
     plan.setUnhandledResponseBody(policy);
 
 /** Pipeable form of {@link RequestPlan.setBaseUrl}. */
 export const setBaseUrl =
-  (baseUrl: string | undefined) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (baseUrl: string | undefined): RequestPlanTransform =>
+  (plan) =>
     plan.setBaseUrl(baseUrl);
 
 /** Pipeable form of {@link RequestPlan.setTimeout}. */
 export const setTimeout =
-  (timeout: Duration.DurationInput | undefined) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (timeout: Duration.DurationInput | undefined): RequestPlanTransform =>
+  (plan) =>
     plan.setTimeout(timeout);
 
 /** Pipeable form of {@link RequestPlan.setRetry}. */
 export const setRetry =
-  (retry: RetryPolicy | undefined) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (retry: RetryPolicy | undefined): RequestPlanTransform =>
+  (plan) =>
     plan.setRetry(retry);
 
 /** Pipeable form of {@link RequestPlan.setRetries}. */
 export const setRetries =
-  (retries: number) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (retries: number): RequestPlanTransform =>
+  (plan) =>
     plan.setRetries(retries);
 
 /** Pipeable form of {@link RequestPlan.mapRequest}. */
 export const mapRequest =
-  (transform: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (
+    transform: (request: HttpClientRequest.HttpClientRequest) => HttpClientRequest.HttpClientRequest,
+  ): RequestPlanTransform =>
+  (plan) =>
     plan.mapRequest(transform);
 
 /** Pipeable form of {@link RequestPlan.mapClient}. */
 export const mapClient =
-  (transform: (client: HttpClient.HttpClient) => HttpClient.HttpClient) =>
-  <Body extends AnySchema | undefined, Rules extends ReadonlyArray<AnyResponseRule>, BodyReady extends boolean>(
-    plan: RequestPlan<Body, Rules, BodyReady>,
-  ): RequestPlan<Body, Rules, BodyReady> =>
+  (transform: (client: HttpClient.HttpClient) => HttpClient.HttpClient): RequestPlanTransform =>
+  (plan) =>
     plan.mapClient(transform);
 
 /** Pipeable form of {@link RequestPlan.setResponseSchema}. */

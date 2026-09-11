@@ -83,6 +83,13 @@ yield * getThinUsers().effect; // sends again with the same composed overrides
 Composition does not add execution or caching semantics: every plan remains immutable and every evaluation of its cold
 Effect sends the request again.
 
+Plan combinators that do not change typestate share one public signature, `RequestPlanTransform`. Every pipeable
+setter returns it, and an application helper that must apply to more than one endpoint — attaching a bearer token,
+a tenant header, a locale — is annotated with it rather than with a concrete `RequestPlan<Body, Rules, BodyReady>`
+instantiation, which would fix the triple to a single endpoint. The type is deliberately limited to typestate-
+preserving operations: `setBody`, `setRequestBodyCodec`, and `setResponseSchema` change the plan's type parameters and
+therefore stay per-endpoint compositions through `mapEndpoint`.
+
 The implementation uses `@effect/platform`'s `HttpClient` service. The Effect keeps the transport as an explicit
 requirement. Applications provide `FetchHttpClient.layer`, a Node client layer, or a test client. Accessing `.effect`
 does not choose a runtime or start a Promise.

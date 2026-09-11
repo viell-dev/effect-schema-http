@@ -180,6 +180,28 @@ Query values distinguish a bare key from an empty value: `true` produces `?previ
 Append operations support repeated query parameters and headers. Targeted setter and remover overloads operate on one
 exact existing value.
 
+### Reusable cross-endpoint setters
+
+A plan's `Body`, `Rules`, and `BodyReady` type parameters differ per endpoint, so a helper written against one
+concrete `RequestPlan` is not reusable. `RequestPlanTransform` is the polymorphic type every pipeable setter already
+returns; annotate a shared helper with it and it composes into any endpoint's plan without casts:
+
+```ts
+import { appendHeader, setHeader, type RequestPlanTransform } from "viell-effect-schema-http";
+
+const withAuth =
+  (token: string): RequestPlanTransform =>
+  (plan) =>
+    plan.setHeader("authorization", `Bearer ${token}`).appendHeader("x-request-source", "web");
+
+const user = getUser({ userId }).pipe(withAuth(token), setUrlParam("expand", "profile"), toEffect);
+const created = createUser().setBody({ name: "Ada" }).pipe(withAuth(token), toEffect);
+```
+
+A helper that only applies one setter needs no wrapper: `setHeader("x-tenant", tenant)` and
+`appendHeader("accept-language", locale)` are already values of this type. Transformations that change response rules
+or supply a body change the plan's type parameters and cannot use it; compose those per endpoint with `mapEndpoint`.
+
 ## Body codecs
 
 Response codecs read the transport body before its response schema decodes the resulting value:
@@ -292,6 +314,7 @@ combine them on the wire. APIs that require repeated physical header field lines
 | `createRequest`                            | Create a standalone endpoint                                  |
 | `response`                                 | Associate a matcher, schema, and optional codec               |
 | `RequestPlan` setters                      | Derive an immutable call-site request                         |
+| `RequestPlanTransform`                     | Type a reusable plan setter shared by several endpoints       |
 | `mapEndpoint`                              | Compose plan changes into another reusable endpoint           |
 | `toEffect`                                 | Extract the executable Effect                                 |
 | `makeRequestGate`                          | Add single-entry retention and in-flight de-duplication       |
