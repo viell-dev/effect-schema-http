@@ -10,8 +10,8 @@ import {
   extendApi,
   getHeaderEntries,
   InvalidPathArguments,
-  InvalidPathParameterValue,
   InvalidRetryCount,
+  mapEndpoint,
   RequestBody,
   RequestBodyEncodeError,
   RequestBodyNotAllowed,
@@ -19,18 +19,17 @@ import {
   response,
   ResponseBody,
   ResponseDecodeError,
-  mapEndpoint,
+  toEffect,
+  UnhandledResponse,
   setBody as withBody,
   setHeader as withHeader,
   setResponseSchema as withResponseSchema,
   setUrlParam as withUrlParam,
   type Endpoint,
-  type RequestPlanTransform,
-  type ResponseOf,
+  type RawHeaderPlanTransform,
   type ResponseBodyCodec,
-  toEffect,
-  UnhandledResponse,
-} from "./main.js";
+  type ResponseOf,
+} from "../main.js";
 
 const User = Schema.Struct({ id: Schema.Number, name: Schema.String });
 const ThinUser = Schema.Struct({ id: Schema.Number });
@@ -47,7 +46,7 @@ const mockFetch = (handler: (request: Request) => Promise<Response>): typeof fet
 
 /** The documented shape of a cross-endpoint setter: annotate the helper, not each call site. */
 const withAuth =
-  (token: string): RequestPlanTransform =>
+  (token: string): RawHeaderPlanTransform =>
   (plan) =>
     plan.setHeader("authorization", `Bearer ${token}`).appendHeader("x-request-source", "test");
 
@@ -499,7 +498,7 @@ describe("createRequest", () => {
     expect(() => untypedGetFile({ version: "2", name: "report", ext: "json", extra: "value" })).toThrow(
       InvalidPathArguments,
     );
-    expect(() => untypedGetFile({ version: "2", name: "", ext: "json" })).toThrow(InvalidPathParameterValue);
+    expect(() => untypedGetFile({ version: "2", name: "", ext: "json" })).not.toThrow();
 
     const inheritedParameters = Object.assign(Object.create({ version: "2" }) as object, {
       name: "report",

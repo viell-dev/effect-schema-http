@@ -4,9 +4,21 @@ All notable changes to this project will be documented in this file. The format 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.1.0-beta.2 (unreleased)
 
-Preparing `0.1.0-beta.1` for Codeberg and local-tarball evaluation; no release has been tagged yet.
+- Added SchemaHttp and UrlEncoding services/layers with shared request defaults and replaceable encoding policy.
+- Added optional complete-collection header/query schemas, typed encoding failures and propagated schema requirements.
+- Added codec-only request and response bodies, preserving schema validation when a schema is selected.
+- Simplified interaction gates to run/force/dispose with automatic supersession, current-flight retention and awaited cleanup.
+- Preserved empty path strings and dot segments; dynamic path maps and optional-default readiness are conservative.
+- Split source into category modules without index barrels, preserved portable root declarations, and cleaned stale build output.
+- Added opt-in diagnostics through native Effect logging; updated packed Node/web consumers and documentation.
+
+The annotated local tag `before-effect-native-2026-09-12` preserves the pre-redesign beta.1 commit; it is not a published release.
+
+## 0.1.0-beta.1 (historical local evaluation)
+
+Prepared for Codeberg and local-tarball evaluation before the redesign.
 
 ### Fixed
 

@@ -1,8 +1,8 @@
 /** Server-backed coverage of repeated request and response header field lines. */
 import { HttpClient, HttpClientError, HttpClientResponse } from "@effect/platform";
+import { Effect, Layer, Schema } from "effect";
 import { createServer, request as sendNodeRequest, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Effect, Layer, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { attachHeaderEntries, createApi, getHeaderEntries, response } from "../src/main.js";
 
@@ -38,7 +38,7 @@ const makeNodeClient = (): HttpClient.HttpClient =>
                   incoming.once("end", () => {
                     const responseHeaderEntries = entriesFromRawHeaders(incoming.rawHeaders);
                     const responseInit: ResponseInit = {
-                      headers: responseHeaderEntries.map(([name, value]) => [name, value]),
+                      headers: responseHeaderEntries.map(([name, value]): [string, string] => [name, value]),
                       status: incoming.statusCode ?? 500,
                       ...(incoming.statusMessage === undefined ? {} : { statusText: incoming.statusMessage }),
                     };

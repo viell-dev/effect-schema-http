@@ -1,8 +1,8 @@
 /** Server-backed coverage of request-gate de-duplication and provider cancellation. */
-import { createServer, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { FetchHttpClient } from "@effect/platform";
 import { Cause, Effect, Either, Exit, Fiber, Schema } from "effect";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApi, makeRequestGate, response } from "../src/main.js";
 
@@ -111,7 +111,7 @@ describe("request gates over HTTP", () => {
       const first = yield* gate.run({ page: 1, search: "Ada" });
       const invalid = yield* gate.run({ page: 1, search: "" }).pipe(Effect.either);
       const restored = yield* gate.run({ page: 1, search: "Ada" });
-      const refreshed = yield* gate.reload;
+      const refreshed = yield* gate.run({ search: "Ada", page: 1 }, { force: true });
       return { first, invalid, restored, refreshed };
     }).pipe(Effect.provide(FetchHttpClient.layer));
 
@@ -144,14 +144,14 @@ describe("request gates over HTTP", () => {
     expect(requests).toBe(2);
   });
 
-  it("aborts an in-flight Fetch request when the gate is invalidated", async () => {
+  it("aborts an in-flight Fetch request when the gate is disposed", async () => {
     const program = Effect.gen(function* () {
       const gate = yield* makeUsersGate;
       const executing = yield* Effect.fork(gate.run({ page: 1, search: "abort" }));
       yield* Effect.promise(() => abortStarted);
       const waiter = yield* Effect.fork(gate.run({ page: 1, search: "abort" }));
       yield* Effect.yieldNow();
-      yield* gate.invalidate;
+      yield* gate.dispose;
       return yield* Effect.all([Fiber.await(executing), Fiber.await(waiter)]);
     }).pipe(Effect.provide(FetchHttpClient.layer));
 
@@ -161,5 +161,21 @@ describe("request gates over HTTP", () => {
     expect(Exit.isFailure(executing) && Cause.isInterruptedOnly(executing.cause)).toBe(true);
     expect(Exit.isFailure(waiter) && Cause.isInterruptedOnly(waiter.cause)).toBe(true);
     expect(requests).toBe(1);
+  });
+  it("automatically aborts a superseded Fetch request", async () => {
+    const program = Effect.gen(function* () {
+      const gate = yield* makeUsersGate;
+      const previous = yield* Effect.fork(gate.run({ page: 1, search: "abort" }));
+      yield* Effect.promise(() => abortStarted);
+      const latest = yield* gate.run({ page: 1, search: "Ada" });
+      const interrupted = yield* Fiber.await(previous);
+      yield* gate.dispose;
+      return { latest, interrupted };
+    }).pipe(Effect.provide(FetchHttpClient.layer));
+    const { latest, interrupted } = await Effect.runPromise(program);
+    await abortObserved;
+    expect(latest).toMatchObject({ _tag: "ok", body: [{ name: "Ada" }] });
+    expect(Exit.isFailure(interrupted) && Cause.isInterruptedOnly(interrupted.cause)).toBe(true);
+    expect(requests).toBe(2);
   });
 });

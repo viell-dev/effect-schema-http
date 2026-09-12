@@ -1,5 +1,10 @@
 # Pre-beta review
 
+This historical review describes the pre-redesign implementation preserved by the local tag
+`before-effect-native-2026-09-12`. See [design.md](design.md) for current beta.2 contracts. In particular, preserving dot
+segments is now deliberate consumer policy, and field schemas, codec-only bodies and automatic gate interruption are
+implemented. Historical findings and counts below should be read in that snapshot's context.
+
 Reviewed on 2026-09-10 for Codeberg and local-tarball evaluation. This pass covered the public API, implementation,
 unit and integration tests, TSDoc, examples, and build/distribution metadata. It preserved the lazy request-plan model
 and avoided a retry-loop or configuration-model rewrite.
@@ -19,7 +24,7 @@ and avoided a retry-loop or configuration-model rewrite.
 
 ### 1. Dot-segment path values can change the target path
 
-**Priority: high when path values are untrusted.** `fillPath` in [request.ts](../src/request.ts) uses
+**Priority: high when path values are untrusted.** `fillPath` in [request.ts](../src/request/types.ts) uses
 `encodeURIComponent`, which leaves `.` and `..` unchanged. A URL implementation then normalizes whole dot segments:
 `/users/:id/profile` with `id: ".."` becomes `/profile`. This was reproduced with the local Node URL implementation.
 Percent-encoding the dots is not a general solution because URL parsing also recognizes encoded dot segments.

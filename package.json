@@ -1,6 +1,6 @@
 {
   "name": "viell-effect-schema-http",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "private": true,
   "description": "Lazy, schema-driven HTTP request plans for Effect",
   "keywords": [
@@ -61,7 +61,8 @@
     "test:integration": "vitest run tests",
     "test:unit": "vitest run src",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prebuild": "node scripts/clean-build.mjs"
   },
   "peerDependencies": {
     "@effect/platform": "^0.97.2",

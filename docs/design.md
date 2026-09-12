@@ -37,7 +37,7 @@ with an ASCII letter or underscore and may then contain ASCII letters, digits, o
 a full segment or appear inside one, such as `/files/:name.:ext` or `/v:version/users`. Repeating a placeholder name in
 one path reuses its single object property. Endpoints without placeholders remain zero-argument functions.
 
-Each value must be a non-empty string and is encoded with `encodeURIComponent`. In particular, `/` in an opaque value
+Each value must be a string and is encoded with `encodeURIComponent`. In particular, `/` in an opaque value
 is allowed and sent as `%2F`; it does not create another path segment. A runtime check rejects missing or unexpected
 properties, positional arguments, non-string values, and empty strings at degraded or untyped call sites:
 
@@ -210,6 +210,22 @@ Plan setters preserve earlier plans structurally, but do not deep-clone caller-o
 or policy objects. API and endpoint configuration can also retain references to declaration inputs. Treat all such
 inputs as immutable after passing them to the library. This is especially relevant when reusing an Effect or a gate.
 
+## Construction services and organization
+
+`SchemaHttp` is an Effect Context.Tag exposing pure `createApi` and `createRequest` factories. Its layer captures shared
+RequestOptions and a UrlEncoding service. SchemaHttp.Default provides default encoding; SchemaHttp.layer(options)
+requires an encoding layer. Factories and setters remain pure; created plan Effects obtain HttpClient and schema services
+from the execution context. Standalone factories also remain available.
+
+UrlEncoding supplies pure pathParameter, queryParameter and join functions. Its layer accepts partial replacements.
+Defaults escape values without rejecting empty strings or canonicalizing dot segments. Downstream providers retain their
+own URL behavior. Diagnostics default off; when enabled they emit method/status/tag through Effect.logDebug. Logger
+style/level/destinations and ConfigProvider are owned by application layers and runtimes.
+
+Source lives in category directories: api, request, request/query, request/retry, encoding, headers, body, response,
+errors and gate. main.ts is the sole root file and re-exports the supported package surface. There are no index.ts files.
+A directory need not have a paired entry module; named entry files are allowed where useful.
+
 ## Bodies and request fields
 
 The endpoint definition optionally declares a request body schema, but request bodies are never endpoint-function
@@ -294,7 +310,8 @@ Response rules already provide content-type-driven decoding when one status can 
 rule matches `content-type` with an exact value or predicate and selects its own codec and schema. The library does not
 maintain a separate media-type registry or automatically override an explicit rule codec from the received header.
 
-Query parameters and request headers remain unschematized. Query values are `string | true`: strings produce ordinary
+Without a selected field schema, query parameters and request headers accept plain declarations. Query values are
+`string | true`: strings produce ordinary
 `key=value` syntax, an empty string produces `key=`, and `true` produces the bare implicit-true form `key`. Explicit
 booleans remain explicit strings (`"true"` or `"false"`), while omission uses `removeUrlParam`. The library owns query
 serialization because WHATWG `URLSearchParams` normalizes `key` into `key=` and cannot preserve that distinction.
@@ -344,6 +361,30 @@ with `getHeaderEntries(request)` and should preserve that metadata through any p
 array. The default Fetch provider may combine repeated request fields, so APIs requiring separate physical field lines
 need a provider that explicitly supports them. This is a provider capability limitation, not a plan-model limitation.
 
+### Optional field schemas and codec-only bodies
+
+`headersSchema` and `urlParamsSchema` independently select a complete collection schema. Definition values and plural
+plan setters accept the schema's Type; execution validates/encodes with Schema.encodeUnknown before ordinary wire
+serialization. The Encoded type must be a collection of materialized strings (plus true for bare query flags), repeated
+arrays or entries, not computed functions. Schema contexts and RequestFieldsEncodeError propagate through the Effect.
+
+Raw single-field setters, appenders and removers are unavailable and reject untyped calls for a schema-owned collection.
+The other collection remains independent. Each plural setter replaces the previous typed input; inherited declarations
+are merged beneath it. Overrides suppress computed defaults before evaluation. Repeated inherited entries become arrays,
+while one entry becomes a scalar; provide explicit typed input when that loses required cardinality information. Header
+schema models should use lower-case keys to match inherited names. Schema excess-property behavior also applies to
+inherited defaults, so include defaults such as authorization in a selected header schema when they should survive.
+
+A body declaration can instead select a RequestBody codec directly. setBody then accepts its input type, without schema
+validation, and readiness remains required. A codec-only response rule uses response(matcher, codec) and returns the codec
+output type. Schema-bearing declarations always retain schema encoding/decoding. Binary and multipart data no longer
+require identity schemas purely to access a codec. Streaming remains deferred.
+
+Schema application input need not be a plain record: arrays, class instances, scalars and explicit `undefined` are
+passed intact to encoding and replace the inherited collection completely, suppressing its computed defaults. Plain
+record input merges inherited declarations underneath it. Omitting input constructs an inherited record; explicitly
+supplying `undefined` instead validates that value against the selected schema.
+
 ## Retry and cache policy
 
 Retries default to zero. API and endpoint definitions can choose another default, and `.setRetries(n)` changes it at
@@ -390,65 +431,28 @@ Fetch cache override merges into any application-provided `FetchHttpClient.Reque
 
 ## Request gates
 
-Request plans remain cold and repeatable. Stateful reuse is an explicit layer around an input-to-Effect function rather
-than a hidden property of a plan:
+The gate belongs to one independently managed interaction. Its API is `run(input, { force?: boolean })` and `dispose`.
+A changed input automatically interrupts the current execution. Equal input joins active work before considering the
+single retained success; force replaces current work and bypasses retention even when input is equal. Returning a
+cached value also interrupts any superseded active execution.
 
-```ts
-const program = Effect.gen(function* () {
-  const users = yield* makeRequestGate(
-    (filters: Filters) =>
-      getUsers().pipe(setUrlParam("page", String(filters.page)), setUrlParam("search", filters.search), toEffect),
-    { key: ({ page, search }) => JSON.stringify([page, search]) },
-  );
+The constructor allocates Ref/Deferred state without requiring the operation's services. The run Effect propagates its
+operation's A/E/R plus GateClosed. Only the still-current flight may populate retained success. Failure retains the
+previous success; a superseded uninterruptible completion cannot later overwrite it. Result/key objects remain
+caller-owned immutable references.
 
-  yield* users.run(filters); // reuse when the key matches the latest success
-  yield* users.refresh(filters); // bypass reuse for this input
-  yield* users.reload; // rerun the input that produced the latest success
-  yield* users.cancel; // interrupt superseded flights, keep the retained success
-});
-```
+The initiating fiber owns execution and resolves a shared Deferred. Waiter interruption does not interrupt that owner;
+owner interruption interrupts the shared work. Coordination and completion bookkeeping are protected with
+uninterruptibleMask; execution and waits restore ordinary interruptibility. Callback construction is suspended so
+synchronous defects still release flight state and waiters.
 
-The key function makes equality explicit instead of guessing whether arbitrary objects are structurally equal. An
-optional `equivalent` function supports composite keys that cannot use `Object.is`.
+Disposal permanently closes the gate, clears retention, signals every owned flight and awaits their completion,
+including superseded flights still finalizing. Concurrent disposal calls await the same completion. Subsequent runs fail
+with GateClosed. Call disposal from the interaction owner, not reentrantly from the operation being disposed.
 
-The gate retains only its latest successful input and value. A failed request does not replace that pair, which means a
-temporary invalid form state cannot evict the last useful table result. Mapped HTTP responses remain successes here,
-regardless of status. `run` first checks for an equivalent cached success, then joins the newest equivalent in-flight
-request, or starts an execution. `refresh` and `reload` bypass both cache and flight reuse; concurrent forced requests
-execute separately. A `run` during refresh can return the prior cached success. Different keys may run concurrently,
-but older completions cannot overwrite newer successful completions. The cache is intentionally a single latest entry,
-not a map: alternating `a`, `b`, `a`, `b` executes four times. `invalidate` clears the retained pair, interrupts every
-request currently owned by that gate, completes their shared waiters with the interrupted exit, and prevents stale work
-from repopulating the cache. `cancel` performs the same interruption and stale-write prevention but retains the cached
-pair, which separates "this request is superseded" from "this value is wrong". Supersession patterns such as a
-filter-as-you-type datatable need the former: the previous keystroke's request must stop on the wire, while the rows it
-replaced stay available to `peek` and to an equivalent `run` until newer rows arrive. Clearing state and signaling
-cancellation are uninterruptible together; neither operation waits for executing fibers' finalizers or transport
-cleanup. `peek` reads the retained value without executing
-anything. Here, newer means later-started: an earlier request finishing last cannot replace a later-started success,
-but can be retained if all later requests failed.
-
-Gate state has an explicit Effect lifetime: `makeRequestGate` allocates a new isolated gate. It is suitable for decoded,
-reusable values, not live streaming bodies whose ownership cannot safely be shared. Interruption of the fiber executing
-a shared request completes its waiters with the same interrupted exit; interrupting a fiber that is only waiting stops
-that waiter without cancelling the shared execution. This ownership follows from the first caller executing the Effect
-while later callers await its result. Synchronous throws while constructing the request Effect are captured as defects;
-they still complete shared waiters and remove the flight so future calls can recover. Key and equivalence callbacks
-should be pure. Inputs, keys, and results are retained by reference, so callers must not mutate them.
-
-The chosen provider, not this library, decides which headers actually reach the wire. `FetchHttpClient` opens a client
-span per request and, under Effect Platform's default tracer propagation, writes `traceparent` and `b3` headers into
-it. In a browser this interacts with CORS: neither name is safelisted, so a cross-origin server must allow both or the
-preflight fails before the request is sent, and the failure reaches the caller only as a transport error with the
-browser's opaque cause. `transformClient` at API or endpoint scope and `.mapClient(...)` at plan scope accept
-`HttpClient.withTracerPropagation(false)` for servers whose allow-list cannot be changed. This is provider behavior
-rather than plan state, but it is documented here because it is only reachable through the provider seam this library
-requires callers to fill.
-
-Gate cancellation and ordinary request cancellation use Effect interruption rather than a transport-specific
-`AbortController`. `FetchHttpClient` translates interruption to its internal abort signal. Other providers must make
-their transport Effects interruptible. At a Promise boundary, callers can pass an external signal directly through
-`Effect.runPromise(effect, { signal })`; inside Effect code, interrupting the request fiber is the native mechanism.
+New execution does not wait for old finalizers, so provider cleanup may overlap. A UI still needs presentation ownership
+such as an invocation sequence. The gate does not expose peek/refresh/reload/cancel/invalidate or standalone gate-operation
+helpers. A force action submits current input with `{ force: true }`; the UI owns current input and displayed rows.
 
 ## Test shape
 
@@ -480,7 +484,7 @@ be enabled for the Codeberg repository before it can enforce them remotely.
 The project is distributed under the MIT licence. The package metadata and repository `LICENSE` file carry the same
 licence designation.
 
-The version being prepared is `0.1.0-beta.1`. Distribution at this stage is a Codeberg revision and a locally built
+The version being prepared is `0.1.0-beta.2`. Distribution at this stage is a Codeberg revision and a locally built
 tarball, with no registry publication or release tag implied. `private: true` prevents accidental registry publication;
 the existing `publishConfig` is reserved for a future decision to publish. `pnpm pack` builds the ESM output through
 `prepack`. Consumers should record the source commit because local builds share the same beta version.
@@ -492,59 +496,24 @@ the review findings left for a subsequent pass.
 
 ## Remaining design questions
 
-1. **Streaming responses.** JSON, text, bytes, form data, and explicit no-body responses are finite codecs. A streaming
-   response is a live, one-shot resource that cannot safely be cached or shared by a request gate. Decide whether it
-   should use a separate plan terminal such as `.stream`, a non-retainable envelope type, or another ownership model
-   before adding it.
-2. **Typed query parameters and headers.** V1 intentionally keeps both stringly typed. If schemas are added later,
-   decide whether typed setters replace the current setters or form a parallel API without making ordinary custom
-   fields cumbersome.
-3. **Additional response metadata.** Mapped envelopes deliberately omit the consumed `HttpClientResponse`. Decide
-   which replay-safe derived values—such as the final URL, originating request, redirect information, or timing—are
-   broadly useful enough to add to every envelope.
-4. **API introspection.** `Api` exposes `baseUrl`, but not its fully merged headers, query parameters, response rules,
-   transforms, or policies. Tooling and diagnostics may justify an immutable resolved-configuration snapshot; its
-   representation must preserve repeated headers and parameters without exposing mutable declaration inputs.
-5. **Retry lifecycle.** Should one deadline cover sending, disposal, and decoding, and should disposal failures consume
-   retry budget? Should retries reject non-replayable bodies or accept a per-attempt body factory? Keep the current
-   boundaries explicit until these semantics are settled. A consuming project has since supplied a concrete case for
-   the per-attempt question: a server that echoes back a client-supplied attempt counter so the client can confirm
-   which attempt a response answers. Because the request is encoded once before the retry loop — and computed header
-   values and `mapRequest` resolve once per evaluation for the same reason — that counter cannot vary across built-in
-   retries, and the consumer has to disable the policy and drive the loop over the plan itself. That works, but it
-   trades away `Retry-After` handling and the jittered schedule. If a per-attempt hook is added, the narrowest useful
-   form may be a per-attempt _request_ transform rather than a body factory.
-6. **Configuration ownership.** Should declarations snapshot mutable collections, policies, and matchers, or should
-   immutability remain a caller contract? Deep cloning arbitrary schemas, codecs, and domain values is not generally
-   safe. Snapshotting only structural configuration may be a useful compromise.
-7. **Dynamic type boundaries.** How should tuple rules with widened/union tags, dynamically supplied path templates,
-   and possibly undefined default bodies degrade? Conservative inference or explicit rejection is preferable to
-   promising response cases or executability that runtime configuration does not guarantee.
-8. **Supported runtime matrix.** Is Node.js 20 still an intended compatibility target for the first beta, and are
-   browsers or alternative runtimes release requirements? Choose the matrix and validate an installed tarball there
-   before strengthening compatibility claims or publishing to a registry. One consuming project has since driven a
-   packed tarball through a real browser against a live backend, covering JSON, text, byte, form-data, and no-body
-   codecs, gate interruption, and mapped non-2xx responses; that is evidence for the browser row rather than a decision
-   about the matrix, and Node.js 20 itself is still unverified.
-9. **Dot-segment path values.** Should interpolation reject resulting whole `.` and `..` segments? URL parsing
-   normalizes them, so percent-encoding alone cannot preserve their identity as opaque path values. Define the policy
-   for adjacent placeholders and placeholders inside larger segments before tightening validation.
+The confirmed direction favors consumer control, Effect-native composition, useful replaceable defaults, simple
+interaction ownership and optional schema mapping. Beta.2 applies these through SchemaHttp, UrlEncoding, field schemas,
+codec-only bodies and the simplified gate. Open implementation contracts remain:
 
-10. **Keyed gate retention.** A gate retains one latest success, so a filter-as-you-type caller — the motivating
-    example in the README — almost never hits the cache: each keystroke is a distinct key, and it must cancel the
-    previous flight anyway. Should gates optionally retain a bounded number of entries keyed by their key function, or
-    is single-entry retention the deliberate whole of the feature, with multi-entry caching left to `Effect.cachedFunction`
-    and friends? A bounded map changes eviction, invalidation scope, and the meaning of `reload` and `peek`.
-11. **Cancellation scope.** `cancel` and `invalidate` both act on every request the gate owns. A caller that runs
-    several keys concurrently — a dashboard with independent panels behind one gate — may want to supersede only the
-    flights matching one key. Should either operation accept an optional input or key, or should such callers use one
-    gate per key instead? The current whole-gate scope is the simpler contract and matches the single-entry cache.
-12. **Provider presets.** The Fetch provider's tracing propagation is documented, but every browser consumer has to
-    write the same `HttpClient.withTracerPropagation(false)` transform or the same server allow-list. Should the
-    library ship an opinionated browser preset — a documented recipe, an exported client transform, or a layer — or
-    does that overstep a library whose stated position is that the application chooses its transport?
-13. **Typestate-changing transformations.** `RequestPlanTransform` covers plan operations that preserve `Body`,
-    `Rules`, and `BodyReady`. Reusable transformations that add a response rule or supply a body change those
-    parameters, so they can only be expressed per endpoint through `mapEndpoint`. Is a type-level counterpart — one
-    that expresses "adds this rule to whatever rules the plan already has" — worth the inference complexity, or should
-    such transformations stay endpoint-specific by design?
+1. Widened or union-valued response-tag replacement needs conservative type inference matching runtime equality.
+2. Structural snapshotting versus caller immutability remains explicit; deep cloning arbitrary domain behavior is not a
+   general solution.
+3. Retry timeout/disposal paths do not constitute one unified complete attempt lifetime. Replay still reuses the encoded
+   request rather than rerunning schema encoding or a body factory on every attempt.
+4. Streaming is deferred; ownership, incremental validation, sharing and partial-consumption retries need a separate design.
+5. Field schemas currently own complete collections. Finer composition, typed inherited defaults and scalar versus
+   one-element-array inheritance need concrete consumer cases before additional APIs.
+6. Additional response metadata and declaration introspection need concrete consumers and clear lifetime/redaction boundaries.
+7. Gate reference-counted sharing, multi-entry retention and provider presets are not established requirements. Prefer
+   composition and independent interaction owners unless a concrete case requires more.
+8. Web and Node are primary targets; the exact maintained release/provider/version matrix remains to be established.
+9. Platform interfaces remain the execution port. Replacing those interfaces, rather than only their providers, requires
+   a distinct adapter design.
+
+Empty strings and dot segments are accepted deliberately; library-level canonicalization is not a pending fix. Dynamic
+paths now require a runtime-checked parameter map, and possibly undefined default bodies leave typestate incomplete.
