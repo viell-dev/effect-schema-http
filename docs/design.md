@@ -535,3 +535,9 @@ The metadata-aware catalog recipe in [recipes.md](recipes.md) demonstrates requi
 `200`/`204` normalization and a rule-specific created-ID codec with header precedence and JSON fallback. Header success
 drains the unused body. These are API-specific policies implemented through existing public codecs, schema decoding
 and Effect composition, not package-root APIs. Recipe tests live beside the examples and run in `pnpm test`.
+
+The [attachment workflow recipe](recipes.md#creation-and-recoverable-attachment-uploads) validates all input before
+creation, records acknowledged progress in an application-owned Ref, and resumes pending uploads without reissuing
+creation. Its typed upload error retains the original cause and checkpoint. HTTP execution is interruptible; only
+checkpoint bookkeeping is protected. Idempotent named-attachment replacement, sequential execution and checkpoint
+storage are explicit example-service choices. No workflow or transaction API is added to the package exports.

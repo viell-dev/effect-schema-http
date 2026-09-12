@@ -151,6 +151,7 @@ an Effect introduction, complete tutorials, every public export and remaining de
 ## Application recipes
 
 [Executable composition recipes](docs/recipes.md) demonstrate validated pagination metadata and created identifiers
-from `Location` or a JSON body. They use the ordinary library API with an injected Platform client and run under
+from `Location` or a JSON body, plus creation/upload workflows with partial-failure checkpoints and upload-only recovery.
+They use the ordinary library API with an injected Platform client and run under
 `pnpm test`. [Pattern review](docs/adoption-review.md) explains their scope and the application policies kept outside
 request machinery.
