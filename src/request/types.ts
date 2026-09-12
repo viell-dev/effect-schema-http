@@ -12,7 +12,6 @@ import type * as Pipeable from "effect/Pipeable";
 import type { UrlEncoding } from "../encoding/UrlEncoding.js";
 import { RequestBodyEncodeError } from "../errors/RequestBodyEncodeError.js";
 import { RequestBodyNotAllowed } from "../errors/RequestBodyNotAllowed.js";
-import { RequestBodyRequired } from "../errors/RequestBodyRequired.js";
 import type { RequestFieldsEncodeError } from "../errors/RequestFieldsEncodeError.js";
 import { ResponseDecodeError } from "../errors/ResponseDecodeError.js";
 import { UnhandledResponse } from "../errors/UnhandledResponse.js";
@@ -443,7 +442,7 @@ export type PathArguments<Path extends string> = string extends Path
 export interface CachePolicy {
   /** `Cache-Control` request header value, unless an explicit header already exists. */
   readonly control?: string;
-  /** Browser Fetch `RequestCache` value. */
+  /** Fetch RequestInit cache hint; ignored by providers that do not consume FetchHttpClient.RequestInit. */
   readonly fetch?: RequestCache;
 }
 
@@ -473,7 +472,7 @@ export interface RetryPolicy {
   readonly mode?: "errors-only" | "response-only" | "both";
   /** Adds retryable cases; cannot veto built-in transient cases and is not called for them. */
   readonly while?: (input: RetryInput) => boolean;
-  /** Whether `Retry-After` can extend the schedule delay. Defaults to `true`. */
+  /** Whether `Retry-After` can extend the schedule delay without a cap. Defaults to true; use an outer deadline. */
   readonly respectRetryAfter?: boolean;
 }
 
@@ -640,6 +639,16 @@ export interface HeaderSetter<Output> {
   (name: string, currentValue: string, replacementValue: HeaderValueInput): Output;
 }
 
+declare const BodyNotReadyTypeId: unique symbol;
+
+/**
+ * Opaque compile-time marker for an incomplete plan's Effect. Call setBody to expose an executable Effect.
+ * This marker has no runtime constructor or readable error fields. Untyped execution fails with RequestBodyRequired.
+ */
+export interface BodyNotReady {
+  readonly [BodyNotReadyTypeId]: "Call setBody before reading effect";
+}
+
 /**
  * Immutable, lazy description of one HTTP request and its typed response alternatives.
  *
@@ -718,7 +727,7 @@ export interface RequestPlan<
     schema: S,
     options?: CodecOptions<S, Codec>,
   ) => RequestPlan<Body, SetResponseRule<Rules, ResponseRule<Matcher, S, Codec>>, BodyReady, H, Q>;
-  /** Builds a cold Effect; typed as {@link RequestBodyRequired} until a required body is supplied. */
+  /** Builds a cold Effect; typed as {@link BodyNotReady} until a required body is supplied. */
   readonly effect: BodyReady extends true
     ? Effect.Effect<
         ResponseOf<Rules>,
@@ -731,7 +740,7 @@ export interface RequestPlan<
         | ResponseDecodingError<Rules>,
         HttpClient.HttpClient | BodyContextOf<Body> | ResponseContextOf<Rules> | FieldContext<H> | FieldContext<Q>
       >
-    : RequestBodyRequired;
+    : BodyNotReady;
 }
 
 /**

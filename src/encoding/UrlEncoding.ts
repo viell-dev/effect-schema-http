@@ -7,6 +7,7 @@ import { joinUrl } from "./joinUrl.js";
 export class UrlEncoding extends Context.Tag("viell-effect-schema-http/UrlEncoding")<
   UrlEncoding,
   {
+    /** Encode a path component. Leaving /, ?, or # literal can change URL structure after interpolation. */
     readonly pathParameter: (value: string) => string;
     readonly queryParameter: (entry: readonly [string, QueryParamValue]) => string;
     readonly join: (baseUrl: string | undefined, path: string) => string;

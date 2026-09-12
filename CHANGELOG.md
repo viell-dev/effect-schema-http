@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## 0.1.0-beta.2 (unreleased)
 
+- Fixed service factory overrides to merge inherited headers/query parameters and compose transforms consistently.
+- Aligned singular query-key replacement ordering with plural replacement.
+- Made incomplete plan Effects opaque with `BodyNotReady`, preventing error-instance access and accidental yielding.
+- Clarified schema-owned inherited fields, URL/provider limits, gate interruption and retry deadlines; added
+  regressions.
+
 - Added SchemaHttp and UrlEncoding services/layers with shared request defaults and replaceable encoding policy.
 - Added optional complete-collection header/query schemas, typed encoding failures and propagated schema requirements.
 - Added codec-only request and response bodies, preserving schema validation when a schema is selected.

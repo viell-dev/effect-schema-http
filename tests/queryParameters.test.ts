@@ -82,4 +82,20 @@ describe("query parameter wire syntax", () => {
     expect(removed.body.query).toBe("foo=a&foo=c&flag&flag=");
     expect(removedBare.body.query).toBe("foo=a&foo=b&foo=b&foo=c&flag=");
   });
+
+  it("uses the same wire ordering for singular and plural key replacement", async () => {
+    const inspectQuery = createApi(baseUrl, { urlParams: { a: ["1", "2"], b: "3" } }).createRequest({
+      method: "GET",
+      path: "/inspect",
+      responses: [response({ _tag: "ok", status: 200 }, ReflectedQuery)],
+    });
+    for (const plan of [
+      inspectQuery().setUrlParam("a", "9"),
+      inspectQuery().setUrlParams({ a: "9" }),
+      inspectQuery().pipe(setUrlParam("a", "9")),
+    ]) {
+      const result = await Effect.runPromise(plan.effect.pipe(Effect.provide(FetchHttpClient.layer)));
+      expect(result.body.query).toBe("a=9&b=3");
+    }
+  });
 });

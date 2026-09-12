@@ -5,6 +5,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   AbsolutePathWithBaseUrl,
   createApi,
+  type BodyNotReady,
   createRequest,
   DuplicateResponseTag,
   extendApi,
@@ -197,7 +198,7 @@ describe("createRequest", () => {
     // Body typestate, response rules, and path arguments all survive the shared helper.
     const readPlan = getUser({ userId: "1" }).pipe(withAuth("read-token"));
     const writePlan = createUser().pipe(withAuth("write-token"));
-    expectTypeOf(writePlan.effect).toEqualTypeOf<RequestBodyRequired>();
+    expectTypeOf(writePlan.effect).toEqualTypeOf<BodyNotReady>();
     const readyWritePlan = writePlan.setBody({ name: "Ada" });
     type WriteResult = Effect.Effect.Success<typeof readyWritePlan.effect>;
     expectTypeOf<WriteResult["_tag"]>().toEqualTypeOf<"created" | "gone">();
@@ -926,7 +927,18 @@ describe("createRequest", () => {
     });
     const incomplete = createUser();
 
-    expectTypeOf(incomplete.effect).toEqualTypeOf<RequestBodyRequired>();
+    expectTypeOf(incomplete.effect).toEqualTypeOf<BodyNotReady>();
+    const checkTypes = () => {
+      // @ts-expect-error The incomplete getter is opaque, not a RequestBodyRequired instance.
+      void incomplete.effect.method;
+      // @ts-expect-error toEffect must preserve the non-executable marker.
+      Effect.runPromise(incomplete.pipe(toEffect));
+      Effect.gen(function* () {
+        // @ts-expect-error An incomplete plan cannot be yielded as a TaggedError or an Effect.
+        yield* incomplete.effect;
+      });
+    };
+    void checkTypes;
     // @ts-expect-error An incomplete plan is not an Effect until setBody supplies its body.
     const invalidEffect: Effect.Effect<unknown> = incomplete.effect;
     const degradedEffect = invalidEffect as Effect.Effect<unknown, RequestBodyRequired>;
@@ -1429,7 +1441,7 @@ describe("createRequest", () => {
 
     const plan = createUser();
     expectTypeOf(plan.setBody).parameter(0).toEqualTypeOf<{ readonly name: string }>();
-    expectTypeOf(plan.effect).toEqualTypeOf<RequestBodyRequired>();
+    expectTypeOf(plan.effect).toEqualTypeOf<BodyNotReady>();
 
     const result = await plan.setBody({ name: "Ada" }).effect.pipe(
       Effect.provide(

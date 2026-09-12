@@ -20,7 +20,11 @@ export interface RequestGateRunOptions {
 
 /** One interaction: latest input owns execution; one eligible successful value can be reused. */
 export interface RequestGate<Input, A, E, R> {
-  /** Join equivalent work, otherwise interrupt previous work and reuse an equivalent success or execute. */
+  /**
+   * Join equivalent work, otherwise interrupt previous work and reuse an equivalent success or execute.
+   * Superseded callers terminate with fiber interruption, outside E; catchAll/catchTag do not handle it.
+   * At Promise boundaries use runPromiseExit and Cause.isInterruptedOnly to recognize expected cancellation.
+   */
   readonly run: (input: Input, options?: RequestGateRunOptions) => Effect.Effect<A, E | GateClosed, R>;
   /** Permanently close the gate, clear retention, interrupt all owned work, and wait for cleanup. Idempotent. */
   readonly dispose: Effect.Effect<void>;

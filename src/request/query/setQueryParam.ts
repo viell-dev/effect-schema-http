@@ -1,7 +1,8 @@
 import { type DeclaredQueryParams, type QueryParamValueInput } from "../types.js";
+import { setQueryParams } from "./setQueryParams.js";
 
 export const setQueryParam = (
   params: DeclaredQueryParams,
   key: string,
   value: QueryParamValueInput,
-): DeclaredQueryParams => [...params.filter(([candidate]) => candidate !== key), [key, value]];
+): DeclaredQueryParams => setQueryParams(params, [[key, value]]);

@@ -49,6 +49,7 @@ export {
   type Api,
   type ApiExtensionOptions,
   type ApiOptions,
+  type BodyNotReady,
   type CachePolicy,
   type DefaultResponseBodyCodec,
   type Endpoint,

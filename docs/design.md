@@ -37,9 +37,9 @@ with an ASCII letter or underscore and may then contain ASCII letters, digits, o
 a full segment or appear inside one, such as `/files/:name.:ext` or `/v:version/users`. Repeating a placeholder name in
 one path reuses its single object property. Endpoints without placeholders remain zero-argument functions.
 
-Each value must be a string and is encoded with `encodeURIComponent`. In particular, `/` in an opaque value
-is allowed and sent as `%2F`; it does not create another path segment. A runtime check rejects missing or unexpected
-properties, positional arguments, non-string values, and empty strings at degraded or untyped call sites:
+Each value must be a string and is encoded with `encodeURIComponent`. In particular, `/` in an opaque value is allowed
+and sent as `%2F`; it does not create another path segment. A runtime check rejects missing or unexpected properties,
+positional arguments, and non-string values at degraded or untyped call sites. Empty strings are accepted:
 
 ```ts
 const getUserPost = api.createRequest({
@@ -51,9 +51,11 @@ const getUserPost = api.createRequest({
 const request = getUserPost({ userId, postId });
 ```
 
-Whole `.` and `..` segments are a current limitation: URL normalization can change the target path despite parameter
-encoding. Validate that interpolation cannot produce such segments until the policy below is resolved; see
-[the review report](report.md#1-dot-segment-path-values-can-change-the-target-path).
+Default encoding preserves empty strings and complete `.`/`..` segments. A WHATWG-based provider can normalize them:
+`/users/:id/profile` with `id: ".."` can be sent as `/profile`. Validate identifiers before interpolation when they must
+remain within that route, or choose an encoding/provider composition suited to the service. Percent-encoding dots alone
+is not a containment guarantee. A custom `pathParameter` encoder is responsible for escaping `/`, `?`, and `#` when
+parameter values must not introduce path segments, query text or fragments.
 
 A backslash escapes a literal colon that would otherwise look like a placeholder. This keeps action-style paths usable:
 
@@ -73,8 +75,10 @@ unlike the dot-segment case, where encoding alone is not sufficient.
 
 An API base URL is a literal prefix rather than a WHATWG URL-resolution base: `https://example.test/v1` plus `/users`
 produces `https://example.test/v1/users`. An absolute endpoint path cannot be combined with a base URL and fails as a
-configuration defect instead of producing a concatenated URL. Query parameters written in `path` are normalized into
-the endpoint's query-parameter state, so endpoint options and plan setters can replace them without duplication.
+configuration defect during Effect evaluation instead of producing a concatenated URL. `AbsolutePathWithBaseUrl` is
+thrown by the default join policy inside materialization, so it appears as a defect in the execution Cause. Query
+parameters written in `path` are normalized into the endpoint's query-parameter state, so endpoint options and plan
+setters can replace them without duplication.
 
 Plans, endpoints, and APIs are pipeable. Plan combinators preserve body typestate and response unions, while
 `mapEndpoint` turns an endpoint into another ordinary endpoint with the same path arguments:
@@ -214,8 +218,11 @@ inputs as immutable after passing them to the library. This is especially releva
 
 `SchemaHttp` is an Effect Context.Tag exposing pure `createApi` and `createRequest` factories. Its layer captures shared
 RequestOptions and a UrlEncoding service. SchemaHttp.Default provides default encoding; SchemaHttp.layer(options)
-requires an encoding layer. Factories and setters remain pure; created plan Effects obtain HttpClient and schema services
-from the execution context. Standalone factories also remain available.
+requires an encoding layer. Factories and setters remain pure; created plan Effects obtain HttpClient and schema
+services from the execution context. Standalone factories also remain available. Both service factories merge headers
+and query keys and compose shared transforms before overrides. Endpoint options apply afterward. Scalar policies are
+replaced; `retries` overrides an inherited `retry` policy. `createApi` also merges response rules by tag through its API
+extensions.
 
 UrlEncoding supplies pure pathParameter, queryParameter and join functions. Its layer accepts partial replacements.
 Defaults escape values without rejecting empty strings or canonicalizing dot segments. Downstream providers retain their
@@ -229,12 +236,12 @@ A directory need not have a paired entry module; named entry files are allowed w
 ## Bodies and request fields
 
 The endpoint definition optionally declares a request body schema, but request bodies are never endpoint-function
-arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` has the diagnostic
-`RequestBodyRequired` type rather than an Effect. Reading the getter still constructs a failed Effect at runtime, so an
-untyped caller that bypasses this check fails with `RequestBodyRequired` before the HTTP client is called.
-The caller supplies the ordinary decoded TypeScript value—never a schema-wrapped value—and the library uses the
-endpoint's schema to constrain and encode it. An optional or explicitly undefined body can be represented in the schema
-and set as such.
+arguments. Until `createUser().setBody(value)` supplies a value, the plan's `.effect` has the diagnostic `BodyNotReady`
+opaque type, with no error-instance fields or yield protocol. Calling `setBody` exposes the Effect type. Reading the
+getter still constructs a failed Effect at runtime, so an untyped caller that bypasses this check fails with
+`RequestBodyRequired` before the HTTP client is called. The caller supplies the ordinary decoded TypeScript value—never
+a schema-wrapped value—and the library uses the endpoint's schema to constrain and encode it. An optional or explicitly
+undefined body can be represented in the schema and set as such.
 
 A schema-typed `defaultBody` supports RPC-style endpoints with static payloads:
 
@@ -346,20 +353,25 @@ splits the canonical entry representation in two: declarations and plan state ho
 materialized strings.
 
 Request headers retain one entry per supplied value in the plan. `setHeader(name, value)` replaces every value for one
-name, `setHeader(name, current, replacement)` replaces every exact match in place, `setHeaders` replaces the names
-present in its input, `appendHeader` adds another value, and `removeHeader(name[, value])` removes either the whole
-field or every exact matching value. Arrays and repeated iterable entries are therefore not flattened while composing
-API, endpoint, and plan defaults. `mapRequest` and `mapClient` provide ordered plan-level escape hatches after API and
-endpoint transforms; when a request transform changes a normalized field, that field becomes the transform's single
-value.
+name and puts replacements first, `setHeader(name, current, replacement)` replaces every exact match in place,
+`setHeaders` replaces the names present in its input, `appendHeader` adds another value, and
+`removeHeader(name[, value])` removes either the whole field or every exact matching value. Raw query setters follow the
+same ordering: singular and plural key replacement put incoming entries first, appenders add at the end, and
+three-argument replacements keep matching positions. Arrays and repeated iterable entries are therefore not flattened
+while composing API, endpoint, and plan defaults. `mapRequest` and `mapClient` provide ordered plan-level escape hatches
+after API and endpoint transforms; when a request transform changes a normalized field, that field becomes the
+transform's single value.
 
 Effect's request and response `Headers` types normalize each name to one string. Before execution, the library supplies
 that representation for ordinary clients and also attaches the uncombined entries. A repeat-aware provider reads them
 with `getHeaderEntries(request)` and should preserve that metadata through any preprocessing; constructing it with
 `HttpClient.makeWith` is the direct path. Such a provider attaches raw response field lines with
 `attachHeaderEntries(response, entries)`. Response header predicates receive both the normalized string and the entry
-array. The default Fetch provider may combine repeated request fields, so APIs requiring separate physical field lines
-need a provider that explicitly supports them. This is a provider capability limitation, not a plan-model limitation.
+array. The library comma-joins repeated values in the normalized request header map; ordinary providers, including
+Fetch, consume that map. The attached entries retain individual values for a capable provider. Server-backed coverage in
+[repeatedHeaders.test.ts](../tests/repeatedHeaders.test.ts) exercises such a provider in both directions. Without
+attached response entries, `getHeaderEntries` falls back to normalized fields and reserialized parsed cookies; that
+fallback cannot recover original bytes or source order.
 
 ### Optional field schemas and codec-only bodies
 
@@ -373,7 +385,10 @@ The other collection remains independent. Each plural setter replaces the previo
 are merged beneath it. Overrides suppress computed defaults before evaluation. Repeated inherited entries become arrays,
 while one entry becomes a scalar; provide explicit typed input when that loses required cardinality information. Header
 schema models should use lower-case keys to match inherited names. Schema excess-property behavior also applies to
-inherited defaults, so include defaults such as authorization in a selected header schema when they should survive.
+inherited defaults: a Struct silently strips undeclared fields, including authorization. Include credentials in the
+selected schema or leave headers unschematized. Use `.annotations({ parseOptions: { onExcessProperty: "error" } })` on
+the schema to reject unexpected fields with `RequestFieldsEncodeError` before sending; the library does not reinsert
+fields after schema encoding.
 
 A body declaration can instead select a RequestBody codec directly. setBody then accepts its input type, without schema
 validation, and readiness remains required. A codec-only response rule uses response(matcher, codec) and returns the codec
@@ -408,9 +423,8 @@ request is reused for all attempts; custom one-shot bodies must not be retried. 
 transient cases and cannot be used as an observation hook for every attempt.
 
 Intermediate retry responses are drained as streams without buffering the complete body before waiting, so the
-connection can be reused during the backoff. A valid
-`Retry-After` delta or HTTP date sets a minimum delay over the configured schedule; `respectRetryAfter: false` disables
-that behavior for a server with unsuitable headers.
+connection can be reused during the backoff. A valid `Retry-After` delta or HTTP date sets an uncapped minimum delay
+over the configured schedule; `respectRetryAfter: false` disables that behavior for a server with unsuitable headers.
 
 `timeout` options and `.setTimeout(...)` bound transport execution and decoding of the final response body.
 Effect interruption propagates through the HTTP client, while a timeout becomes a transient `TimeoutException` that
@@ -428,6 +442,9 @@ caches and servers. Its optional `fetch` field controls Fetch's own cache mode, 
 ignored by non-Fetch transports. This keeps portable wire semantics distinct from provider-specific settings without
 pretending one can fully replace the other. An explicit `Cache-Control` header wins over `CachePolicy.control`, and a
 Fetch cache override merges into any application-provided `FetchHttpClient.RequestInit` instead of replacing it.
+Providers that do not consume that tag ignore `cache.fetch`; `cache.control` remains a normal request header. Reading
+and providing this Platform context tag does not call Fetch or choose a concrete client. Arbitrary HttpClient wrappers
+do not expose a reliable provider identity for a non-Fetch diagnostic.
 
 ## Request gates
 
@@ -437,9 +454,10 @@ single retained success; force replaces current work and bypasses retention even
 cached value also interrupts any superseded active execution.
 
 The constructor allocates Ref/Deferred state without requiring the operation's services. The run Effect propagates its
-operation's A/E/R plus GateClosed. Only the still-current flight may populate retained success. Failure retains the
-previous success; a superseded uninterruptible completion cannot later overwrite it. Result/key objects remain
-caller-owned immutable references.
+operation's A/E/R plus GateClosed. Superseded callers are interrupted outside E, so `catchAll`/`catchTag` do not recover
+them and `runPromise` rejects. Use `runPromiseExit` and `Cause.isInterruptedOnly` at application Promise boundaries.
+Only the still-current flight may populate retained success. Failure retains the previous success; a superseded
+uninterruptible completion cannot later overwrite it. Result/key objects remain caller-owned immutable references.
 
 `RequestGateOptions<Input, Key, A = unknown>` accepts `shouldCache?: (value: A, input: Input) => boolean`.
 The result type is inferred from the operation, and the predicate defaults to true. It runs once per successful

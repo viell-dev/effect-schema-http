@@ -62,4 +62,25 @@ describe("request interruption", () => {
 
     expect(Exit.isFailure(exit) && Cause.isInterruptedOnly(exit.cause)).toBe(true);
   });
+
+  it("closes the Fetch exchange when an attempt times out during body decoding", async () => {
+    const getValue = createRequest({
+      method: "GET",
+      path: `${baseUrl}/value`,
+      timeout: "200 millis",
+      responses: [response({ _tag: "ok", status: 200 }, Schema.Struct({ value: Schema.String }))],
+    });
+    const exit = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.fork(getValue().effect);
+        yield* Effect.promise(() => bodyStarted);
+        return yield* Fiber.await(fiber);
+      }).pipe(Effect.provide(FetchHttpClient.layer)),
+    );
+    await connectionClosed;
+    expect(Exit.isFailure(exit) && Cause.failureOption(exit.cause)).toMatchObject({
+      _tag: "Some",
+      value: { _tag: "TimeoutException" },
+    });
+  });
 });

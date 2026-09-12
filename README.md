@@ -15,6 +15,9 @@ Use compatible peers: `effect` 3.22.2 and `@effect/platform` 0.97.2. This privat
 pnpm pack --pack-destination ../test-llm1/vendor
 ```
 
+The package is ESM-only. TypeScript consumers need Web API declarations for types such as `FormData` and `RequestCache`
+(from `lib.dom` or compatible Node type definitions).
+
 Install that archive in each consumer with `pnpm add path/to/viell-effect-schema-http-0.1.0-beta.2.tgz`.
 Do not use `pnpm link` or `link:`: separate peer copies can make inferred Effect/Platform types nonportable.
 
@@ -50,11 +53,14 @@ try {
 ```
 
 The URL above is illustrative. Declaring endpoints and changing plans is pure; reading `.effect` constructs a cold
-Effect. Each evaluation encodes inputs and sends independently unless an interaction gate reuses the result.
+Effect with a fresh object identity on every read; retain that Effect if using it as a dependency key. Each evaluation
+encodes inputs and sends independently unless an interaction gate reuses the result.
 
 `SchemaHttp.Default` is a ready-to-compose construction layer. `SchemaHttp.layer(options)` accepts shared request
 defaults and requires UrlEncoding. Pure standalone `createApi`/`createRequest` factories remain available. Construction
-does not select a transport: execution requests the consumer's Platform HttpClient service.
+merges headers/query keys and composes transforms from shared defaults before factory overrides, then endpoint options.
+Scalar policies are overridden as whole values; `retries` also overrides an inherited `retry` policy. Construction does
+not select a transport: execution requests the consumer's Platform HttpClient service.
 
 ## Schemas and wire codecs
 
@@ -73,6 +79,18 @@ consumption. Structural alternatives with identical metadata belong in a schema 
   be treated as immutable. A possibly undefined default leaves the plan incomplete.
 - Streaming is deferred; current built-in readers produce finite values.
 
+**Selected field schemas can remove inherited defaults, including authorization.** A `Schema.Struct` strips fields it
+does not declare. Include inherited credentials in the header schema (for example,
+`authorization: Schema.optional(Schema.String)`) or keep the collection unschematized. To reject unexpected fields
+before sending, annotate the selected schema with `.annotations({ parseOptions: { onExcessProperty: "error" } })`. This
+uses the schema's own validation policy; inherited credentials are not merged back after encoding.
+
+String header matchers compare the entire value: `"application/json"` does not match
+`"application/json; charset=utf-8"`. Use a predicate that parses the media type when parameters should be ignored. Rules
+with more header matchers rank first, then exact status, then declaration order. A predicate status with one header
+matcher therefore outranks an exact status with no header matchers. A `204` with `Schema.Void` needs
+`{ codec: ResponseBody.none }`; neither the status nor the schema automatically changes the default JSON reader.
+
 A `Schema.NumberFromString` query field takes a number and encodes a string. With no schema, `.setUrlParam("page", "2")`
 remains the direct plain-input path. See [design details](docs/design.md) for inheritance, repeated fields and codecs.
 
@@ -84,7 +102,14 @@ as signing belongs in client middleware.
 
 `UrlEncoding.layer({ pathParameter, queryParameter, join })` accepts partial replacements. Default escaping preserves
 empty strings and dot segments instead of imposing domain validation or path canonicalization. A selected provider may
-normalize later; exact wire preservation requires a compatible provider.
+normalize later; exact wire preservation requires a compatible provider. For example, substituting `".."` into
+`/users/:id/profile` can make a WHATWG-based provider send `/profile`. Validate service identifiers before interpolation
+when callers must stay within that route. Percent-encoding dots alone does not prevent this normalization. A replacement
+`pathParameter` encoder must escape `/`, `?`, and `#` when values must remain a path component; leaving those delimiters
+literal can create path segments, query parameters, or fragments.
+
+For raw query fields, both `.setUrlParam("a", "9")` and `.setUrlParams({ a: "9" })` place replacement entries before
+unaffected entries. Appenders add at the end; three-argument replacements preserve matching positions.
 
 `diagnostics: true` emits Effect debug messages containing method and selected response status/tag. Default diagnostics
 are off. Configure style, destinations and minimum level using Effect's Logger layers. ConfigProvider, Logger and other
@@ -92,6 +117,13 @@ application layers compose in the runtime; dependencies needed while a layer ini
 
 Platform's request/response interfaces remain the current execution port. Fetch is demonstrated for browser and Node;
 custom HttpClient providers are supported without importing browser or Node network primitives into library core.
+
+Retries default to zero. Enabling them at API scope also replays POST/PATCH and other mutations; use them only when the
+server and body support replay. `Retry-After` has no cap and can exceed the per-attempt timeout; wrap the complete
+Effect in `Effect.timeout(...)` for a total deadline, or choose `respectRetryAfter: false` to use only the supplied
+schedule. `cache.fetch` supplies a `FetchHttpClient.RequestInit` hint. Providers that do not consume that tag ignore it,
+while `cache.control` supplies the ordinary `Cache-Control` header. This hint does not select a transport or implement
+caching.
 
 ## Gates belong to interactions
 
@@ -122,6 +154,31 @@ callers still share the result. The predicate must be synchronous, pure and nont
 `dispose` permanently closes the gate, clears retention and awaits all owned work/finalizers. Future runs fail with
 `GateClosed`. The initiating fiber owns shared execution; interrupting a waiter alone leaves it running. New requests
 may overlap old finalizers. Keep a UI sequence guard so obsolete Promise callbacks cannot update the current screen.
+
+Supersession ends callers with **fiber interruption**, outside the typed `E` channel. `runPromise` rejects; `catchAll`
+and `catchTag` do not catch interruption. Use `runPromiseExit` at a Promise boundary:
+
+```ts
+import { Cause, Effect, Exit } from "effect";
+import { makeRequestGate } from "viell-effect-schema-http";
+
+const gate = await Effect.runPromise(
+  makeRequestGate((query: string) => Effect.succeed(query), { key: (query) => query }),
+);
+
+async function search(query: string) {
+  const exit = await Effect.runPromiseExit(gate.run(query));
+  if (Exit.isSuccess(exit)) return exit.value;
+  if (Cause.isInterruptedOnly(exit.cause)) return undefined;
+  throw new Error(Cause.pretty(exit.cause));
+}
+
+await search("Ada");
+await Effect.runPromise(gate.dispose);
+```
+
+The application's sequence guard is still needed for stale results and callbacks. Pure interruption also covers
+lifecycle or caller cancellation; it is not a distinct typed supersession error.
 
 ## Migration from beta.1
 

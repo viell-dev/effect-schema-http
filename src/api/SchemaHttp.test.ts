@@ -2,20 +2,157 @@ import { HttpClient, HttpClientResponse } from "@effect/platform";
 import { Context, Effect, Either, Layer, Schema } from "effect";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
+  type BodyNotReady,
   createRequest,
   RequestBody,
-  RequestBodyRequired,
   response,
   ResponseBody,
   SchemaHttp,
   toEffect,
   UrlEncoding,
+  type RequestOptions,
 } from "../main.js";
 
 const clientFor = (handler: (request: Parameters<HttpClient.HttpClient["execute"]>[0]) => Response) =>
   HttpClient.make((request) => Effect.sync(() => HttpClientResponse.fromWeb(request, handler(request))));
 
 describe("Effect-native contracts", () => {
+  it("composes service factory overrides with shared defaults and endpoint options lazily", async () => {
+    const events: string[] = [];
+    let reads = 0;
+    const transforms = (name: string): RequestOptions => ({
+      transformRequest: (request) => {
+        events.push(`request:${name}`);
+        return request;
+      },
+      transformClient: (client) => {
+        events.push(`client:${name}`);
+        return client;
+      },
+    });
+    const endpoints = await Effect.runPromise(
+      Effect.gen(function* () {
+        const http = yield* SchemaHttp;
+        const overrides = {
+          ...transforms("override"),
+          headers: { "x-tenant": "acme" },
+          urlParams: { page: "2" },
+          retries: 0,
+        };
+        const definition = {
+          ...transforms("endpoint"),
+          method: "GET",
+          path: "/items",
+          removeHeaders: ["x-remove"],
+          removeUrlParams: ["removed"],
+          responses: [response({ _tag: "unavailable", status: 503 }, ResponseBody.text)],
+        } as const;
+        const standalone = http.createRequest({ ...definition, path: "https://example.com/items" }, overrides);
+        const fromApi = http.createApi("https://example.com", overrides).createRequest(definition);
+        const inheritedRules = http
+          .createApi("https://example.com", {
+            responses: definition.responses,
+          })
+          .createRequest({ method: "GET", path: "/items" });
+        expectTypeOf<
+          Effect.Effect.Success<ReturnType<typeof inheritedRules>["effect"]>["_tag"]
+        >().toEqualTypeOf<"unavailable">();
+        return [standalone, fromApi];
+      }).pipe(
+        Effect.provide(
+          SchemaHttp.layer({
+            ...transforms("service"),
+            headers: {
+              authorization: () => `Bearer ${++reads}`,
+              "x-remove": () => {
+                throw new Error("removed header evaluated");
+              },
+            },
+            urlParams: {
+              lang: "en",
+              page: "1",
+              removed: () => {
+                throw new Error("removed query evaluated");
+              },
+            },
+            retry: { times: 1 },
+          }).pipe(Layer.provide(UrlEncoding.Default)),
+        ),
+      ),
+    );
+    expect(reads).toBe(0);
+    expect(events).toEqual([]);
+    let sends = 0;
+    for (const endpoint of endpoints) {
+      const effect = endpoint().effect;
+      expect(events).toEqual([]);
+      const value = await Effect.runPromise(
+        effect.pipe(
+          Effect.provideService(
+            HttpClient.HttpClient,
+            clientFor((request) => {
+              sends++;
+              expect(request.headers["authorization"]).toBe(`Bearer ${sends}`);
+              expect(request.headers["x-tenant"]).toBe("acme");
+              expect(request.headers["x-remove"]).toBeUndefined();
+              expect(request.url).toBe("https://example.com/items?page=2&lang=en");
+              return new Response("unavailable", { status: 503 });
+            }),
+          ),
+        ),
+      );
+      expect(value._tag).toBe("unavailable");
+      expect(events).toEqual([
+        "request:service",
+        "request:override",
+        "request:endpoint",
+        "client:service",
+        "client:override",
+        "client:endpoint",
+      ]);
+      events.length = 0;
+    }
+    expect(sends).toBe(2);
+    expect(reads).toBe(2);
+  });
+
+  it("lets field schemas retain inherited credentials or reject excess defaults before sending", async () => {
+    let reads = 0;
+    let sends = 0;
+    const defaults = { headers: { authorization: () => `Bearer ${++reads}` } };
+    const definition = {
+      method: "GET",
+      path: "https://example.com",
+      headers: { "x-tenant": "acme" },
+      responses: [response({ _tag: "ok", status: 200 }, ResponseBody.text)],
+    } as const;
+    const strictSchema = Schema.Struct({ "x-tenant": Schema.String }).annotations({
+      parseOptions: { onExcessProperty: "error" },
+    });
+    const strict = createRequest({ ...definition, headersSchema: strictSchema }, defaults);
+    const client = clientFor((request) => {
+      sends++;
+      expect(request.headers["authorization"]).toBe("Bearer 2");
+      expect(request.headers["x-tenant"]).toBe("acme");
+      return new Response("ok");
+    });
+    const failure = await Effect.runPromise(
+      strict().effect.pipe(Effect.either, Effect.provideService(HttpClient.HttpClient, client)),
+    );
+    expect(Either.isLeft(failure) && failure.left._tag).toBe("RequestFieldsEncodeError");
+    expect(sends).toBe(0);
+
+    const modeled = createRequest(
+      {
+        ...definition,
+        headersSchema: Schema.Struct({ "x-tenant": Schema.String, authorization: Schema.optional(Schema.String) }),
+      },
+      defaults,
+    );
+    await Effect.runPromise(modeled().effect.pipe(Effect.provideService(HttpClient.HttpClient, client)));
+    expect(sends).toBe(1);
+  });
+
   it("inherits service defaults and replaces encoding without changing endpoint declarations", async () => {
     const layer = SchemaHttp.layer({ headers: { "x-source": "service" } }).pipe(
       Layer.provide(UrlEncoding.layer({ pathParameter: (value) => value })),
@@ -122,7 +259,7 @@ describe("Effect-native contracts", () => {
     });
     const incomplete = endpoint();
     const checkTypes = () => {
-      expectTypeOf(incomplete.effect).toEqualTypeOf<RequestBodyRequired>();
+      expectTypeOf(incomplete.effect).toEqualTypeOf<BodyNotReady>();
       // @ts-expect-error A byte codec accepts bytes, not an arbitrary string.
       incomplete.setBody("png");
     };
