@@ -114,8 +114,10 @@ interrupts previous work. Equal active input joins the execution; otherwise equa
 result. Force interrupts and executes again even for equal input. A cache hit still interrupts superseded work.
 
 Only the current flight may update retained success. Failed or superseded attempts preserve the last useful success.
-Mapped non-2xx envelopes are Effect successes: interpret business failures inside the operation when only useful rows
-should be retained. Include response-affecting context in keys or gate ownership.
+Mapped non-2xx envelopes are Effect successes. Set `shouldCache: (result) => result._tag === "found"` in the gate's
+options to retain selected outcomes while returning every result unchanged. The optional predicate receives `(value,
+input)` and defaults to true. False clears an equivalent retained key and preserves an unrelated key; already-joined
+callers still share the result. The predicate must be synchronous, pure and nonthrowing. Include response-affecting context in keys or gate ownership.
 
 `dispose` permanently closes the gate, clears retention and awaits all owned work/finalizers. Future runs fail with
 `GateClosed`. The initiating fiber owns shared execution; interrupting a waiter alone leaves it running. New requests

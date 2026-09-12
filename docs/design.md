@@ -441,6 +441,17 @@ operation's A/E/R plus GateClosed. Only the still-current flight may populate re
 previous success; a superseded uninterruptible completion cannot later overwrite it. Result/key objects remain
 caller-owned immutable references.
 
+`RequestGateOptions<Input, Key, A = unknown>` accepts `shouldCache?: (value: A, input: Input) => boolean`.
+The result type is inferred from the operation, and the predicate defaults to true. It runs once per successful
+underlying execution, not for cache hits, joining callers or Effect failures. It controls retention without changing
+returned values or their success/error classification. False clears an equivalent retained key, using the configured
+equivalence, while preserving an unrelated key. Only the current flight can apply either retention change.
+
+A forced run returning an excluded response therefore clears its same-key retained value so the next run executes.
+The predicate must be pure, synchronous and nonthrowing. It runs within the captured execution so accidental throws
+become defects and still complete cleanup and shared callers; defects preserve retention. A cache hit does not
+reevaluate policy, so response-affecting context belongs in keys or gate ownership.
+
 The initiating fiber owns execution and resolves a shared Deferred. Waiter interruption does not interrupt that owner;
 owner interruption interrupts the shared work. Coordination and completion bookkeeping are protected with
 uninterruptibleMask; execution and waits restore ordinary interruptibility. Callback construction is suspended so

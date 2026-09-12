@@ -20,7 +20,7 @@ type Decision<Key, A, E> =
   | { readonly _tag: "Closed" }
   | { readonly _tag: "Join"; readonly flight: Flight<Key, A, E> }
   | { readonly _tag: "Cached"; readonly value: A; readonly previous: Flight<Key, A, E> | undefined }
-  | { readonly _tag: "Execute"; readonly previous: Flight<Key, A, E> | undefined };
+  | { readonly _tag: "Execute"; readonly previous: Flight<Key, A, E> | undefined; readonly replacesCached: boolean };
 
 /**
  * Allocates one interaction gate. Different input automatically interrupts previous work, including before cache hits.
@@ -29,7 +29,7 @@ type Decision<Key, A, E> =
  */
 export const makeRequestGate = <Input, Key, A, E, R>(
   execute: (input: Input) => Effect.Effect<A, E, R>,
-  options: RequestGateOptions<Input, Key>,
+  options: RequestGateOptions<Input, Key, NoInfer<A>>,
 ): Effect.Effect<RequestGate<Input, A, E, R>> =>
   Effect.gen(function* () {
     const equivalent = options.equivalent ?? Object.is;
@@ -56,14 +56,15 @@ export const makeRequestGate = <Input, Key, A, E, R>(
               return [{ _tag: "Join", flight: current.active } as const, current] as const;
             }
             const previous = current.active;
-            if (!runOptions.force && current.cached !== undefined && equivalent(current.cached.key, key)) {
+            const replacesCached = current.cached !== undefined && equivalent(current.cached.key, key);
+            if (!runOptions.force && current.cached !== undefined && replacesCached) {
               return [
                 { _tag: "Cached", value: current.cached.value, previous } as const,
                 { ...current, active: undefined },
               ] as const;
             }
             return [
-              { _tag: "Execute", previous } as const,
+              { _tag: "Execute", previous, replacesCached } as const,
               { ...current, active: candidate, flights: [...current.flights, candidate] },
             ] as const;
           });
@@ -72,19 +73,26 @@ export const makeRequestGate = <Input, Key, A, E, R>(
           if (decision.previous !== undefined) yield* Deferred.succeed(decision.previous.cancellation, undefined);
           if (decision._tag === "Cached") return decision.value;
 
-          const result = yield* Effect.exit(
+          const evaluated = yield* Effect.exit(
             restore(
               Effect.raceFirst(
-                Effect.suspend(() => execute(input)),
+                Effect.suspend(() => execute(input)).pipe(
+                  Effect.map((value) => ({ value, cache: options.shouldCache?.(value, input) ?? true })),
+                ),
                 Deferred.await(candidate.cancellation).pipe(Effect.zipRight(Effect.interrupt)),
               ),
             ),
           );
+          const result = Exit.map(evaluated, ({ value }) => value);
           yield* Ref.update(state, (current) => ({
             ...current,
             cached:
-              !current.closed && current.active === candidate && Exit.isSuccess(result)
-                ? { key, value: result.value }
+              !current.closed && current.active === candidate && Exit.isSuccess(evaluated)
+                ? evaluated.value.cache
+                  ? { key, value: evaluated.value.value }
+                  : decision.replacesCached
+                    ? undefined
+                    : current.cached
                 : current.cached,
             active: current.active === candidate ? undefined : current.active,
             flights: current.flights.filter((flight) => flight !== candidate),

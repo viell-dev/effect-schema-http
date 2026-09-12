@@ -1,5 +1,5 @@
 import { Cause, Deferred, Effect, Either, Exit, Fiber } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { makeRequestGate } from "./makeRequestGate.js";
 
 const interrupted = <A, E>(exit: Exit.Exit<A, E>) => Exit.isFailure(exit) && Cause.isInterrupted(exit.cause);
@@ -182,5 +182,160 @@ describe("interaction gate", () => {
     expect(Exit.isFailure(await Effect.runPromiseExit(gate.run("a")))).toBe(true);
     expect(await Effect.runPromise(gate.run("a"))).toBe("a");
     await Effect.runPromise(gate.dispose);
+  });
+});
+
+type LookupResult = { readonly _tag: "found"; readonly name: string } | { readonly _tag: "forbidden" };
+
+describe("gate retention policy", () => {
+  it("shares excluded results unchanged, then executes again without rerunning policy on cache hits", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const forbidden: LookupResult = { _tag: "forbidden" };
+        const found: LookupResult = { _tag: "found", name: "Ada" };
+        let calls = 0;
+        let decisions = 0;
+        const gate = yield* makeRequestGate(
+          (_input: string) =>
+            Effect.gen(function* () {
+              calls++;
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              return calls === 1 ? forbidden : found;
+            }),
+          {
+            key: String,
+            shouldCache: (value, input) => {
+              expectTypeOf(value).toEqualTypeOf<LookupResult>();
+              expectTypeOf(input).toEqualTypeOf<string>();
+              expect(input).toBe("a");
+              decisions++;
+              return value._tag === "found";
+            },
+          },
+        );
+        expect(decisions).toBe(0);
+        const owner = yield* Effect.fork(gate.run("a"));
+        yield* Deferred.await(started);
+        const waiter = yield* Effect.fork(gate.run("a"));
+        yield* Effect.yieldNow();
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(owner)).toBe(forbidden);
+        expect(yield* Fiber.join(waiter)).toBe(forbidden);
+        expect(calls).toBe(1);
+        expect(decisions).toBe(1);
+        expect(yield* gate.run("a")).toBe(found);
+        expect(yield* gate.run("a")).toBe(found);
+        expect(calls).toBe(2);
+        expect(decisions).toBe(2);
+        yield* gate.dispose;
+      }),
+    );
+  });
+
+  it("clears an equivalent retained key on exclusion but preserves an unrelated key", async () => {
+    let calls = 0;
+    let retain = true;
+    const gate = await Effect.runPromise(
+      makeRequestGate((input: string) => Effect.sync(() => `${input}:${++calls}`), {
+        key: (input) => ({ normalized: input.toLowerCase() }),
+        equivalent: (left, right) => left.normalized === right.normalized,
+        shouldCache: () => retain,
+      }),
+    );
+    expect(await Effect.runPromise(gate.run("a"))).toBe("a:1");
+    retain = false;
+    expect(await Effect.runPromise(gate.run("A", { force: true }))).toBe("A:2");
+    retain = true;
+    expect(await Effect.runPromise(gate.run("a"))).toBe("a:3");
+    retain = false;
+    expect(await Effect.runPromise(gate.run("b"))).toBe("b:4");
+    expect(await Effect.runPromise(gate.run("a"))).toBe("a:3");
+    expect(calls).toBe(4);
+    await Effect.runPromise(gate.dispose);
+  });
+
+  it("does not classify Effect failures or evict a retained result on failure", async () => {
+    let fail = false;
+    let decisions = 0;
+    const gate = await Effect.runPromise(
+      makeRequestGate((input: string) => (fail ? Effect.fail("offline") : Effect.succeed(input)), {
+        key: String,
+        shouldCache: () => {
+          decisions++;
+          return true;
+        },
+      }),
+    );
+    expect(await Effect.runPromise(gate.run("a"))).toBe("a");
+    fail = true;
+    const failed = await Effect.runPromise(Effect.either(gate.run("a", { force: true })));
+    expect(failed).toEqual(Either.left("offline"));
+    expect(await Effect.runPromise(gate.run("a"))).toBe("a");
+    expect(decisions).toBe(1);
+    await Effect.runPromise(gate.dispose);
+  });
+
+  it("completes shared callers and cleanup when the predicate throws", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const defect = new Error("retention predicate defect");
+        let decisions = 0;
+        const gate = yield* makeRequestGate(
+          (input: string) =>
+            Deferred.succeed(started, undefined).pipe(Effect.zipRight(Deferred.await(release)), Effect.as(input)),
+          {
+            key: String,
+            shouldCache: () => {
+              if (++decisions === 1) throw defect;
+              return true;
+            },
+          },
+        );
+        const owner = yield* Effect.fork(gate.run("a"));
+        yield* Deferred.await(started);
+        const waiter = yield* Effect.fork(gate.run("a"));
+        yield* Effect.yieldNow();
+        yield* Deferred.succeed(release, undefined);
+        const ownerExit = yield* Fiber.await(owner);
+        const waiterExit = yield* Fiber.await(waiter);
+        expect(ownerExit).toEqual(Exit.die(defect));
+        expect(waiterExit).toEqual(ownerExit);
+        expect(yield* gate.run("a")).toBe("a");
+        yield* gate.dispose;
+      }),
+    );
+  });
+
+  it("prevents superseded excluded completions from clearing the current retained value", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let calls = 0;
+        const gate = yield* makeRequestGate(
+          (_input: string) =>
+            ++calls === 2
+              ? Effect.uninterruptible(
+                  Deferred.succeed(started, undefined).pipe(Effect.zipRight(Deferred.await(release)), Effect.as(false)),
+                )
+              : Effect.succeed(true),
+          { key: String, shouldCache: (value) => value },
+        );
+        expect(yield* gate.run("a")).toBe(true);
+        const superseded = yield* Effect.fork(gate.run("a", { force: true }));
+        yield* Deferred.await(started);
+        expect(yield* gate.run("a", { force: true })).toBe(true);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.await(superseded);
+        expect(yield* gate.run("a")).toBe(true);
+        expect(calls).toBe(3);
+        yield* gate.dispose;
+      }),
+    );
   });
 });
