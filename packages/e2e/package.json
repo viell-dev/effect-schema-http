@@ -14,7 +14,7 @@
     "@types/node": "^26.5.0",
     "effect": "^3.22.2",
     "typescript": "^6.0.3",
-    "viell-effect-schema-http": "file:../../vendor/viell-effect-schema-http-0.1.0-beta.1.tgz",
+    "viell-effect-schema-http": "file:../../vendor/viell-effect-schema-http-0.1.0-beta.2.tgz",
     "vitest": "^5.0.0"
   }
 }

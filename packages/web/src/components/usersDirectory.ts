@@ -4,10 +4,10 @@
  * interruption behavior — but not at the price of its cross-call reuse. See that module's TSDoc.
  */
 import { Effect, Match } from "effect";
-import { h } from "../dom.js";
+import { h, onUnmount } from "../dom.js";
 import { domainErrorMessage } from "../errors.js";
 import { run } from "../runtime.js";
-import { getUsersGate, usersFilterKey, type UserFilters } from "../usersGate.js";
+import { makeUsersGate, usersFilterKey, type UserFilters } from "../usersGate.js";
 
 interface DirectoryUser {
   readonly username: string;
@@ -23,6 +23,7 @@ export const renderUsersDirectory = (): HTMLElement => {
   const statusLine = h("p", { class: "hint hidden" });
   const tableBody = h("tbody");
 
+  const gate = Effect.runSync(makeUsersGate());
   let requestSeq = 0;
   // The filter whose rows the gate is currently retaining, tracked with the gate's own key
   // function so "will this `run` hit the cache?" is answered the same way the gate answers it.
@@ -55,16 +56,6 @@ export const renderUsersDirectory = (): HTMLElement => {
   const load = async (mode: "run" | "refresh"): Promise<void> => {
     const filters = currentFilters();
     const mySeq = ++requestSeq;
-    const gate = await getUsersGate();
-
-    // Interrupt whatever the previous keystroke's request is still doing before starting this
-    // one. `cancel`, not `invalidate`: both interrupt the gate's in-flight work, but `cancel`
-    // keeps the retained rows, so a filter the gate already answered still resolves from cache.
-    await Effect.runPromise(gate.cancel);
-    if (mySeq !== requestSeq) return;
-
-    // A cache hit resolves without a network request at all, so the "Loading…" line would only
-    // flicker. `cancel` keeps the retained pair, so this stays true across keystrokes.
     const key = usersFilterKey(filters);
     const servedFromCache = mode === "run" && key === retainedKey;
 
@@ -73,9 +64,9 @@ export const renderUsersDirectory = (): HTMLElement => {
       statusLine.classList.remove("hidden");
     }
 
-    const result = await run(mode === "run" ? gate.run(filters) : gate.refresh(filters)).catch((error: unknown) => {
+    const result = await run(gate.run(filters, { force: mode === "refresh" })).catch((error: unknown) => {
       // A superseded request rejects because its fiber was interrupted by the *next*
-      // keystroke's `cancel` — that is expected and not a real failure to report.
+      // keystroke's `run` — that is expected and not a real failure to report.
       if (mySeq !== requestSeq) return undefined;
       console.error("user directory request failed", error);
       return undefined;
@@ -113,7 +104,7 @@ export const renderUsersDirectory = (): HTMLElement => {
   refreshButton.addEventListener("click", () => void load("refresh"));
   void load("run");
 
-  return h(
+  const view = h(
     "section",
     { class: "card" },
     h("h2", {}, "Users"),
@@ -131,16 +122,14 @@ export const renderUsersDirectory = (): HTMLElement => {
       h(
         "thead",
         {},
-        h(
-          "tr",
-          {},
-          h("th", {}, "Username"),
-          h("th", {}, "Display name"),
-          h("th", {}, "Email"),
-          h("th", {}, "Role"),
-        ),
+        h("tr", {}, h("th", {}, "Username"), h("th", {}, "Display name"), h("th", {}, "Email"), h("th", {}, "Role")),
       ),
       tableBody,
     ),
   );
+  onUnmount(view, () => {
+    ++requestSeq;
+    void run(gate.dispose);
+  });
+  return view;
 };

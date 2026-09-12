@@ -49,8 +49,8 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       viell-effect-schema-http:
-        specifier: file:../../vendor/viell-effect-schema-http-0.1.0-beta.1.tgz
-        version: file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2)
+        specifier: file:../../vendor/viell-effect-schema-http-0.1.0-beta.2.tgz
+        version: file:vendor/viell-effect-schema-http-0.1.0-beta.2.tgz(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2)
       vitest:
         specifier: ^5.0.0
         version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)(esbuild@0.28.2)(tsx@4.23.13))
@@ -89,8 +89,8 @@ importers:
         specifier: ^3.22.2
         version: 3.22.2
       viell-effect-schema-http:
-        specifier: file:../../vendor/viell-effect-schema-http-0.1.0-beta.1.tgz
-        version: file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2)
+        specifier: file:../../vendor/viell-effect-schema-http-0.1.0-beta.2.tgz
+        version: file:vendor/viell-effect-schema-http-0.1.0-beta.2.tgz(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2)
     devDependencies:
       typescript:
         specifier: ^6.0.3
@@ -641,9 +641,9 @@ packages:
   undici-types@8.9.0:
     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
 
-  viell-effect-schema-http@file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz:
-    resolution: {integrity: sha512-/pOM+AJ6csutMIgbINS4aip+WSVGqQnSgW2173cysfE4jW6VNoEa/PGrVEqWpriiHnp67pPAk2+4g4WX1Fickw==, tarball: file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz}
-    version: 0.1.0-beta.1
+  viell-effect-schema-http@file:vendor/viell-effect-schema-http-0.1.0-beta.2.tgz:
+    resolution: {integrity: sha512-LO6j2LUGRvT0uqsl5tdQMGxcMcjzw8KXfy3tRBG2MOg3l4vew4t26bLsaxKYklr5cVwqWOxlN68wwWusoAxLwA==, tarball: file:vendor/viell-effect-schema-http-0.1.0-beta.2.tgz}
+    version: 0.1.0-beta.2
     engines: {node: '>=20'}
     peerDependencies:
       '@effect/platform': ^0.97.2
@@ -1128,7 +1128,7 @@ snapshots:
 
   undici-types@8.9.0: {}
 
-  viell-effect-schema-http@file:vendor/viell-effect-schema-http-0.1.0-beta.1.tgz(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2):
+  viell-effect-schema-http@file:vendor/viell-effect-schema-http-0.1.0-beta.2.tgz(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2):
     dependencies:
       '@effect/platform': 0.97.2(effect@3.22.2)
       effect: 3.22.2

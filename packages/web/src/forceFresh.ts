@@ -15,7 +15,7 @@
  *
  * Both levers have to travel together or the refresh silently does nothing, which is exactly the
  * kind of thing that should be named once rather than remembered at four call sites. It is typed
- * with the library's `RequestPlanTransform` so it applies to any endpoint's plan regardless of
+ * with the library's `RawQueryPlanTransform` so it applies to any endpoint's plan regardless of
  * that endpoint's body, response rules, or body typestate — `listFeed` returns JSON and
  * `getBlogFeed` returns parsed XML, and this composes with both.
  *
@@ -24,12 +24,10 @@
  * (Contrast `authorization` in `api.ts`, which is a computed API-wide default precisely because
  * it should apply unless a declaration says otherwise.)
  */
-import type { RequestPlanTransform } from "viell-effect-schema-http";
+import type { RawQueryPlanTransform } from "viell-effect-schema-http";
 
-export const forceFresh: RequestPlanTransform = (plan) =>
-  plan
-    .setCache({ control: "no-cache", fetch: "reload" })
-    .setUrlParam("_", () => String(Date.now()));
+export const forceFresh: RawQueryPlanTransform = (plan) =>
+  plan.setCache({ control: "no-cache", fetch: "reload" }).setUrlParam("_", () => String(Date.now()));
 
 /** Reads the proxy's own response fields, which it exposes to this origin. */
 export const describeCacheStatus = (headers: Readonly<Record<string, string>>): string => {

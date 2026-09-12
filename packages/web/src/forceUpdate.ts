@@ -17,7 +17,7 @@
  * hand — plans are cold and re-executable, so "replay that exact request with one more header" is
  * one `.pipe()` rather than a second copy of the call site.
  */
-import type { RequestPlanTransform } from "viell-effect-schema-http";
+import type { RawHeaderPlanTransform } from "viell-effect-schema-http";
 
-export const forceUpdate: RequestPlanTransform = (plan) =>
+export const forceUpdate: RawHeaderPlanTransform = (plan) =>
   plan.setHeader("x-force-update", "true").removeHeader("x-expected-revision");

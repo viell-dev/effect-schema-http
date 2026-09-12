@@ -1,5 +1,25 @@
 # realworld-schema-http
 
+## Current library revision: beta.2
+
+This evaluation now consumes the packed `viell-effect-schema-http-0.1.0-beta.2.tgz` archive. The library's
+`before-effect-native-2026-09-12` tag preserves the earlier implementation. The longer evaluation narrative below
+records earlier beta.1 investigations unless explicitly described as the beta.2 migration; historical findings are
+not a replacement for the current library contract.
+
+The frontend owns a shared ManagedRuntime combining SchemaHttp, FetchHttpClient, LoggerLive and ConfigProviderLive.
+Logger construction receives its config provider explicitly. Vite uses prefixed environment values; ordinary Node
+execution can use environment configuration. API definitions obtain their factory from the configured SchemaHttp service.
+Gates belong to mounted interactions: run supersedes prior input automatically, force requests the same input again,
+and unmount calls dispose. Current rows and current input belong to the UI.
+
+Beta.2 verification on 2026-09-12 passed 81 tests across its domain, server and HTTP evaluation suites, consumer typechecking and the Vite production build.
+Chromium 150.0.7871.181 exercised the mounted gate with 250 ms network latency: superseded requests aborted and the
+latest result rendered. The directory additionally verified force refresh and disposal on navigation; the cross-service
+view verified empty-input supersession. Java's API declaration disables tracing propagation because its legacy CORS
+allowlist rejects traceparent. These are local Fetch/Node/Chromium observations, not a universal provider matrix.
+
+
 A small "realworld"-style multi-user blog — per-user blogs, login, public/draft/private posts,
 comments from registered or anonymous authors, file attachments, a legacy Atom feed, and an admin
 panel — built specifically to exercise [`viell-effect-schema-http`](../repo) (a lazy, schema-driven
@@ -284,71 +304,18 @@ All in `packages/domain/src`, used identically by both `server` and `web`:
 
 ## Request gates: a filter-as-you-type datatable
 
-`makeRequestGate` was the one exported API this project hadn't touched. Its own README example is
-literally a paginated/searchable user table, so the admin panel's "Users" section
-(`packages/web/src/usersGate.ts` + `components/usersDirectory.ts`) is that example, built for real:
-two text inputs (name, email) over `GET /api/admin/users`, firing a new request on every `input`
-event — deliberately no debounce, so the library's own concurrency handling is what has to carry
-the load of several genuinely distinct filter values submitted within milliseconds of each other.
+The admin directory allocates one gate when its view mounts. Its operation calls an endpoint with an optional-field
+query schema; nonempty name/email values are supplied through setUrlParams, while empty filters are omitted. Every
+new filter runs through the gate, which interrupts superseded work automatically. Equivalent active input joins;
+equivalent retained input reuses the last success. The UI uses a sequence to prevent obsolete Promise callbacks from
+changing presentation and keeps its own retained key to avoid loading flicker.
 
-Reading `docs/design.md`'s "Request gates" section closely before writing any code mattered here,
-because the obvious first guess about what a "gate" gives you for free is wrong. The docs say:
-*"Different keys may run concurrently, but older completions cannot overwrite newer successful
-completions."* That is a **correctness** guarantee — a slow, stale response can't clobber a newer
-one in the gate's single retained slot — not a **cancellation** one. Calling plain `gate.run(input)`
-on every keystroke does *not* abort the previous keystroke's in-flight `fetch()`; it just makes sure
-that request's result, if it arrives late, can't overwrite whatever a newer request already
-produced. For a live filter box that still leaves every stale request running to completion on the
-wire, which is exactly what this task asked to avoid.
+The directory's Refresh button calls run with the current filters and `{ force: true }`. View removal registers cleanup
+with the common DOM mount helper, increments the presentation sequence and calls gate.dispose. Remounting creates a
+new gate rather than reusing a closed module singleton. Independent directory instances have independent gates.
 
-The first version of this page used `gate.invalidate` — *"clears the retained pair, interrupts every
-request currently owned by that gate"* — because it was the only interruption tool the gate offered,
-and it reported the obvious cost as a gap: there was no way to interrupt the current flight while
-keeping what the gate had already cached, so the gate's headline reuse behaviour was wiped before it
-could ever help. **The library has since closed that gap with `gate.cancel`**, which performs the
-same interruption and stale-write prevention while retaining the cached pair. `usersDirectory.ts`
-now calls `gate.cancel` before every `gate.run`, and `FetchHttpClient` — per the library's own
-"Providers and cancellation" section — translates that Effect interruption into a real
-`AbortController.abort()` on the underlying `fetch()`.
-
-Both halves were verified concretely, not inferred from the docs: driving the page through a real
-(system-installed) Chromium against the server's `RESPONSE_DELAY_MS=400` route. Typing `a`, `d`, `a`
-back-to-back produced this exact request log:
-
-```
-sent      /api/admin/users?name=a
-sent      /api/admin/users?name=ad
-failed    /api/admin/users?name=a    net::ERR_ABORTED
-sent      /api/admin/users?name=ada
-failed    /api/admin/users?name=ad   net::ERR_ABORTED
-finished  /api/admin/users?name=ada
-```
-
-Real, browser-level aborted network requests, and only the last keystroke's request completed and
-rendered. Then the case `cancel` exists for — typing a typo and correcting it *inside* the typo's
-own request flight, the single most ordinary thing that happens in a search box:
-
-```
-sent      /api/admin/users?name=adax
-failed    /api/admin/users?name=adax  net::ERR_ABORTED
-(correcting back to "ada": no network request at all)
-```
-
-The correction resolved straight out of the gate's retained success, with the "Loading…" line never
-appearing, because the cancelled `adax` flight could neither complete nor evict what `ada` had
-already put there. Under the old `invalidate` call that same correction cost a full round trip.
-That is the concrete evidence behind the bullets below.
-
-The page also keeps a **Refresh** button wired to `gate.refresh`, the cache-bypassing counterpart:
-same filters, but always a new execution. Between `run`, `refresh`, and `cancel`, the only gate
-operation this page has no natural use for is `reload`, which re-runs the retained *input* rather
-than the currently typed one.
-
-**What remains a judgement call, not a defect:** cancellation is whole-gate, so a page running
-several keys concurrently behind one gate cannot supersede just one of them, and retention is still
-a single entry, so alternating between two filters never hits the cache. Both are recorded as open
-questions in the library's design notes (10 and 11); neither bites this page, which runs one key at
-a time.
+Multipart uploads and attachment downloads also demonstrate codec-only bodies. Schemas remain in use for domain payloads
+and transformations such as the admin statistics encoded inside bytes.
 
 ## What a shared schema does and does not protect you from
 
@@ -514,7 +481,7 @@ a fixture for.
   and `ResponseBody.uint8Array` trivial to wire up once you know the trick** (see the Effect Schema
   section above) — no custom codec, no transform, just a schema whose `Type` already matches the
   codec's `Input`/output.
-- **Effect interruption really does become a real `fetch()` abort, end to end.** `gate.invalidate`
+- **Effect interruption really does become a real `fetch()` abort, end to end.** The historical `gate.invalidate`
   → Effect fiber interruption → `FetchHttpClient`'s abort-signal translation → an actual
   `net::ERR_ABORTED` in Chromium's network log, confirmed by driving a real browser (see the
   "Request gates" section above). This is exactly what the README's "Providers and cancellation"
@@ -653,7 +620,7 @@ a fixture for.
     (drain) is clearly the right one — opting out is a deliberate diagnostic act.
 
   The library's own
-  [`docs/report.md`](../repo/docs/report.md) already flags several of these areas (retry/timeout
+  [`docs/report.md`](../repo-llm1/docs/report.md) already flags several of these areas (retry/timeout
   interaction, mutable-input aliasing, dot-segment path values) as deferred findings from its
   pre-beta review — we have nothing to add or contradict there, since our path parameters
   (`Slug`, `Username`, UUIDs) are all schema-constrained to alphabets that cannot produce a bare
@@ -692,7 +659,7 @@ a fixture for.
 
 ### On the browser-verification gap in the library's own review
 
-[`docs/report.md`](../repo/docs/report.md) (the library's pre-beta review) explicitly lists
+[`docs/report.md`](../repo-llm1/docs/report.md) (the library's pre-beta review) explicitly lists
 *"Browser, alternative-runtime, and official non-Fetch client coverage is absent"* as an open item.
 This project's manual verification passes — a real, system-installed Chromium driven through
 `playwright-core` against a live Vite dev server and Node backend, covering registration, login

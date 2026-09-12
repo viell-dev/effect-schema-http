@@ -33,8 +33,19 @@ export const append = (el: Element, children: ReadonlyArray<Child>): void => {
 };
 
 export const mount = (root: Element, ...children: ReadonlyArray<Child>): void => {
+  for (const element of root.querySelectorAll("*")) {
+    cleanup.get(element)?.();
+    cleanup.delete(element);
+  }
   root.replaceChildren();
   append(root, children);
 };
 
 export const text = (value: string): Text => document.createTextNode(value);
+
+const cleanup = new WeakMap<Element, () => void>();
+
+/** Registers cleanup for a view removed by mount. */
+export const onUnmount = (element: Element, dispose: () => void): void => {
+  cleanup.set(element, dispose);
+};

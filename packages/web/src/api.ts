@@ -1,3 +1,4 @@
+import { schemaHttp } from "./runtime.js";
 /**
  * Every server endpoint declared once with the `repo` library's `createApi`/`createRequest`.
  * This is the actual object of this test project: everything else exists to give this file
@@ -46,7 +47,7 @@ import {
   UpdatePostInput,
   ValidationError,
 } from "@realworld/domain";
-import { createApi, extendApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
+import { extendApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
 import { getSession } from "./session.js";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
@@ -70,7 +71,7 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localho
  * an unauthenticated request. Most endpoints here genuinely want it — even the public reads, since
  * the server uses `optionalSession` to decide whether drafts and private posts are visible.
  */
-const api = createApi(API_BASE_URL, {
+const api = schemaHttp.createApi(API_BASE_URL, {
   headers: {
     authorization: () => {
       const session = getSession();
@@ -291,14 +292,8 @@ export const getPostVersioned = api.createRequest({
   path: "/api/posts/:slug",
   headers: { [ACCEPT_VERSION_HEADER]: "2" },
   responses: [
-    response(
-      { _tag: "v2", status: 200, headers: { [SCHEMA_VERSION_HEADER]: "2" } },
-      PostViewV2,
-    ),
-    response(
-      { _tag: "v1", status: 200, headers: { [SCHEMA_VERSION_HEADER]: "1" } },
-      PostView,
-    ),
+    response({ _tag: "v2", status: 200, headers: { [SCHEMA_VERSION_HEADER]: "2" } }, PostViewV2),
+    response({ _tag: "v1", status: 200, headers: { [SCHEMA_VERSION_HEADER]: "1" } }, PostView),
   ],
 });
 
@@ -342,10 +337,7 @@ export const exportPost = api.createRequest({
       PostExportFromMarkdown,
       { codec: ResponseBody.text },
     ),
-    response(
-      { _tag: "serverError", status: (status) => status >= 500 },
-      Schema.Struct({ message: Schema.String }),
-    ),
+    response({ _tag: "serverError", status: (status) => status >= 500 }, Schema.Struct({ message: Schema.String })),
   ] as const,
 });
 
@@ -410,41 +402,31 @@ export const listAttachments = api.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, AttachmentsResponse)],
 });
 
-/** `Schema.instanceOf(FormData)` is an identity schema — Type and Encoded are both `FormData` —
- * so `RequestBody.formData`'s `Input: FormData` requirement is satisfied without any transform:
- * the caller builds a real `FormData` and hands it to `.setBody` as-is. */
+/** A codec-only multipart body accepts caller-owned FormData without requiring an identity schema. */
 export const uploadAttachment = api.createRequest({
   method: "POST",
   path: "/api/posts/:slug/attachments",
-  body: Schema.instanceOf(FormData),
-  bodyCodec: RequestBody.formData,
+  body: RequestBody.formData,
   responses: [response({ _tag: "created", status: 201 }, AttachmentView)],
 });
 
-/** `Schema.Uint8ArrayFromSelf` is the raw-bytes counterpart of `Schema.instanceOf(FormData)`
- * above: an identity schema so the decoded body is exactly the `Uint8Array` `ResponseBody.uint8Array`
- * produced, with no further parsing — this is a real file's bytes, not a payload smuggled as bytes. */
+/** A codec-only download returns the image/file bytes directly. */
 export const getAttachmentBytes = api.createRequest({
   method: "GET",
   path: "/api/posts/:slug/attachments/:attachmentId",
-  responses: [
-    response({ _tag: "ok", status: 200 }, Schema.Uint8ArrayFromSelf, { codec: ResponseBody.uint8Array }),
-  ],
+  responses: [response({ _tag: "ok", status: 200 }, ResponseBody.uint8Array)],
 });
 
 /**
  * The only endpoint here whose *response* is form data. `ResponseBody.formData` hands the decoded
- * `FormData` straight to `Schema.instanceOf(FormData)` — the same identity schema the upload
- * endpoint uses for its request — and the caller pulls the parts out itself, because what a
+ * `FormData` to an identity schema, and the caller pulls the parts out itself, because what a
  * multipart response's parts mean is application knowledge, not something a codec can infer.
  */
 export const getAttachmentBundle = api.createRequest({
   method: "GET",
   path: "/api/posts/:slug/attachments/:attachmentId/bundle",
   headers: { accept: "multipart/form-data" },
-  responses: [
-    response({ _tag: "ok", status: 200 }, Schema.instanceOf(FormData), { codec: ResponseBody.formData }),
-  ],
+  responses: [response({ _tag: "ok", status: 200 }, Schema.instanceOf(FormData), { codec: ResponseBody.formData })],
 });
 
 export const deleteAttachment = api.createRequest({
@@ -464,6 +446,7 @@ export const deleteAttachment = api.createRequest({
 export const adminListUsers = api.createRequest({
   method: "GET",
   path: "/api/admin/users",
+  urlParamsSchema: Schema.Struct({ name: Schema.optional(Schema.String), email: Schema.optional(Schema.String) }),
   responses: [response({ _tag: "ok", status: 200 }, AdminUsersResponse)],
 });
 
