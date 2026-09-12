@@ -528,3 +528,10 @@ codec-only bodies and the simplified gate. Open implementation contracts remain:
 
 Empty strings and dot segments are accepted deliberately; library-level canonicalization is not a pending fix. Dynamic
 paths now require a runtime-checked parameter map, and possibly undefined default bodies leave typestate incomplete.
+
+## Application composition recipes
+
+The metadata-aware catalog recipe in [recipes.md](recipes.md) demonstrates required pagination-header validation,
+`200`/`204` normalization and a rule-specific created-ID codec with header precedence and JSON fallback. Header success
+drains the unused body. These are API-specific policies implemented through existing public codecs, schema decoding
+and Effect composition, not package-root APIs. Recipe tests live beside the examples and run in `pnpm test`.

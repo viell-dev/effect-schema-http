@@ -147,3 +147,10 @@ including heterogeneous legacy protocols. A passing local run does not establish
 Read [docs/design.md](docs/design.md) for the implementation contract. The workspace's numbered in-depth report provides
 an Effect introduction, complete tutorials, every public export and remaining design questions. The historical
 [pre-beta report](docs/report.md) records the earlier review; it is not the current API contract.
+
+## Application recipes
+
+[Executable composition recipes](docs/recipes.md) demonstrate validated pagination metadata and created identifiers
+from `Location` or a JSON body. They use the ordinary library API with an injected Platform client and run under
+`pnpm test`. [Pattern review](docs/adoption-review.md) explains their scope and the application policies kept outside
+request machinery.

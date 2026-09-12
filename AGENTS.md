@@ -1,6 +1,7 @@
 # Repository instructions
 
 - Keep unit tests beside implementation files under `src/`.
+- Keep executable recipe tests beside their examples under `examples/`; these run in the default test suite.
 - Keep server-backed integration tests under the sibling `tests/` directory.
 - Preserve the lazy Effect API: building or modifying a request plan must not execute it.
 - Update `docs/design.md` when public types or semantics change.
