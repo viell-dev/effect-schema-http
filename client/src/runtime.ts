@@ -1,22 +1,37 @@
-import { FetchHttpClient, type HttpClient } from "@effect/platform";
-import { Effect, type Fiber } from "effect";
+import { FetchHttpClient } from "@effect/platform";
+import { Config, Effect, Layer, Logger, LogLevel, ManagedRuntime } from "effect";
+import { ConfigProviderLive } from "./ConfigProviderLive.js";
+import { SchemaHttp } from "viell-effect-schema-http";
 
-/**
- * The one place this application chooses a transport.
- *
- * The library never picks one: a request Effect requires `HttpClient.HttpClient` and
- * says so in its type, which is why `repeatedHeaderClient.ts` can be swapped in for the
- * one endpoint that needs a provider preserving repeated header field lines.
- */
-export const run = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>): Promise<A> =>
-  Effect.runPromise(Effect.provide(effect, FetchHttpClient.layer));
+/** Application-owned construction, transport and logging defaults for browser and Node execution. */
+export const LoggerLive = Layer.merge(
+  Logger.pretty,
+  Config.logLevel("LOG_LEVEL").pipe(
+    Config.withDefault(LogLevel.Error),
+    Effect.map(Logger.minimumLogLevel),
+    Layer.unwrapEffect,
+  ),
+);
 
-/**
- * Starts an Effect and hands back its fiber, so a caller can interrupt it.
- *
- * Interruption is the library's cancellation mechanism, and `FetchHttpClient` turns it
- * into a real `AbortController.abort()` — which is what makes a superseded keystroke
- * stop on the wire rather than merely being ignored when it lands.
- */
-export const runFork = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>): Fiber.RuntimeFiber<A, E> =>
-  Effect.runFork(Effect.provide(effect, FetchHttpClient.layer));
+export const DefaultLive = Layer.mergeAll(
+  SchemaHttp.Default,
+  FetchHttpClient.layer,
+  LoggerLive.pipe(Layer.provideMerge(ConfigProviderLive)),
+);
+export const defaultRuntime = ManagedRuntime.make(DefaultLive);
+
+// All layers here initialize synchronously. Asynchronous application resources would require
+// awaiting runPromise during application startup instead.
+export const schemaHttp = defaultRuntime.runSync(
+  Effect.gen(function* () {
+    return yield* SchemaHttp;
+  }),
+);
+export const run = defaultRuntime.runPromise.bind(defaultRuntime);
+export const runFork = defaultRuntime.runFork.bind(defaultRuntime);
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted) void defaultRuntime.dispose();
+  });
+}

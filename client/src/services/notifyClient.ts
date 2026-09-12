@@ -1,5 +1,6 @@
+import { schemaHttp } from "../runtime.js";
 import { Schema } from "effect";
-import { createApi, response, ResponseBody } from "viell-effect-schema-http";
+import { response, ResponseBody } from "viell-effect-schema-http";
 import {
   CreateNotification,
   CsrfRejected,
@@ -28,7 +29,7 @@ export const NOTIFY_SERVER_URL =
  * here at all — see `plans/signing.ts` for why — and is applied per call site with the
  * `signed` transform.
  */
-export const notifyApi = createApi(NOTIFY_SERVER_URL, {
+export const notifyApi = schemaHttp.createApi(NOTIFY_SERVER_URL, {
   headers: {
     "x-csrf-token": () => getCsrfToken(),
   },

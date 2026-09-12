@@ -1,5 +1,5 @@
 import { HttpClient, HttpClientRequest } from "@effect/platform";
-import type { RequestPlanTransform } from "viell-effect-schema-http";
+import type { RequestPlanTransform, RawHeaderPlanTransform, RawQueryPlanTransform } from "viell-effect-schema-http";
 
 /**
  * Reusable, cross-endpoint plan setters.
@@ -25,7 +25,7 @@ import type { RequestPlanTransform } from "viell-effect-schema-http";
  * The parameter is *computed* rather than fixed, so a plan retained across several
  * refreshes sends a new value each time instead of the one captured when it was built.
  */
-export const forceFresh: RequestPlanTransform = (plan) =>
+export const forceFresh: RawQueryPlanTransform = (plan) =>
   plan.setCache({ control: "no-cache", fetch: "reload" }).setUrlParam("_cb", () => String(Date.now()));
 
 /**
@@ -37,12 +37,12 @@ export const forceFresh: RequestPlanTransform = (plan) =>
  * of the plan — see `src/services/repeatedHeaderClient.ts`.
  */
 export const withScopeLines =
-  (scopes: ReadonlyArray<string>): RequestPlanTransform =>
-  (plan) =>
-    scopes.reduce<ReturnType<RequestPlanTransform>>(
-      (current, scope) => current.appendHeader("x-scope", scope),
-      plan,
-    );
+  (scopes: ReadonlyArray<string>): RawHeaderPlanTransform =>
+  (plan) => {
+    let result = plan;
+    for (const scope of scopes) result = result.appendHeader("x-scope", scope);
+    return result;
+  };
 
 /**
  * Send a monotonically increasing correlation nonce.
@@ -53,7 +53,7 @@ export const withScopeLines =
  * caller to decide where the loop lives.
  */
 export const withNonce =
-  (nonce: number): RequestPlanTransform =>
+  (nonce: number): RawHeaderPlanTransform =>
   (plan) =>
     plan.setHeader("x-nonce", String(nonce));
 
@@ -65,7 +65,7 @@ export const withNonce =
  * the rewrite to `POST` happens in a request transform, after encoding.
  */
 export const tunnelMethod =
-  (method: string): RequestPlanTransform =>
+  (method: string): RawHeaderPlanTransform =>
   (plan) =>
     plan
       .setHeader("x-http-method-override", method.toUpperCase())
@@ -79,5 +79,4 @@ export const tunnelMethod =
  * fails against them. Servers under our control allow the headers instead; this exists
  * for the ones that are not.
  */
-export const withoutTracing: RequestPlanTransform = (plan) =>
-  plan.mapClient(HttpClient.withTracerPropagation(false));
+export const withoutTracing: RequestPlanTransform = (plan) => plan.mapClient(HttpClient.withTracerPropagation(false));

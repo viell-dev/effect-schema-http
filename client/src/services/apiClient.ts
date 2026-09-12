@@ -1,9 +1,7 @@
+import { HttpClient } from "@effect/platform";
+import { schemaHttp } from "../runtime.js";
 import { Schema } from "effect";
-import {
-  createApi,
-  response,
-  ResponseBody,
-} from "viell-effect-schema-http";
+import { response, ResponseBody } from "viell-effect-schema-http";
 import {
   Comment,
   CreateCommentInput,
@@ -22,8 +20,7 @@ import {
 import { getSession } from "../session.js";
 
 export const API_SERVER_URL =
-  (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_SERVER_URL) ||
-  "http://localhost:4300";
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_SERVER_URL) || "http://localhost:4300";
 
 /**
  * API Server client.
@@ -33,7 +30,9 @@ export const API_SERVER_URL =
  * 2. 4xx errors use StructuredError { error: { code, message } }.
  * 3. 5xx errors use FlatError { error: string }.
  */
-export const apiServer = createApi(API_SERVER_URL, {
+export const apiServer = schemaHttp.createApi(API_SERVER_URL, {
+  // This legacy server permits Content-Type/Authorization, but rejects tracing headers in browser preflights.
+  transformClient: HttpClient.withTracerPropagation(false),
   headers: {
     authorization: () => {
       const session = getSession();
@@ -111,8 +110,7 @@ export const listTasksRequest = apiServer.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, Schema.Array(Task))],
 });
 
-export const listTasks = (projectId: string) =>
-  listTasksRequest().setUrlParam("projectId", projectId);
+export const listTasks = (projectId: string) => listTasksRequest().setUrlParam("projectId", projectId);
 
 export const getTask = apiServer.createRequest({
   method: "GET",
@@ -163,8 +161,7 @@ export const listCommentsRequest = apiServer.createRequest({
   responses: [response({ _tag: "ok", status: 200 }, Schema.Array(Comment))],
 });
 
-export const listComments = (taskId: string) =>
-  listCommentsRequest().setUrlParam("taskId", taskId);
+export const listComments = (taskId: string) => listCommentsRequest().setUrlParam("taskId", taskId);
 
 /**
  * Quirk 1: Returns 200 OK (not 201 Created).
@@ -184,6 +181,11 @@ export const createComment = apiServer.createRequest({
 export const searchRequest = apiServer.createRequest({
   method: "GET",
   path: "/api/search",
+  urlParamsSchema: Schema.Struct({
+    q: Schema.String,
+    page: Schema.optional(Schema.NumberFromString),
+    pageSize: Schema.optional(Schema.NumberFromString),
+  }),
   responses: [response({ _tag: "ok", status: 200 }, SearchResults)],
 });
 
@@ -192,10 +194,11 @@ export const searchRequest = apiServer.createRequest({
  * SearchResults schema transform normalizes both to Array<SearchHit>.
  */
 export const search = (q: string, page?: number, pageSize?: number) => {
-  let plan = searchRequest().setUrlParam("q", q);
-  if (page !== undefined) plan = plan.setUrlParam("page", String(page));
-  if (pageSize !== undefined) plan = plan.setUrlParam("pageSize", String(pageSize));
-  return plan;
+  return searchRequest().setUrlParams({
+    q,
+    ...(page === undefined ? {} : { page }),
+    ...(pageSize === undefined ? {} : { pageSize }),
+  });
 };
 
 // ---------------------------------------------------------------------------

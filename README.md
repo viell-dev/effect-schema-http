@@ -1,5 +1,25 @@
 # multi-service-schema-http
 
+## Current library revision: beta.2
+
+This evaluation now consumes the packed `viell-effect-schema-http-0.1.0-beta.2.tgz` archive. The library's
+`before-effect-native-2026-09-12` tag preserves the earlier implementation. The longer evaluation narrative below
+records earlier beta.1 investigations unless explicitly described as the beta.2 migration; historical findings are
+not a replacement for the current library contract.
+
+The frontend owns a shared ManagedRuntime combining SchemaHttp, FetchHttpClient, LoggerLive and ConfigProviderLive.
+Logger construction receives its config provider explicitly. Vite uses prefixed environment values; ordinary Node
+execution can use environment configuration. API definitions obtain their factory from the configured SchemaHttp service.
+Gates belong to mounted interactions: run supersedes prior input automatically, force requests the same input again,
+and unmount calls dispose. Current rows and current input belong to the UI.
+
+Beta.2 verification on 2026-09-12 passed 135 tests with all five backends running, consumer typechecking and the Vite production build.
+Chromium 150.0.7871.181 exercised the mounted gate with 250 ms network latency: superseded requests aborted and the
+latest result rendered. The directory additionally verified force refresh and disposal on navigation; the cross-service
+view verified empty-input supersession. Java's API declaration disables tracing propagation because its legacy CORS
+allowlist rejects traceparent. These are local Fetch/Node/Chromium observations, not a universal provider matrix.
+
+
 Five backend services, written in five languages over what their comments claim is
 twelve years, and one TypeScript client that has to talk to all of them at once — built
 to push [`viell-effect-schema-http`](../repo-llm1) and
@@ -47,7 +67,7 @@ client/          TypeScript + Effect + Vite    One client for all five
   src/ui/          a browser client that drives every endpoint in here
   tests/           135 tests across ten files
 
-vendor/          the packed viell-effect-schema-http-0.1.0-beta.1 tarball
+vendor/          the packed viell-effect-schema-http-0.1.0-beta.2 tarball
 ```
 
 Roughly 5,800 lines of client TypeScript, 2,000 of tests, and 4,800 across the five
@@ -372,26 +392,17 @@ from somewhere" is not obvious until it bites.
 
 ## Request gates across two services
 
-`client/src/integration/gates.ts` puts a gate over a filter box that has to ask the Java
-search endpoint *and* the Perl gateway, translate the Perl side into task drafts, and show
-both together. The library's motivating example is a filter-as-you-type table over one
-endpoint; this is the same idea where the "endpoint" is two services and a translation.
+The reconciliation view owns one gate over concurrent Java search and Perl extract requests plus schema translation.
+Submitting another term automatically interrupts the whole prior operation; no separate cancellation call is needed.
+Empty input runs a local empty-result operation through the same gate, so clearing the field also supersedes network
+work. A sequence guard protects presentation, and the shared DOM mount helper disposes the gate when its view leaves.
 
-The important thing the docs say plainly, and which is easy to get wrong: retention is a
-**correctness** guarantee, not a cancellation one. `run` does not abort the previous
-flight — it only stops an older completion overwriting a newer one. A live filter box
-wants the stale request to stop on the wire too, which is what `cancel` is for, and
-`cancel` keeps the retained success so correcting a typo back to a term that already
-resolved costs no request at all. `invalidate` would throw that away, which is right after
-a mutation and wrong here.
+Equal active terms share one operation and one retained success can be reused. A force action would submit the current
+term with `{ force: true }`. This is interaction coordination, not an application-wide cache or an atomic transaction
+across the two services. The separate reconciliation saga still uses explicit compensation for mutations.
 
-Putting both services behind one key is the right granularity for this screen: it is one
-thing, and a half-refreshed screen is worse than a slower one. Where two halves genuinely
-refresh independently, the library's own design notes record that whole-gate cancellation
-is a deliberate simplification and one gate per key is the answer. That matched what this
-page needed; it is recorded as a judgement call, not a defect.
-
----
+The Java search endpoint now defines a query schema: page and pageSize are numbers in application code and strings on
+the wire. The legacy byte upload uses a codec-only request body; response text transformations retain their schemas.
 
 ## What worked well
 

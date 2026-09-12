@@ -1,6 +1,6 @@
-import { Effect, Fiber } from "effect";
+import { Effect } from "effect";
 import { toEffect } from "viell-effect-schema-http";
-import { h } from "../dom.js";
+import { h, onUnmount } from "../dom.js";
 import { makeReconciliationGate, type ReconciliationView } from "../integration/gates.js";
 import { runReconciliation } from "../integration/saga.js";
 import { run, runFork } from "../runtime.js";
@@ -18,14 +18,15 @@ import { actionPanel, describeFailure, field, type Action } from "./panel.js";
  * it can render a row.
  */
 export const renderSearchView = (): HTMLElement => {
-  const term = h("input", { type: "text", placeholder: "filter the live system and the nightly extract…" }) as HTMLInputElement;
+  const term = h("input", {
+    type: "text",
+    placeholder: "filter the live system and the nightly extract…",
+  }) as HTMLInputElement;
   const status = h("p", { class: "blurb" }, "Type to search. Every keystroke cancels the previous flight.");
   const results = h("pre", { class: "output" }, "Ready.");
 
-  // One gate, one fiber at a time. `cancel` before each `run` is the documented pattern
-  // for superseding an in-flight request while keeping what the gate already has.
   const gate = Effect.runSync(makeReconciliationGate());
-  let inFlight: Fiber.RuntimeFiber<ReconciliationView, unknown> | undefined;
+  let sequence = 0;
 
   const render = (view: ReconciliationView) => {
     results.textContent = [
@@ -35,23 +36,21 @@ export const renderSearchView = (): HTMLElement => {
       "drafts translated from the 1999 nightly extract:",
       ...(view.drafts.length === 0
         ? ["  (none)"]
-        : view.drafts.map((draft) => `  ${draft.status.padEnd(12)} p${draft.priority}  ${draft.title}\n    ${draft.description}`)),
+        : view.drafts.map(
+            (draft) => `  ${draft.status.padEnd(12)} p${draft.priority}  ${draft.title}\n    ${draft.description}`,
+          )),
     ].join("\n");
   };
 
   term.oninput = () => {
     const value = term.value;
-    if (value.trim() === "") {
-      results.textContent = "Ready.";
-      return;
-    }
-    status.textContent = `searching for “${value}”…`;
-    if (inFlight !== undefined) Effect.runFork(Fiber.interrupt(inFlight));
-    inFlight = runFork(
-      gate.cancel.pipe(
-        Effect.zipRight(gate.run(value)),
-        Effect.tap((view: ReconciliationView) =>
+    const current = ++sequence;
+    status.textContent = value.trim() === "" ? "Ready." : `searching for “${value}”…`;
+    runFork(
+      gate.run(value).pipe(
+        Effect.tap((view) =>
           Effect.sync(() => {
+            if (current !== sequence) return;
             status.textContent = `showing “${view.term}”`;
             render(view);
           }),
@@ -80,7 +79,9 @@ export const renderSearchView = (): HTMLElement => {
         if (getReportSession() === undefined) return "sign in to the gateway first";
         const owner = `saga_${Date.now().toString(36)}`;
         const project = await run(
-          createProject().setBody({ name: `Reconciliation ${owner}`, description: "" }).pipe(toEffect),
+          createProject()
+            .setBody({ name: `Reconciliation ${owner}`, description: "" })
+            .pipe(toEffect),
         );
         if (project._tag !== "created") return "could not create the project to reconcile into";
 
@@ -103,7 +104,7 @@ export const renderSearchView = (): HTMLElement => {
     },
   ];
 
-  return h(
+  const view = h(
     "div",
     {},
     h("div", { class: "fields" }, field("").row),
@@ -114,4 +115,9 @@ export const renderSearchView = (): HTMLElement => {
       actions,
     ),
   );
+  onUnmount(view, () => {
+    ++sequence;
+    void run(gate.dispose);
+  });
+  return view;
 };

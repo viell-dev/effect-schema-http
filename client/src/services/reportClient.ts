@@ -1,5 +1,6 @@
+import { schemaHttp } from "../runtime.js";
 import { Schema } from "effect";
-import { createApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
+import { RequestBody, response, ResponseBody } from "viell-effect-schema-http";
 import {
   AdminSummaryLine,
   ExcelCsv,
@@ -25,7 +26,7 @@ export const REPORT_SERVER_URL =
  * every endpoint's failure handling is either a header-matched rule or a union in the
  * schema.
  */
-export const reportApi = createApi(REPORT_SERVER_URL, {
+export const reportApi = schemaHttp.createApi(REPORT_SERVER_URL, {
   urlParams: {
     // Computed, so a plan built before signing in still sends the current session, and
     // sends nothing at all when there is none.

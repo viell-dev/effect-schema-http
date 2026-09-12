@@ -1,6 +1,7 @@
+import { schemaHttp } from "../runtime.js";
 import { HttpClientRequest } from "@effect/platform";
 import { Schema } from "effect";
-import { createApi, mapEndpoint, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
+import { mapEndpoint, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
 import {
   ArchiveMetadata,
   FileBundle,
@@ -28,7 +29,7 @@ export const FILE_SERVER_URL =
  * right for every SOAP 1.1 action. Everything else differs per action, which is what
  * `mapEndpoint` is for below.
  */
-export const fileApi = createApi(FILE_SERVER_URL, {
+export const fileApi = schemaHttp.createApi(FILE_SERVER_URL, {
   headers: {
     authorization: () => {
       const session = getSession();
@@ -94,7 +95,9 @@ export const listFiles = soapCall.pipe(
 export const uploadFile = (fileName: string, contentType: string, base64Data: string) =>
   soapCall()
     .setHeader("soapaction", soapActionHeader("UploadFile"))
-    .setBody(soapEnvelope(soapAction("UploadFile", { FileName: fileName, ContentType: contentType, FileData: base64Data })))
+    .setBody(
+      soapEnvelope(soapAction("UploadFile", { FileName: fileName, ContentType: contentType, FileData: base64Data })),
+    )
     .setResponseSchema({ _tag: "ok", status: 200 }, soapResult(UploadResultFromXml), { codec: ResponseBody.text });
 
 /**
@@ -110,11 +113,7 @@ export const downloadFile = (fileId: string) =>
   soapCall()
     .setHeader("soapaction", soapActionHeader("DownloadFile"))
     .setBody(soapEnvelope(soapAction("DownloadFile", { FileId: fileId })))
-    .setResponseSchema(
-      { _tag: "ok", status: 200 },
-      Schema.Uint8ArrayFromSelf,
-      { codec: ResponseBody.uint8Array },
-    );
+    .setResponseSchema({ _tag: "ok", status: 200 }, Schema.Uint8ArrayFromSelf, { codec: ResponseBody.uint8Array });
 
 /** `GetFileMetadata` over SOAP 1.1, which answers the ordinary envelope. */
 export const getFileMetadata = (fileId: string) =>
@@ -172,9 +171,7 @@ export const getWsdlWithValue = fileApi.createRequest({
   method: "GET",
   path: "/",
   urlParams: { wsdl: "" },
-  responses: [
-    response({ _tag: "ok", status: 200 }, soapResult(Schema.String), { codec: ResponseBody.text }),
-  ],
+  responses: [response({ _tag: "ok", status: 200 }, soapResult(Schema.String), { codec: ResponseBody.text })],
 });
 
 /**
@@ -215,16 +212,14 @@ export const uploadMultipart = fileApi.createRequest({
 /**
  * `POST /raw` — the ERP's byte upload, with the file name in the query string.
  *
- * `Schema.Uint8ArrayFromSelf` is the identity schema `RequestBody.uint8Array` pairs
- * with: the caller's own bytes reach the transport untouched, and the codec's argument
+ * A codec-only body accepts the caller's bytes without an identity schema. The codec's argument
  * sets the media type. The response is a single line of text, because the ERP reads it
  * with one line-oriented read and always has.
  */
 export const uploadRawBytes = fileApi.createRequest({
   method: "POST",
   path: "/raw",
-  body: Schema.Uint8ArrayFromSelf,
-  bodyCodec: RequestBody.uint8Array("application/octet-stream"),
+  body: RequestBody.uint8Array("application/octet-stream"),
   responses: [
     // `Schema.Trim` transforms; `Schema.trimmed()` only *checks*, and the ERP's
     // single line ends with a newline.
@@ -244,8 +239,7 @@ export const uploadRawBytes = fileApi.createRequest({
 export const uploadRawUnmodelled = fileApi.createRequest({
   method: "POST",
   path: "/raw",
-  body: Schema.Uint8ArrayFromSelf,
-  bodyCodec: RequestBody.uint8Array("application/octet-stream"),
+  body: RequestBody.uint8Array("application/octet-stream"),
   responses: [response({ _tag: "ok", status: 200 }, Schema.String, { codec: ResponseBody.text })],
 });
 

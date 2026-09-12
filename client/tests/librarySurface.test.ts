@@ -68,7 +68,9 @@ describe.runIf(await servicesUp([4100, 4200, 4300, 4500]))("the rest of the libr
 
     it("can be discarded instead of read, which is the other half of owning it", async () => {
       const failure = await callFailure(
-        uploadRawUnmodelled().setBody(new Uint8Array([1, 2, 3])).setUnhandledResponseBody("retain"),
+        uploadRawUnmodelled()
+          .setBody(new Uint8Array([1, 2, 3]))
+          .setUnhandledResponseBody("retain"),
       );
       const unhandled = failure as UnhandledResponse;
 
@@ -101,16 +103,15 @@ describe.runIf(await servicesUp([4100, 4200, 4300, 4500]))("the rest of the libr
     expect(both.body.matches.length).toBe(onlySecond.body.matches.length);
   });
 
-  it("refuses a path parameter that would change the target path", async () => {
+  it("leaves empty path values to the application contract", async () => {
     const endpoint = apiServer.createRequest({
       method: "GET",
       path: "/api/projects/:id",
       responses: [response({ _tag: "ok", status: 200 }, Schema.Unknown)],
     });
 
-    // Validation happens while the plan is built, synchronously, before any Effect
-    // exists — so a bad path value cannot become a request at all.
-    expect(() => endpoint({ id: "" })).toThrow();
+    // Empty values are valid strings. Domain restrictions belong to the application.
+    expect(() => endpoint({ id: "" })).not.toThrow();
   });
 
   it("does not offer an Effect for a body-bearing plan whose body was never set", async () => {

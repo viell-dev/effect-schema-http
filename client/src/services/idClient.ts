@@ -1,5 +1,6 @@
+import { schemaHttp } from "../runtime.js";
 import { Schema } from "effect";
-import { createApi, extendApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
+import { extendApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
 import {
   DirectoryEntry,
   DiscoveryDocument,
@@ -42,7 +43,7 @@ export const ID_SERVER_URL =
  * one schema and rule tags must be unique. Endpoints that need a different shape at one
  * of those statuses declare an exact-status rule, which outranks the predicate.
  */
-export const idApi = createApi(ID_SERVER_URL, {
+export const idApi = schemaHttp.createApi(ID_SERVER_URL, {
   headers: {
     authorization: () => {
       const session = getSession();
@@ -50,7 +51,10 @@ export const idApi = createApi(ID_SERVER_URL, {
     },
   },
   responses: [
-    response({ _tag: "OAuthError", status: (status: number) => status === 400 || status === 401 || status === 409 }, OAuthError),
+    response(
+      { _tag: "OAuthError", status: (status: number) => status === 400 || status === 401 || status === 409 },
+      OAuthError,
+    ),
   ] as const,
 });
 

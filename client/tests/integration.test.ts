@@ -178,10 +178,7 @@ describe("moving a value from one service to another", () => {
     beforeAll(async () => {
       // The gate reads from the Perl gateway, which has its own session and has never
       // heard of the OAuth one. Each suite signs in to every service it touches.
-      const gateway = await call(
-        reportLogin().setUrlParam("user", "gate-reader").setUrlParam("pass", "hunter2"),
-        "ok",
-      );
+      const gateway = await call(reportLogin().setUrlParam("user", "gate-reader").setUrlParam("pass", "hunter2"), "ok");
       setReportSession(expectTag(gateway.body, "session").session);
     });
 
@@ -195,24 +192,17 @@ describe("moving a value from one service to another", () => {
         // services again.
         expect(second).toBe(first);
 
-        const refreshed = yield* gate.refresh("Rückstellungen");
-        // `refresh` always executes, so this is a different value even though it is
+        const refreshed = yield* gate.run("Rückstellungen", { force: true });
+        // `force: true` always executes, so this is a different value even though it is
         // equal — which is the observable difference between reuse and re-execution.
         expect(refreshed).not.toBe(first);
         expect(refreshed.drafts).toHaveLength(1);
         expect(refreshed.drafts[0]?.status).toBe("IN_PROGRESS");
 
-        // Cancelling keeps the retained pair, so a correction back to a term already
-        // resolved costs nothing.
-        yield* gate.cancel;
-        const afterCancel = yield* gate.run("Rückstellungen");
-        expect(afterCancel.term).toBe("Rückstellungen");
-
-        // `reload` re-runs the retained *input*, not the current one.
-        const reloaded = yield* gate.reload;
-        expect(reloaded.term).toBe("Rückstellungen");
-
-        return afterCancel;
+        const retained = yield* gate.run("Rückstellungen");
+        expect(retained).toBe(refreshed);
+        yield* gate.dispose;
+        return retained;
       });
 
       const result = await run(program);
@@ -224,7 +214,7 @@ describe("moving a value from one service to another", () => {
         const gate = yield* makeReconciliationGate();
         yield* gate.run("Année");
 
-        // A typo and a correction, back to back. `applyTerm` cancels first, so the
+        // A typo and a correction, back to back. `run` interrupts previous work, so the
         // superseded flight stops on the wire; the retained success survives it.
         yield* applyTerm(gate, "Annéex");
         const corrected = yield* applyTerm(gate, "Année");
