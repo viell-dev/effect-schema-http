@@ -39,9 +39,10 @@ The blog itself is scaffolding. What is being modelled is an API that has been r
 see [Why the API is like this](#why-the-api-is-like-this) for the full list of deliberate
 misbehaviour and what each one cost the client.
 
-This is a local, no-remote git repository. Every commit is a real checkpoint (`git log` tells the
-story better than this document does), and the final third of this README is a candid writeup of
-what worked well and what didn't while building it.
+This evaluation lives on the `llm1-test1` branch of the shared library repository. Every
+commit is a real checkpoint (`git log` tells the story better than this document does), and
+the final third of this README is a candid writeup of what worked well and what didn't while
+building it.
 
 ## Architecture
 
@@ -676,9 +677,9 @@ integration tests, only in an actual cross-origin browser request.
 
 ## What the sibling project found that this one could not
 
-[`test-llm1-2`](../test-llm1-2) is the deliberate opposite of this project: five backend
-services in five languages, none of which has heard of Effect, and nothing shared between
-the ends at all. Two of its findings bear directly on the conclusions above.
+[`repo-llm1-test2`](../repo-llm1-test2) is the deliberate opposite of this project: five
+backend services in five languages, none of which has heard of Effect, and nothing shared
+between the ends at all. Two of its findings bear directly on the conclusions above.
 
 **`Schema.TaggedError` as a response schema is a property of this architecture, not of the
 library.** The section above calls reusing the exact class on both sides "the headline
