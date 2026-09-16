@@ -27,14 +27,14 @@ to push [`viell-effect-schema-http`](../repo-llm1) and
 schema-driven HTTP client is hardest to be good at: **an API you did not design, written
 by people who are not available, in a format that was reasonable at the time.**
 
-This is the sibling of [`test-llm1`](../test-llm1), and it is deliberately its opposite.
-That project put one package of Effect Schemas between a Node server and a browser
-client, so a value read from an endpoint was *already* the value another endpoint
-accepted and alignment was free. Here nothing is shared. The services are Rust, Python,
-Java, Perl and Ruby; none of them has heard of Effect, four of them predate it, and every
-one of them defines its own shape for facts the others also hold. Moving a value from one
-to another is real work, and where that work should live is the question this project
-exists to answer.
+This is the sibling of [`repo-llm1-test1`](../repo-llm1-test1), and it is deliberately
+its opposite. That project put one package of Effect Schemas between a Node server and
+a browser client, so a value read from an endpoint was *already* the value another
+endpoint accepted and alignment was free. Here nothing is shared. The services are
+Rust, Python, Java, Perl and Ruby; none of them has heard of Effect, four of them
+predate it, and every one of them defines its own shape for facts the others also
+hold. Moving a value from one to another is real work, and where that work should live
+is the question this project exists to answer.
 
 The second thing it tests is breadth. `test-llm1`'s conclusion was that the library's
 failure mode under a badly-behaved API is *more configuration, not workarounds*. That was
@@ -43,9 +43,9 @@ XML-RPC, SOAP 1.1 and 1.2, WebDAV, OData v2, JSONP, fixed-width mainframe record
 ISO-8859-1, a CSV written for a German copy of Excel, HMAC request signing, and a status
 code that was never registered — none of which the library has ever heard of either.
 
-This is a local, no-remote git repository. `git log` is the real record; the last third of
-this document is a candid writeup of what worked, what did not, and what had to change in
-the library.
+This evaluation lives on the `llm1-test2` branch of the shared library repository.
+`git log` is the real record; the last third of this document is a candid writeup of
+what worked, what did not, and what had to change in the library.
 
 ---
 
@@ -683,9 +683,9 @@ configured, or, in the four cases above, documented.
 
 ## What the sibling project found that this one could not
 
-[`test-llm1`](../test-llm1) shares one package of schemas between its server and its
-client, and that is not merely a different architecture — it makes two questions askable
-that cannot be asked here.
+[`repo-llm1-test1`](../repo-llm1-test1) shares one package of schemas between its
+server and its client, and that is not merely a different architecture — it makes two
+questions askable that cannot be asked here.
 
 **Schema evolution.** When the two ends share a definition, a wire shape cannot drift in
 *source*. It can still drift in *deployment*: during a rollout, and for as long as a
