@@ -12,7 +12,7 @@ This checkout is `viell-effect-schema-http` **0.1.0-beta.2**. The local annotate
 Use compatible peers: `effect` 3.22.2 and `@effect/platform` 0.97.2. This private beta is distributed as a local archive:
 
 ```sh
-pnpm pack --pack-destination ../test-llm1/vendor
+pnpm pack --pack-destination ../repo-llm1-test1/vendor
 ```
 
 The package is ESM-only. TypeScript consumers need Web API declarations for types such as `FormData` and `RequestCache`
