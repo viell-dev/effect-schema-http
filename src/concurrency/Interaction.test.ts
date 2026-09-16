@@ -213,4 +213,33 @@ describe("scoped interactions", () => {
     const rejected = await Effect.runPromise(Effect.either(interaction.run("a")));
     expect(Either.isLeft(rejected) && rejected.left._tag).toBe("InteractionClosed");
   });
+  it("gives each worker its own scope for acquired resources", async () => {
+    const finalized: Array<string> = [];
+    await run(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const interaction = yield* Interaction.make((input: string) =>
+          Effect.gen(function* () {
+            yield* Effect.acquireRelease(Effect.succeed(input), (value) =>
+              Effect.sync(() => {
+                finalized.push(value);
+              }),
+            );
+            if (input === "a") {
+              yield* Deferred.succeed(started, undefined);
+              return yield* Effect.never;
+            }
+            return input;
+          }),
+        );
+        const first = yield* Effect.fork(interaction.run("a"));
+        yield* Deferred.await(started);
+        expect(yield* interaction.run("b")).toBe("b");
+        yield* Fiber.await(first);
+        expect(new Set(finalized)).toEqual(new Set(["a", "b"]));
+        expect(yield* interaction.run("b")).toBe("b");
+        expect(finalized).toHaveLength(2);
+      }),
+    );
+  });
 });

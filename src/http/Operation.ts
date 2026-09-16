@@ -17,26 +17,39 @@ export const fromEffect = <I, A, E, R>(execute: Operation<I, A, E, R>["execute"]
   },
 });
 
-export interface Options<R = never> {
-  readonly policy?: Policy.Policy<R>;
+export interface Options<E = HttpClientError.HttpClientError, R = never, RP = never> {
+  readonly policy?: Policy.Policy<RP>;
   /** Native client transforms run inside each attempt, suitable for nonces and signatures. */
-  readonly transformClient?: (client: HttpClient.HttpClient) => HttpClient.HttpClient;
+  readonly transformClient?: (client: HttpClient.HttpClient) => HttpClient.HttpClient.With<E, R>;
 }
 
-export const make = <I, E, R, H extends boolean, Q extends boolean, A, E2, R2, R3 = never>(
+export const make = <
+  I,
+  E,
+  R,
+  H extends boolean,
+  Q extends boolean,
+  A,
+  E2,
+  R2,
+  E3 = HttpClientError.HttpClientError,
+  R3 = never,
+  RP = never,
+>(
   request: Request.Request<I, E, R, H, Q>,
   response: Response.Response<A, E2, R2>,
-  options?: Options<R3>,
+  options?: Options<E3, R3, RP>,
 ): Operation<
   I,
   A,
   | E
+  | E3
   | Request.InvalidRequest
   | HttpClientError.HttpClientError
   | Response.UnexpectedStatus
   | Response.DecodeError<E2 | HttpClientError.ResponseError>
   | Cause.TimeoutException,
-  R | R2 | R3 | HttpClient.HttpClient
+  R | R2 | R3 | RP | HttpClient.HttpClient
 > =>
   fromEffect((input) =>
     Effect.gen(function* () {
@@ -50,7 +63,8 @@ export const make = <I, E, R, H extends boolean, Q extends boolean, A, E2, R2, R
         let info: Option.Option<Response.Metadata> = Option.none();
         const attempt = Effect.scoped(
           Effect.gen(function* () {
-            const activeClient = options?.transformClient?.(client) ?? client;
+            const activeClient: HttpClient.HttpClient.With<E3 | HttpClientError.HttpClientError, R3> =
+              options?.transformClient?.(client) ?? client;
             // A fresh request identity isolates Platform's scoped abort-controller association.
             const fresh = HttpClientRequest.setHeaders(prepared, {});
             const received = yield* HttpClient.withScope(activeClient).execute(fresh);

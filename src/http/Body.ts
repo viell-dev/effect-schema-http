@@ -12,7 +12,8 @@ export interface Decoder<out A, out E = never, out R = never> extends Pipeable.P
   readonly mediaType?: string;
 }
 
-export interface Codec<A, E = never, R = never> extends Encoder<A, E, R>, Decoder<A, E, R> {}
+export interface Codec<A, EncodeError = never, DecodeError = never, EncodeContext = never, DecodeContext = never>
+  extends Encoder<A, EncodeError, EncodeContext>, Decoder<A, DecodeError, DecodeContext> {}
 
 export const decoder = <A, E, R>(decode: Decoder<A, E, R>["decode"], mediaType?: string): Decoder<A, E, R> => ({
   decode,
@@ -25,47 +26,45 @@ export const decoder = <A, E, R>(decode: Decoder<A, E, R>["decode"], mediaType?:
 
 export const encoder = <A, E, R>(encode: Encoder<A, E, R>["encode"]): Encoder<A, E, R> => ({ encode });
 
-export const make = <A, E, R>(options: Encoder<A, E, R> & Omit<Decoder<A, E, R>, "pipe">): Codec<A, E, R> => ({
+export const make = <A, EE, DE, ER, DR>(
+  options: Encoder<A, EE, ER> & Omit<Decoder<A, DE, DR>, "pipe">,
+): Codec<A, EE, DE, ER, DR> => ({
   ...decoder(options.decode, options.mediaType),
   encode: options.encode,
 });
 
-export const json: Codec<unknown, HttpBody.HttpBodyError | HttpClientError.ResponseError> = make<
-  unknown,
-  HttpBody.HttpBodyError | HttpClientError.ResponseError,
-  never
->({
+export const json: Codec<unknown, HttpBody.HttpBodyError, HttpClientError.ResponseError> = make({
   encode: HttpBody.json,
   decode: (response) => response.json,
   mediaType: "application/json",
 });
 
-export const text: Codec<string, HttpClientError.ResponseError> = make({
+export const text: Codec<string, never, HttpClientError.ResponseError> = make({
   encode: (value) => Effect.sync(() => HttpBody.text(value)),
   decode: (response) => response.text,
   mediaType: "text/plain",
 });
 
-export const bytes: Codec<Uint8Array, HttpClientError.ResponseError> = make({
+export const bytes: Codec<Uint8Array, never, HttpClientError.ResponseError> = make({
   encode: (value) => Effect.sync(() => HttpBody.uint8Array(value)),
   decode: (response) => Effect.map(response.arrayBuffer, (buffer) => new Uint8Array(buffer)),
   mediaType: "application/octet-stream",
 });
 
-export const formData: Codec<FormData, HttpClientError.ResponseError> = make({
+export const formData: Codec<FormData, never, HttpClientError.ResponseError> = make({
   encode: (value) => Effect.sync(() => HttpBody.formData(value)),
   decode: (response) => response.formData,
   mediaType: "multipart/form-data",
 });
 
-export const urlEncoded: Codec<UrlParams.UrlParams, HttpClientError.ResponseError> = make({
+export const urlEncoded: Codec<UrlParams.UrlParams, never, HttpClientError.ResponseError> = make({
   encode: (value) => Effect.sync(() => HttpBody.urlParams(value)),
   decode: (response) => response.urlParamsBody,
   mediaType: "application/x-www-form-urlencoded",
 });
 
 /** Drain without buffering, including erroneous payloads on bodyless responses. */
-export const empty: Codec<void, HttpClientError.ResponseError> = make({
+export const empty: Codec<void, never, HttpClientError.ResponseError> = make({
   encode: () => Effect.succeed(HttpBody.empty),
   decode: (response) => Stream.runDrain(response.stream),
 });
@@ -94,7 +93,13 @@ export const encodeSchema =
 
 export const jsonSchema = <A, I, R>(
   contract: Schema.Schema<A, I, R>,
-): Codec<A, HttpBody.HttpBodyError | HttpClientError.ResponseError | ParseResult.ParseError, R> =>
+): Codec<
+  A,
+  HttpBody.HttpBodyError | ParseResult.ParseError,
+  HttpClientError.ResponseError | ParseResult.ParseError,
+  R,
+  R
+> =>
   make({
     encode: encodeSchema(contract)(json).encode,
     decode: json.pipe(schema(contract)).decode,

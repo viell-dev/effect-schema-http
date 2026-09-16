@@ -168,4 +168,28 @@ describe("operation execution", () => {
     const rejected = await Effect.runPromise(Effect.either(Request.materialize(invalid, { body: "not allowed" })));
     expect(Either.isLeft(rejected) && rejected.left._tag).toBe("InvalidRequest");
   });
+  it("preserves custom client errors and dependencies while scoping transformed requests", async () => {
+    class Nonce extends Context.Tag("Nonce")<Nonce, string>() {}
+    const signals: Array<AbortSignal> = [];
+    const client = HttpClient.make((req, _url, signal) =>
+      Effect.sync(() => {
+        signals.push(signal);
+        expect(req.headers["x-nonce"]).toBe("nonce");
+        return reply(req, "ok");
+      }),
+    );
+    const operation = Operation.make(Request.get("https://example.test"), textResponse, {
+      transformClient: HttpClient.mapRequestEffect((request) =>
+        Effect.map(Nonce, (nonce) => HttpClientRequest.setHeader(request, "x-nonce", nonce)),
+      ),
+    });
+    const program = operation.execute(undefined);
+    expectTypeOf<Effect.Effect.Context<typeof program>>().toEqualTypeOf<Nonce | HttpClient.HttpClient>();
+    expect(
+      await Effect.runPromise(
+        program.pipe(Effect.provideService(Nonce, "nonce"), Effect.provideService(HttpClient.HttpClient, client)),
+      ),
+    ).toBe("ok");
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
 });

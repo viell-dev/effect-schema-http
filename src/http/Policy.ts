@@ -14,16 +14,19 @@ export interface Policy<out R = never> {
   readonly retryAfter: boolean;
 }
 
+const transientStatus = (status: number): boolean => [408, 429, 500, 502, 503, 504].includes(status);
+
+/** Matches the installed Platform retryTransient classification. */
 export const transient = (reason: Reason): boolean => {
   const status = reason.metadata?.status;
-  if (status !== undefined && (status === 408 || status === 429 || (status >= 500 && status < 600))) return true;
+  if (status !== undefined && transientStatus(status)) return true;
   if (reason._tag === "Response") return false;
-  return Cause.failures(reason.cause).pipe((errors) =>
-    Array.from(errors).some(
-      (error) =>
-        (HttpClientError.isHttpClientError(error) && error._tag === "RequestError" && error.reason === "Transport") ||
-        (typeof error === "object" && error !== null && "_tag" in error && error._tag === "TimeoutException"),
-    ),
+  return Array.from(Cause.failures(reason.cause)).some(
+    (error) =>
+      Cause.isTimeoutException(error) ||
+      (HttpClientError.isHttpClientError(error) &&
+        ((error._tag === "RequestError" && error.reason === "Transport") ||
+          (error._tag === "ResponseError" && transientStatus(error.response.status)))),
   );
 };
 
@@ -48,7 +51,10 @@ export const none: Policy = make(Schedule.recurs(0));
 export const retryAfterTime = (metadata: Response.Metadata, now: number): number => {
   const value = metadata.headers["retry-after"];
   if (value === undefined) return now;
-  if (/^\d+(?:\.\d+)?$/.test(value)) return now + Number(value) * 1_000;
+  if (/^\d+(?:\.\d+)?$/.test(value)) {
+    const deadline = now + Number(value) * 1_000;
+    return Number.isFinite(deadline) ? deadline : now;
+  }
   const date = Date.parse(value);
   return Number.isFinite(date) ? Math.max(now, date) : now;
 };

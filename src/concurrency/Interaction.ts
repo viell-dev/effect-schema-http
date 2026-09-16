@@ -1,4 +1,16 @@
-import { Data, Deferred, Effect, Equal, Equivalence, ExecutionStrategy, Exit, Fiber, Option, Scope } from "effect";
+import {
+  Context,
+  Data,
+  Deferred,
+  Effect,
+  Equal,
+  Equivalence,
+  ExecutionStrategy,
+  Exit,
+  Fiber,
+  Option,
+  Scope,
+} from "effect";
 
 export class Closed extends Data.TaggedError("InteractionClosed") {}
 
@@ -76,7 +88,15 @@ export const make = <I, A, E, R>(
               const worker = Effect.uninterruptibleMask((resume) =>
                 Effect.gen(function* () {
                   const exit = yield* Effect.exit(
-                    resume(Effect.suspend(() => execute(input)).pipe(Effect.provide(context))),
+                    resume(
+                      Effect.scoped(
+                        Effect.scopeWith((scope) =>
+                          Effect.suspend(() => execute(input)).pipe(
+                            Effect.provide(Context.add(context, Scope.Scope, scope)),
+                          ),
+                        ),
+                      ),
+                    ),
                   );
                   // Predicate defects are captured too. Publishing and releasing admission must always happen.
                   const publication = yield* Effect.exit(
