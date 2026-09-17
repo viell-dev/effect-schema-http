@@ -140,7 +140,7 @@ describe.runIf(up)("API server — the endpoints that predate the rest of it", (
         }),
         "notModified",
       );
-      // `ResponseBody.none` drains and yields undefined; the JSON codec would have
+      // `Body.empty` drains and yields undefined; the JSON codec would have
       // rejected the empty payload, which is correct of it.
       expect(second.value).toBeUndefined();
     });
@@ -316,7 +316,7 @@ describe.runIf(up)("API server — the endpoints that predate the rest of it", (
       "noContent",
     );
     // The handler still writes a debug body after its 204. It has never arrived, because
-    // the container will not send one, which is why this is `ResponseBody.none`.
+    // the container will not send one, which is why this is `Body.empty`.
     expect(tunnelled.value).toBeUndefined();
   });
 });

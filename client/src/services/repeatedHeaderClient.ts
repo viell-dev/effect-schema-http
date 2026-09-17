@@ -4,25 +4,10 @@ import { request as sendNodeRequest } from "node:http";
 import { Transport } from "viell-effect-schema-http";
 
 /**
- * A `node:http` provider that preserves repeated header field lines in both directions.
- *
- * The library retains repeated header entries on a plan, but says plainly that whether
- * they reach the wire is a property of the transport: "Effect Platform normalizes
- * headers. Plans retain repeated header entries separately, but the default Fetch
- * provider may combine them on the wire. APIs that require repeated physical header
- * field lines need a provider that reads `getHeaderEntries(request)` and preserves that
- * representation."
- *
- * The ID server's `/token/scoped` endpoint is such an API: it reads `get_all("x-scope")`
- * and rejects a comma-joined value, because a comma is a legal character in a scope name
- * and its 2019 parser never split on one. So this file is the documented escape hatch,
- * written out: about forty lines, no library support needed beyond the two exported
- * functions that exist for exactly this.
- *
- * It is Node-only. In a browser there is no equivalent — `Headers` combines repeated
- * entries before `fetch` ever sees them — which is a genuine, unavoidable limitation of
- * the platform rather than of this library, and worth knowing before designing a header
- * that way.
+ * Node-only provider for the Rust service's repeated X-Scope request lines.
+ * Operation supplies Transport.HeaderLines; Transport.headerLines reconciles those
+ * declarations with the final native request. Fetch combines them and Rust rejects it.
+ * Responses use Platform's normalized headers and cookie representation.
  */
 
 const entriesFromRawHeaders = (rawHeaders: ReadonlyArray<string>): Array<readonly [string, string]> => {
@@ -50,7 +35,7 @@ const bodyBytes = (body: { readonly _tag: string }): Uint8Array | undefined => {
   }
 };
 
-/** The client itself, suitable for `.mapClient(() => repeatedHeaderClient)` or a layer. */
+/** The client itself, suitable for Operation.make options.transformClient or a layer. */
 export const repeatedHeaderClient: HttpClient.HttpClient = HttpClient.makeWith<
   never,
   never,

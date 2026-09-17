@@ -74,7 +74,7 @@ export const renderNotifyView = (): HTMLElement => {
     },
     {
       label: "Post one (signed)",
-      note: "HMAC over the encoded body, from mapClient, because a computed header cannot see it.",
+      note: "HMAC over the encoded body, from transformClient, because a computed header cannot see it.",
       run: async () => {
         const result = await run(
           createNotification({ transformClient: signed }).execute({
@@ -110,7 +110,7 @@ export const renderNotifyView = (): HTMLElement => {
     },
     {
       label: "Hit the throttle (retry.while)",
-      note: "`while` adds a retryable case; it cannot veto the built-in ones. This is what it is for.",
+      note: "The classifier explicitly composes Policy.transient with the service’s 420 status.",
       run: async () => {
         const client = `web-${Date.now()}`;
         const result = await run(
@@ -128,7 +128,7 @@ export const renderNotifyView = (): HTMLElement => {
     },
     {
       label: "Long poll, then time it out",
-      note: "setTimeout bounds one attempt; a timeout is an Effect failure, not a mapped response.",
+      note: "Effect.timeout bounds the whole operation; a timeout is an Effect failure, not a mapped response.",
       run: async () => {
         const quick = await run(
           pollNotifications({ request: (request) => request.pipe(Request.setQuery("wait", "1")) }).execute(undefined),
@@ -145,7 +145,7 @@ export const renderNotifyView = (): HTMLElement => {
           const cause = error instanceof Error ? (error as { readonly cause?: unknown }).cause : undefined;
           lines.push(
             Cause.isTimeoutException(cause) || String(error).includes("Timeout")
-              ? "the five-second poll was cut off by setTimeout, as a TimeoutException"
+              ? "the five-second poll was cut off by Effect.timeout, as a TimeoutException"
               : `the five-second poll failed with ${String(error)}`,
           );
         }

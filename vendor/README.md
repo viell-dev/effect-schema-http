@@ -1,13 +1,18 @@
-# Vendored tarball
+# Vendored llm2 library
 
-`viell-effect-schema-http-0.1.0-beta.1.tgz` was produced by `pnpm pack` against commit
-`00cd6694e2d31e613974aec4216139d5951a3294` of `repo-llm1` (`../../repo-llm1` relative to this directory), following the
-"Trying the beta" instructions in that project's README. It is installed by the `client`
-package as a `file:` dependency pointing at this tarball, matching the library's
-documented beta-distribution flow (no registry package exists yet).
+`viell-effect-schema-http-0.1.0-alpha.1.tgz` was produced with `pnpm pack` from
+`repo-llm2` at commit `df59220` (branch `llm2`). The package includes its built JavaScript,
+declarations, source, examples, and documentation. `client/package.json` installs this
+archive as a `file:` dependency; no linked checkout or llm1 package participates.
 
-That commit includes the documentation changes this project's evaluation produced: a
-request body codec owning the content type, discriminating a response body from a service
-that transmits no discriminant, `mapClient` as the seam for values derived from the
-encoded request, repeated header field lines being provider-dependent in both directions,
-and redirect/cookie behaviour belonging to the provider.
+To regenerate it from the same library revision:
+
+```sh
+cd ../../repo-llm2
+pnpm pack --out ../repo-llm2-test1/vendor/viell-effect-schema-http-0.1.0-alpha.1.tgz
+cd ../repo-llm2-test1
+pnpm install
+```
+
+Packing rather than linking lets the consuming workspace resolve a single copy of
+Effect and Platform for the library and application.

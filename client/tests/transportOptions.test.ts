@@ -75,7 +75,7 @@ describe.runIf(await servicesUp([4500]))("transport options are not request opti
   });
 
   it("can install a whole different provider for one plan", async () => {
-    // `mapClient` covers the cases that *are* client transformations, which is most of
+    // `transformClient` covers the cases that *are* client transformations, which is most of
     // them: tracing, redaction, a retry policy of the client's own, or swapping the
     // transport entirely for one call.
     let seen = 0;

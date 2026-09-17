@@ -243,11 +243,11 @@ export const SoapFaultDocument = Schema.transform(
  * The archive's metadata documents are ISO-8859-1 and say so in the XML declaration,
  * but the HTTP `Content-Type` is a bare `text/xml` with no charset. Under RFC 2616 that
  * meant Latin-1 and everything worked; RFC 7231 removed the default, and every modern
- * client — including `Response.text()`, which this library's `ResponseBody.text` uses —
+ * client — including `Response.text()`, which this library's `Body.text` uses —
  * now assumes UTF-8 and turns `Renée` into `Ren�e`.
  *
  * The fix is to take the bytes instead and let the document say what it is. That means
- * `ResponseBody.uint8Array` and a schema that starts from `Schema.Uint8ArrayFromSelf`,
+ * `Body.bytes` and a schema that starts from `Schema.Uint8ArrayFromSelf`,
  * which is the pairing the library documents for exactly this: the codec hands over
  * bytes and the parsing stays in the schema.
  */
@@ -358,7 +358,7 @@ export type UploadReceipt = typeof UploadReceipt.Type;
 /**
  * A bundle response: metadata and bytes in one `multipart/form-data` payload.
  *
- * `ResponseBody.formData` hands over a real `FormData`, and reading a part's bytes out
+ * `Body.formData` hands over a real `FormData`, and reading a part's bytes out
  * of it is asynchronous — `Blob.arrayBuffer()` returns a promise. An Effect Schema
  * transform can be effectful, so the await belongs inside the schema rather than in a
  * second step after decoding, and the endpoint still yields one finished value.

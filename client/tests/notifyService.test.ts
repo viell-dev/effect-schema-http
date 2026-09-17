@@ -88,7 +88,7 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
   });
 
   describe("request signing, which a computed header cannot do", () => {
-    it("signs the encoded body from mapClient, after encoding and per attempt", async () => {
+    it("signs the encoded body from transformClient, after encoding and per attempt", async () => {
       const created = await call(
         createNotification({ transformClient: signed }).execute({
           body: { kind: "note", text: "signed from the client" },
@@ -112,7 +112,7 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
     });
 
     it("does not care where in the pipeline the transform was applied", async () => {
-      // Signing before the body is set still works, because `mapClient` wraps the
+      // Signing before the body is set still works, because `transformClient` wraps the
       // *client*: it runs at execution, against the finished request, not at the point
       // in the pipeline where it was written. A computed header could not do this
       // either — it resolves while the request is being materialized, before the body
@@ -228,7 +228,7 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
       expect(ok.value.events).toEqual([]);
     });
 
-    it("is bounded by setTimeout, which fails the attempt rather than hanging", async () => {
+    it("is bounded by Effect.timeout rather than hanging", async () => {
       const failure = await callFailure(
         pollNotifications({ request: (request) => request.pipe(Request.setQuery("wait", "5")) })
           .execute(undefined)

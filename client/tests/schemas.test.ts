@@ -229,7 +229,7 @@ describe("the SOAP service's documents", () => {
 
     // The bytes as text, decoded correctly.
     expect(Schema.decodeSync(XmlFromBytes)(latin1)).toContain("Renée");
-    // What `ResponseBody.text` would have produced: 0xE9 is not valid UTF-8.
+    // What `Body.text` would have produced: 0xE9 is not valid UTF-8.
     expect(new TextDecoder().decode(latin1)).toContain("Ren�e");
   });
 

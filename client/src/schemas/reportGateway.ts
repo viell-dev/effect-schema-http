@@ -314,7 +314,7 @@ const RECORD_LENGTH = 63;
 /**
  * The whole extract: fixed-length records, ISO-8859-1, and no delimiters of any kind.
  *
- * Three things make this a `ResponseBody.uint8Array` case rather than a text one. The
+ * Three things make this a `Body.bytes` case rather than a text one. The
  * bytes are Latin-1 and the `Content-Type` is a bare `text/plain` with no charset, so
  * reading it as text replaces every umlaut. The records have no terminator, so the only
  * way to find their boundaries is to count bytes. And the trailer carries a control

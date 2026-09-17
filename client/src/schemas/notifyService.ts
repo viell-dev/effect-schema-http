@@ -6,7 +6,7 @@ import { EpochMillis, HttpDate, taggedBody } from "./common.js";
  *
  * Three of these exist only because the payload is wrapped in something that is not
  * JSON: an anti-hijacking guard, a JavaScript function call, and an HTML content type
- * over a JSON body. All three are read with `ResponseBody.text` and a schema, which is
+ * over a JSON body. All three are read with `Body.text` and a schema, which is
  * the pairing the library documents for "another textual protocol".
  */
 

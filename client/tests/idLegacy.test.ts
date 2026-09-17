@@ -172,7 +172,7 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
 
       // Plans are cold and re-executable, so "loop over the plan" is ordinary code
       // rather than a second call site. The trade is explicit: this gives up
-      // `Retry-After` handling and the jittered schedule to gain a per-attempt value.
+      // `Retry-After` handling and the selected schedule to gain a per-attempt value.
       const attempt = (nonce: number) =>
         Effect.promise(() =>
           callAny(

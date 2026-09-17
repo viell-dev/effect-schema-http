@@ -35,7 +35,7 @@ export type OrderId = typeof OrderId.Type;
 /**
  * A JSON parser that promotes long integers to strings before `JSON.parse` sees them.
  *
- * This is the reason `ResponseBody.text` exists. The library's default JSON codec calls
+ * This is the reason `Body.text` exists. The library's default JSON codec calls
  * the platform parser, which is the very thing losing the precision, so the fix cannot
  * live in a schema applied *after* parsing — by then the digits are gone. Reading the
  * payload as text and installing a different JSON dialect underneath the real schema is

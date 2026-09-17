@@ -46,7 +46,7 @@ export type Scope = typeof Scope.Type;
 /**
  * The request body for the form-encoded grant.
  *
- * Nothing here was written *for* `RequestBody.urlParams`: this is an ordinary struct of
+ * Nothing here was written *for* `HttpBody.urlParams`: this is an ordinary struct of
  * branded strings, and its **encoded** form — a flat record of strings — already
  * satisfies the codec's "record of coercible values" input. The codec needs no
  * transform because the schema's encoded side is already the shape it wants.

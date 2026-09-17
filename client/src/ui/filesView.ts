@@ -135,7 +135,7 @@ export const renderFilesView = (): HTMLElement => {
     },
     {
       label: "Upload multipart (the 2019 endpoint)",
-      note: "A real FormData through RequestBody.formData, answered with JSON, 201 and a Location.",
+      note: "A real FormData through Body.formData, answered with JSON, 201 and a Location.",
       run: async () => {
         const form = new FormData();
         form.append("label", fileName.input.value);

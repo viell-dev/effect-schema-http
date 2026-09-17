@@ -63,7 +63,7 @@ export const signNotifyRequest = (
 /**
  * Sign every request this plan sends.
  *
- * Unlike a computed header, this resolves **per attempt**: `mapClient` wraps the client,
+ * Unlike a computed header, this resolves **per attempt**: `transformClient` wraps the client,
  * and the client is called again on every retry. A signature has a five-minute window,
  * so a retry that waited longer than that would fail with a header computed once — which
  * makes this the one place in the repository where per-attempt resolution is not merely

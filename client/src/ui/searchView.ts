@@ -13,7 +13,7 @@ import { actionPanel, describeFailure, field, type Action } from "./panel.js";
  * The reconciliation screen: a filter-as-you-type box over two services at once, and the
  * five-service saga underneath it.
  *
- * The filter box is the library's own motivating example for `makeRequestGate`, built
+ * The filter box is the library's own motivating example for `Interaction.make`, built
  * against a client that has to ask two backends and translate one into the other before
  * it can render a row.
  */
