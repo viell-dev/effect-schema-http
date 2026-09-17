@@ -1,8 +1,8 @@
 import { DateTime, Schema } from "effect";
-import { toEffect } from "viell-effect-schema-http";
+import { Request } from "viell-effect-schema-http";
 import { h } from "../dom.js";
-import { FixedWidthExtract } from "../schemas/reportGateway.js";
 import { run } from "../runtime.js";
+import { FixedWidthExtract } from "../schemas/reportGateway.js";
 import {
   exportCsv,
   fetchExtract,
@@ -32,22 +32,25 @@ export const renderReportsView = (): HTMLElement => {
       note: "A GET with the password in the query string. Two crontabs still call it this way.",
       run: async () => {
         const result = await run(
-          reportLogin().setUrlParam("user", user.input.value).setUrlParam("pass", pass.input.value).pipe(toEffect),
+          reportLogin({
+            request: (request) =>
+              request.pipe(Request.setQuery("user", user.input.value), Request.setQuery("pass", pass.input.value)),
+          }).execute(undefined),
         );
         if (result._tag !== "ok") return show(result);
-        if (result.body._tag === "GatewayError") return `${result.body.code}: ${result.body.message}`;
-        setReportSession(result.body.session);
-        return `session ${result.body.session}\n\nThe password is now in the access log, the proxy log, and the referrer of every link on the page that follows.`;
+        if (result.value._tag === "GatewayError") return `${result.value.code}: ${result.value.message}`;
+        setReportSession(result.value.session);
+        return `session ${result.value.session}\n\nThe password is now in the access log, the proxy log, and the referrer of every link on the page that follows.`;
       },
     },
     {
       label: "XML-RPC: report.list",
       note: "An array of structs with <i4>, <double>, <boolean> and a 1998 dateTime with no timezone.",
       run: async () => {
-        const result = await run(rpcListTasks(requireSession()).pipe(toEffect));
+        const result = await run(rpcListTasks(requireSession()));
         if (result._tag !== "ok") return show(result);
-        if (result.body._tag === "RpcFault") return `fault ${result.body.faultCode}: ${result.body.faultString}`;
-        return result.body.value
+        if (result.value._tag === "RpcFault") return `fault ${result.value.faultCode}: ${result.value.faultString}`;
+        return result.value.value
           .map(
             (task) =>
               `${task.id}  ${task.status.padEnd(12)} ${(task.amount / 100).toFixed(2).padStart(10)}  ` +
@@ -60,19 +63,19 @@ export const renderReportsView = (): HTMLElement => {
       label: "XML-RPC: report.count",
       note: "A bare <i4> is a complete response; there is no envelope to look inside.",
       run: async () => {
-        const result = await run(rpcCountTasks(requireSession()).pipe(toEffect));
+        const result = await run(rpcCountTasks(requireSession()));
         if (result._tag !== "ok") return show(result);
-        return result.body._tag === "ok" ? `${result.body.value} records` : show(result.body);
+        return result.value._tag === "ok" ? `${result.value.value} records` : show(result.value);
       },
     },
     {
       label: "XML-RPC: an unknown method",
       note: "A fault, carried inside a perfectly successful HTTP response. That is the protocol.",
       run: async () => {
-        const result = await run(rpcUnknownMethod(requireSession()).pipe(toEffect));
+        const result = await run(rpcUnknownMethod(requireSession()));
         if (result._tag !== "ok") return show(result);
-        return result.body._tag === "RpcFault"
-          ? `HTTP ${result.status}, fault ${result.body.faultCode}: ${result.body.faultString}`
+        return result.value._tag === "RpcFault"
+          ? `HTTP ${result.metadata.status}, fault ${result.value.faultCode}: ${result.value.faultString}`
           : "unexpectedly succeeded";
       },
     },
@@ -80,12 +83,12 @@ export const renderReportsView = (): HTMLElement => {
       label: "XML-RPC: report.fetch (base64)",
       note: "The same fixed-width extract, wrapped in base64 inside the XML because XML-RPC has no other way.",
       run: async () => {
-        const result = await run(rpcFetchExtract(requireSession(), "TASKS").pipe(toEffect));
+        const result = await run(rpcFetchExtract(requireSession(), "TASKS"));
         if (result._tag !== "ok") return show(result);
-        if (result.body._tag === "RpcFault") return `fault ${result.body.faultCode}`;
-        const extract = Schema.decodeSync(FixedWidthExtract)(result.body.value.data);
+        if (result.value._tag === "RpcFault") return `fault ${result.value.faultCode}`;
+        const extract = Schema.decodeSync(FixedWidthExtract)(result.value.value.data);
         return [
-          `${result.body.value.data.byteLength} bytes, ${result.body.value.recordLength}-byte records`,
+          `${result.value.value.data.byteLength} bytes, ${result.value.value.recordLength}-byte records`,
           `${extract.records.length} records, control total ${(extract.controlTotal / 100).toFixed(2)}`,
         ].join("\n");
       },
@@ -94,18 +97,18 @@ export const renderReportsView = (): HTMLElement => {
       label: "Fetch the fixed-width extract",
       note: "Latin-1, no delimiters, and a trailer whose control total the schema checks.",
       run: async () => {
-        const result = await run(fetchExtract().pipe(toEffect));
-        if (result._tag === "GatewayError") return `${result.body.code}: ${result.body.message}`;
+        const result = await run(fetchExtract().execute(undefined));
+        if (result._tag === "GatewayError") return `${result.value.code}: ${result.value.message}`;
         return [
-          `record length ${result.headers["x-record-length"]}, copybook ${result.headers["x-copybook"]}`,
+          `record length ${result.metadata.headers["x-record-length"]}, copybook ${result.metadata.headers["x-copybook"]}`,
           "",
-          ...result.body.records.map(
+          ...result.value.records.map(
             (record) =>
               `${record.id}  ${DateTime.formatIso(record.date).slice(0, 10)}  ${record.status.padEnd(12)}` +
               `${(record.amount / 100).toFixed(2).padStart(12)}  ${record.description}`,
           ),
           "",
-          `control total ${(result.body.controlTotal / 100).toFixed(2)} — checked, not trusted`,
+          `control total ${(result.value.controlTotal / 100).toFixed(2)} — checked, not trusted`,
         ].join("\n");
       },
     },
@@ -113,9 +116,13 @@ export const renderReportsView = (): HTMLElement => {
       label: "Fetch it with a bad session",
       note: "A 200 with X-Error-Code. The load balancer ejected any node that answered otherwise.",
       run: async () => {
-        const result = await run(fetchExtract().setUrlParam("session", "NOT-A-SESSION").pipe(toEffect));
+        const result = await run(
+          fetchExtract({ request: (request) => request.pipe(Request.setQuery("session", "NOT-A-SESSION")) }).execute(
+            undefined,
+          ),
+        );
         return result._tag === "GatewayError"
-          ? `HTTP ${result.status}, X-Error-Code selected the rule: ${result.body.code} ${result.body.message}`
+          ? `HTTP ${result.metadata.status}, X-Error-Code selected the rule: ${result.value.code} ${result.value.message}`
           : "unexpectedly succeeded";
       },
     },
@@ -123,11 +130,12 @@ export const renderReportsView = (): HTMLElement => {
       label: "Export the CSV",
       note: "A UTF-8 BOM, CRLF, semicolons and a decimal comma, served as octet-stream.",
       run: async () => {
-        const result = await run(exportCsv().pipe(toEffect));
-        if (result._tag === "GatewayError") return `${result.body.code}: ${result.body.message}`;
+        const result = await run(exportCsv().execute(undefined));
+        if (result._tag === "GatewayError") return `${result.value.code}: ${result.value.message}`;
         return [
-          ...result.body.map(
-            (row) => `${row.id}  ${row.status.padEnd(12)} ${(row.amount / 100).toFixed(2).padStart(10)}  ${row.description}`,
+          ...result.value.map(
+            (row) =>
+              `${row.id}  ${row.status.padEnd(12)} ${(row.amount / 100).toFixed(2).padStart(10)}  ${row.description}`,
           ),
           "",
           "The BOM was stripped before parsing; left in place it becomes part of the first column's name.",

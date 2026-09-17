@@ -1,6 +1,6 @@
-import { schemaHttp } from "../runtime.js";
-import { Schema } from "effect";
-import { extendApi, RequestBody, response, ResponseBody } from "viell-effect-schema-http";
+import { HttpBody, UrlParams } from "@effect/platform";
+import { Effect, Schema } from "effect";
+import { Body, Operation, Request, Response } from "viell-effect-schema-http";
 import {
   DirectoryEntry,
   DiscoveryDocument,
@@ -24,248 +24,314 @@ import {
   UserInfoResponse,
 } from "../schemas/idServer.js";
 import { getSession } from "../session.js";
-
+import { configure, executionOptions, type Options } from "./options.js";
 export const ID_SERVER_URL =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_ID_SERVER_URL) || "http://localhost:4100";
 
-/**
- * The ID server, as one API declaration.
- *
- * `authorization` is an API-wide **computed** header rather than something attached per
- * call site. It is read from live session state when each request is materialized, so
- * one API object survives signing in, refreshing and signing out — and, more usefully,
- * a new endpoint is authenticated by construction. Forgetting to think about
- * authentication cannot produce an anonymous request here; it can only produce an
- * authenticated one somewhere it was not needed, which is an explicit, visible opt-out
- * (`publicIdApi`) rather than a silent omission.
- *
- * The API-wide `OAuthError` rule uses a status *predicate* because three statuses share
- * one schema and rule tags must be unique. Endpoints that need a different shape at one
- * of those statuses declare an exact-status rule, which outranks the predicate.
- */
-export const idApi = schemaHttp.createApi(ID_SERVER_URL, {
-  headers: {
-    authorization: () => {
+export const idRequest = (method: string, path: string, options: Options) =>
+  Request.make(method, path).pipe(
+    Request.baseUrl(ID_SERVER_URL),
+    Request.setHeader("authorization", () => {
       const session = getSession();
       return session === undefined ? undefined : `Bearer ${session.accessToken}`;
-    },
-  },
-  responses: [
-    response(
-      { _tag: "OAuthError", status: (status: number) => status === 400 || status === 401 || status === 409 },
-      OAuthError,
+    }),
+    configure(options),
+  );
+
+export const idFailure = Response.when(
+  (metadata) => ((status: number) => status === 400 || status === 401 || status === 409)(metadata.status),
+  Body.json.pipe(Body.schema(OAuthError), (decoder) => Response.tag("OAuthError", decoder)),
+);
+
+/** POST /register. */
+export const register = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/register", {}).pipe(
+      Request.removeHeader("authorization"),
+      configure(options),
+      Request.body(Body.jsonSchema(RegisterInput)),
     ),
-  ] as const,
-});
+    Response.status(
+      201,
+      Body.json.pipe(Body.schema(RegisterResponse), (decoder) => Response.tag("created", decoder)),
+    ).pipe(Response.orElse(idFailure)),
+    executionOptions(options),
+  );
 
-/**
- * The three endpoints that must not send a credential.
- *
- * Removing the header here means it is never even computed for these calls: a removed
- * field's function is not invoked. That is the difference between a declared computed
- * value and a request transform — a transform runs after the declarative layer is
- * materialized, so nothing below it could take the header away again.
- */
-export const publicIdApi = idApi.pipe(extendApi({ removeHeaders: ["authorization"] }));
-
-// ---------------------------------------------------------------------------
-// The original 2019 endpoints
-// ---------------------------------------------------------------------------
-
-/** `POST /register` — 201 with the full user; `/token` deliberately answers with neither. */
-export const register = publicIdApi.createRequest({
-  method: "POST",
-  path: "/register",
-  body: RegisterInput,
-  responses: [response({ _tag: "created", status: 201 }, RegisterResponse)],
-});
-
-/** `POST /token` — the JSON grant a frontend developer asked for in 2019. */
-export const requestToken = publicIdApi.createRequest({
-  method: "POST",
-  path: "/token",
-  body: TokenInput,
-  responses: [
-    response({ _tag: "ok", status: 200 }, TokenResponse),
-    // The rate limiter answers `429` with an HTTP-date `Retry-After`, which the library
-    // honours without configuration; the body is still the OAuth error shape.
-    response({ _tag: "RateLimited", status: 429 }, OAuthError),
-  ],
-});
-
-/** `GET /userinfo` — the endpoint with its own private error shape. */
-export const getUserInfo = idApi.createRequest({
-  method: "GET",
-  path: "/userinfo",
-  responses: [
-    response({ _tag: "ok", status: 200 }, UserInfoResponse),
-    // Exact statuses outrank the API-wide `OAuthError` predicate, which is how one
-    // endpoint's divergent error format is expressed without disturbing the others.
-    response({ _tag: "SimpleUnauthorized", status: 401 }, SimpleError),
-    response({ _tag: "SimpleNotFound", status: 404 }, SimpleError),
-  ],
-});
-
-/** `POST /introspect` — what the other services call to validate a token. */
-export const introspectToken = publicIdApi.createRequest({
-  method: "POST",
-  path: "/introspect",
-  body: Schema.Struct({ token: Schema.String }),
-  responses: [
-    response(
-      { _tag: "ok", status: 200 },
-      Schema.Struct({
-        active: Schema.Boolean,
-        sub: Schema.optional(Schema.String),
-        username: Schema.optional(Schema.String),
-        exp: Schema.optional(Schema.Number),
-      }),
+/** POST /token. */
+export const requestToken = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/token", {}).pipe(
+      Request.removeHeader("authorization"),
+      configure(options),
+      Request.body(Body.jsonSchema(TokenInput)),
     ),
-  ],
-});
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(TokenResponse), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          429,
+          Body.json.pipe(Body.schema(OAuthError), (decoder) => Response.tag("RateLimited", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );
 
-// ---------------------------------------------------------------------------
-// Endpoints added after 2019
-// ---------------------------------------------------------------------------
+/** GET /userinfo. */
+export const getUserInfo = (options: Options = {}) =>
+  Operation.make(
+    idRequest("GET", "/userinfo", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(UserInfoResponse), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          401,
+          Body.json.pipe(Body.schema(SimpleError), (decoder) => Response.tag("SimpleUnauthorized", decoder)),
+        ),
+      ),
+      Response.orElse(
+        Response.status(
+          404,
+          Body.json.pipe(Body.schema(SimpleError), (decoder) => Response.tag("SimpleNotFound", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `POST /oauth/token` — the form-encoded grant RFC 6749 actually specifies.
- *
- * The only configuration this needs is `bodyCodec`. `FormGrantRequest` is an ordinary
- * struct; its encoded form is already the flat record of strings `RequestBody.urlParams`
- * wants, so nothing was written for the codec's benefit.
- */
-export const formLogin = publicIdApi.createRequest({
-  method: "POST",
-  path: "/oauth/token",
-  body: FormGrantRequest,
-  bodyCodec: RequestBody.urlParams,
-  responses: [
-    response({ _tag: "ok", status: 200 }, FormGrantResponse),
-    // A second tag over the same schema: rule tags must be unique, schemas need not be.
-    response({ _tag: "UnsupportedMediaType", status: 415 }, OAuthError),
-  ],
-});
+/** POST /introspect. */
+export const introspectToken = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/introspect", {}).pipe(
+      Request.removeHeader("authorization"),
+      configure(options),
+      Request.body(Body.jsonSchema(Schema.Struct({ token: Schema.String }))),
+    ),
+    Response.status(
+      200,
+      Body.json.pipe(
+        Body.schema(
+          Schema.Struct({
+            active: Schema.Boolean,
+            sub: Schema.optional(Schema.String),
+            username: Schema.optional(Schema.String),
+            exp: Schema.optional(Schema.Number),
+          }),
+        ),
+        (decoder) => Response.tag("ok", decoder),
+      ),
+    ).pipe(Response.orElse(idFailure)),
+    executionOptions(options),
+  );
 
-/**
- * `POST /revoke` — RFC 7009, which specifies `200` and no content.
- *
- * The response carries `Content-Type: application/json` and zero bytes, so the default
- * JSON codec would reject it: an empty payload is not JSON. `ResponseBody.none` drains
- * whatever arrived and `Schema.Void` is the schema that pairs with it.
- */
-export const revokeToken = publicIdApi.createRequest({
-  method: "POST",
-  path: "/revoke",
-  body: Schema.Struct({ token: Schema.String }),
-  responses: [response({ _tag: "revoked", status: 200 }, Schema.Void, { codec: ResponseBody.none })],
-});
+/** POST /oauth/token. */
+export const formLogin = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/oauth/token", {}).pipe(
+      Request.removeHeader("authorization"),
+      configure(options),
+      Request.body(
+        Body.encodeSchema(FormGrantRequest)(
+          Body.encoder((value: Schema.Schema.Encoded<typeof FormGrantRequest>) =>
+            Effect.succeed(HttpBody.urlParams(UrlParams.fromInput(value))),
+          ),
+        ),
+      ),
+    ),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(FormGrantResponse), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          415,
+          Body.json.pipe(Body.schema(OAuthError), (decoder) => Response.tag("UnsupportedMediaType", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `HEAD /userinfo/probe` — a token validity check whose answer is entirely in headers.
- *
- * Both outcomes are bodyless, so both rules use `ResponseBody.none`. The interesting
- * part is on the envelope: `TokenProbeHeaders` is applied to `envelope.headers` by the
- * caller, because header values are strings and a schema's encoded side already
- * describes strings.
- */
-export const probeToken = idApi.createRequest({
-  method: "HEAD",
-  path: "/userinfo/probe",
-  responses: [
-    response({ _tag: "valid", status: 200 }, Schema.Void, { codec: ResponseBody.none }),
-    response({ _tag: "invalid", status: 401 }, Schema.Void, { codec: ResponseBody.none }),
-  ],
-});
+/** POST /revoke. */
+export const revokeToken = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/revoke", {}).pipe(
+      Request.removeHeader("authorization"),
+      configure(options),
+      Request.body(Body.jsonSchema(Schema.Struct({ token: Schema.String }))),
+    ),
+    Response.status(
+      200,
+      Body.empty.pipe(Body.schema(Schema.Void), (decoder) => Response.tag("revoked", decoder)),
+    ).pipe(Response.orElse(idFailure)),
+    executionOptions(options),
+  );
 
-/**
- * `GET /jwks.json` — served through a reverse proxy that ignores request cache
- * directives. Pair it with `forceFresh` when a caller genuinely wants the origin.
- */
-export const getJwks = publicIdApi.createRequest({
-  method: "GET",
-  path: "/jwks.json",
-  responses: [response({ _tag: "ok", status: 200 }, JsonWebKeySet)],
-});
+/** HEAD /userinfo/probe. */
+export const probeToken = (options: Options = {}) =>
+  Operation.make(
+    idRequest("HEAD", "/userinfo/probe", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.empty.pipe(Body.schema(Schema.Void), (decoder) => Response.tag("valid", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          401,
+          Body.empty.pipe(Body.schema(Schema.Void), (decoder) => Response.tag("invalid", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `POST /jwks.json/purge` — the cache's purge API.
- *
- * Every cache in front of a real service has one, and it never looks like the cache's
- * own configuration: no body, no credential, and a `204`, because it was added during an
- * incident at two in the morning.
- */
-export const purgeJwksCache = publicIdApi.createRequest({
-  method: "POST",
-  path: "/jwks.json/purge",
-  responses: [response({ _tag: "purged", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
-});
+/** GET /jwks.json. */
+export const getJwks = (options: Options = {}) =>
+  Operation.make(
+    idRequest("GET", "/jwks.json", {}).pipe(Request.removeHeader("authorization"), configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(JsonWebKeySet), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(Response.orElse(idFailure)),
+    executionOptions(options),
+  );
 
-/**
- * `GET /directory/:username` — the LDAP gateway, authenticated by query parameter.
- *
- * `removeHeaders` is not cosmetic here: this endpoint is the one place in the client
- * where a credential travels in a URL, and the declaration says so. The parameter is
- * computed, so it is read from the live session and omitted entirely when signed out —
- * which produces an honest `401` rather than the string `"undefined"` in a query.
- */
-export const directoryEntry = idApi.createRequest({
-  method: "GET",
-  path: "/directory/:username",
-  removeHeaders: ["authorization"],
-  urlParams: {
-    access_token: () => getSession()?.accessToken,
-  },
-  responses: [
-    response({ _tag: "ok", status: 200 }, DirectoryEntry),
-    response({ _tag: "SimpleUnauthorized", status: 401 }, SimpleError),
-  ],
-});
+/** POST /jwks.json/purge. */
+export const purgeJwksCache = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/jwks.json/purge", {}).pipe(Request.removeHeader("authorization"), configure(options)),
+    Response.status(
+      204,
+      Body.empty.pipe(Body.schema(Schema.Void), (decoder) => Response.tag("purged", decoder)),
+    ).pipe(Response.orElse(idFailure)),
+    executionOptions(options),
+  );
 
-/**
- * `POST /session/echo` — replay-protected correlation against a service that is cold.
- *
- * The `409` rule is an exact status and therefore outranks the API-wide `OAuthError`
- * predicate that also covers `409`; the `503` is mapped as an ordinary response rather
- * than left to become a transport error, so a caller driving the loop itself can read
- * why it failed.
- */
-export const sessionEcho = idApi.createRequest({
-  method: "POST",
-  path: "/session/echo",
-  body: EchoRequest,
-  responses: [
-    response({ _tag: "ok", status: 200 }, EchoResponse),
-    response({ _tag: "NonceReplayError", status: 409 }, NonceReplayError),
-    response({ _tag: "WarmingUpError", status: 503 }, WarmingUpError),
-  ],
-});
+/** GET /directory/:username. */
+export const directoryEntry = (options: Options = {}) =>
+  Operation.make(
+    idRequest("GET", "/directory/:username", {}).pipe(
+      Request.removeHeader("authorization"),
+      Request.setQuery("access_token", () => getSession()?.accessToken),
+      configure(options),
+      Request.path(
+        Schema.Struct({ username: Schema.String }),
+        (value, encode) => `/directory/${encode(value.username)}`,
+      ),
+    ),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(DirectoryEntry), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          401,
+          Body.json.pipe(Body.schema(SimpleError), (decoder) => Response.tag("SimpleUnauthorized", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );
 
-/** `POST /session/echo/reset` — start the warm-up sequence over. */
-export const resetSessionEcho = idApi.createRequest({
-  method: "POST",
-  path: "/session/echo/reset",
-  responses: [response({ _tag: "reset", status: 204 }, Schema.Void, { codec: ResponseBody.none })],
-});
+/** POST /session/echo. */
+export const sessionEcho = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/session/echo", {}).pipe(configure(options), Request.body(Body.jsonSchema(EchoRequest))),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(EchoResponse), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          409,
+          Body.json.pipe(Body.schema(NonceReplayError), (decoder) => Response.tag("NonceReplayError", decoder)),
+        ),
+      ),
+      Response.orElse(
+        Response.status(
+          503,
+          Body.json.pipe(Body.schema(WarmingUpError), (decoder) => Response.tag("WarmingUpError", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `POST /token/scoped` — narrow a token, one scope per `X-Scope` header field line.
- *
- * Apply `withScopeLines` to supply them. Whether the repeated entries survive to the
- * wire depends on the provider: see `repeatedHeaderClient.ts` and the README.
- */
-export const scopedToken = idApi.createRequest({
-  method: "POST",
-  path: "/token/scoped",
-  responses: [
-    response({ _tag: "ok", status: 200 }, ScopedTokenResponse),
-    response({ _tag: "JoinedScopeError", status: 400 }, JoinedScopeError),
-  ],
-});
+/** POST /session/echo/reset. */
+export const resetSessionEcho = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/session/echo/reset", {}).pipe(configure(options)),
+    Response.status(
+      204,
+      Body.empty.pipe(Body.schema(Schema.Void), (decoder) => Response.tag("reset", decoder)),
+    ).pipe(Response.orElse(idFailure)),
+    executionOptions(options),
+  );
 
-/** `GET /.well-known/openid-configuration` — with one list that is not a list. */
-export const discovery = publicIdApi.createRequest({
-  method: "GET",
-  path: "/.well-known/openid-configuration",
-  responses: [response({ _tag: "ok", status: 200 }, DiscoveryDocument)],
-});
+/** POST /token/scoped. */
+export const scopedToken = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/token/scoped", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(ScopedTokenResponse), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          400,
+          Body.json.pipe(Body.schema(JoinedScopeError), (decoder) => Response.tag("JoinedScopeError", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );
+
+/** GET /.well-known/openid-configuration. */
+export const discovery = (options: Options = {}) =>
+  Operation.make(
+    idRequest("GET", "/.well-known/openid-configuration", {}).pipe(
+      Request.removeHeader("authorization"),
+      configure(options),
+    ),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(DiscoveryDocument), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(Response.orElse(idFailure)),
+    executionOptions(options),
+  );
+
+/** Deliberately wrong representation, used to exercise the server's 415 contract. */
+/** POST /oauth/token. */
+export const formLoginJson = (options: Options = {}) =>
+  Operation.make(
+    idRequest("POST", "/oauth/token", {}).pipe(
+      Request.removeHeader("authorization"),
+      configure(options),
+      Request.body(Body.jsonSchema(FormGrantRequest)),
+    ),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(FormGrantResponse), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          415,
+          Body.json.pipe(Body.schema(OAuthError), (decoder) => Response.tag("UnsupportedMediaType", decoder)),
+        ),
+      ),
+      Response.orElse(idFailure),
+    ),
+    executionOptions(options),
+  );

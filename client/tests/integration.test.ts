@@ -1,4 +1,5 @@
 import { DateTime, Effect, Either, Schema } from "effect";
+import { Request } from "viell-effect-schema-http";
 import { beforeAll, describe, expect, it } from "vitest";
 import { applyTerm, makeReconciliationGate } from "../src/integration/gates.js";
 import { runReconciliation } from "../src/integration/saga.js";
@@ -10,11 +11,11 @@ import {
   TaskToNotification,
   uploadLosesTimestamp,
 } from "../src/integration/translate.js";
-import { CreateTaskInput } from "../src/schemas/apiServer.js";
+import { run } from "../src/runtime.js";
 import { Cents } from "../src/schemas/apiLegacy.js";
+import { CreateTaskInput } from "../src/schemas/apiServer.js";
 import { createProject } from "../src/services/apiClient.js";
 import { register, requestToken } from "../src/services/idClient.js";
-import { run } from "../src/runtime.js";
 import { reportLogin } from "../src/services/reportClient.js";
 import { setReportSession, setSession } from "../src/session.js";
 import { call, expectTag, servicesUp } from "./support.js";
@@ -133,19 +134,25 @@ describe("moving a value from one service to another", () => {
 
     beforeAll(async () => {
       const owner = `${username}_owner`;
-      await call(register().setBody({ username: owner, email: `${owner}@test.invalid`, password }), "created");
-      const token = await call(requestToken().setBody({ grant_type: "password", username: owner, password }), "ok");
+      await call(
+        register().execute({ body: { username: owner, email: `${owner}@test.invalid`, password } }),
+        "created",
+      );
+      const token = await call(
+        requestToken().execute({ body: { grant_type: "password", username: owner, password } }),
+        "ok",
+      );
       setSession({
-        accessToken: token.body.access_token,
-        refreshToken: token.body.refresh_token,
+        accessToken: token.value.access_token,
+        refreshToken: token.value.refresh_token,
         tokenType: "Bearer",
         username: owner,
       });
       const project = await call(
-        createProject().setBody({ name: `Reconciliation ${username}`, description: "" }),
+        createProject().execute({ body: { name: `Reconciliation ${username}`, description: "" } }),
         "created",
       );
-      projectId = project.body.id;
+      projectId = project.value.id;
     });
 
     it("reads from Perl, writes to Java, stores in Python, and announces through Ruby", async () => {
@@ -178,8 +185,14 @@ describe("moving a value from one service to another", () => {
     beforeAll(async () => {
       // The gate reads from the Perl gateway, which has its own session and has never
       // heard of the OAuth one. Each suite signs in to every service it touches.
-      const gateway = await call(reportLogin().setUrlParam("user", "gate-reader").setUrlParam("pass", "hunter2"), "ok");
-      setReportSession(expectTag(gateway.body, "session").session);
+      const gateway = await call(
+        reportLogin({
+          request: (request) =>
+            request.pipe(Request.setQuery("user", "gate-reader"), Request.setQuery("pass", "hunter2")),
+        }).execute(undefined),
+        "ok",
+      );
+      setReportSession(expectTag(gateway.value, "session").session);
     });
 
     it("reuses a retained success and refreshes past it on demand", async () => {
@@ -201,11 +214,11 @@ describe("moving a value from one service to another", () => {
 
         const retained = yield* gate.run("Rückstellungen");
         expect(retained).toBe(refreshed);
-        yield* gate.dispose;
+        yield* gate.close;
         return retained;
       });
 
-      const result = await run(program);
+      const result = await run(Effect.scoped(program));
       expect(result.liveMatches).toBeGreaterThanOrEqual(0);
     }, 20_000);
 
@@ -223,7 +236,7 @@ describe("moving a value from one service to another", () => {
         return corrected;
       });
 
-      const result = await run(program);
+      const result = await run(Effect.scoped(program));
       expect(result.term).toBe("Année");
     }, 20_000);
   });

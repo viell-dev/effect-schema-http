@@ -1,9 +1,9 @@
-import { Effect } from "effect";
-import { toEffect } from "viell-effect-schema-http";
+import { Effect, Exit, Scope } from "effect";
+import { Request } from "viell-effect-schema-http";
 import { h, onUnmount } from "../dom.js";
 import { makeReconciliationGate, type ReconciliationView } from "../integration/gates.js";
 import { runReconciliation } from "../integration/saga.js";
-import { run, runFork } from "../runtime.js";
+import { defaultRuntime, run, runFork } from "../runtime.js";
 import { createProject } from "../services/apiClient.js";
 import { reportLogin } from "../services/reportClient.js";
 import { getReportSession, setReportSession } from "../session.js";
@@ -25,7 +25,8 @@ export const renderSearchView = (): HTMLElement => {
   const status = h("p", { class: "blurb" }, "Type to search. Every keystroke cancels the previous flight.");
   const results = h("pre", { class: "output" }, "Ready.");
 
-  const gate = Effect.runSync(makeReconciliationGate());
+  const scope = Effect.runSync(Scope.make());
+  const gate = defaultRuntime.runSync(makeReconciliationGate().pipe(Scope.extend(scope)));
   let sequence = 0;
 
   const render = (view: ReconciliationView) => {
@@ -65,11 +66,14 @@ export const renderSearchView = (): HTMLElement => {
       note: "The reporting gateway has its own session and has never heard of the identity server.",
       run: async () => {
         const result = await run(
-          reportLogin().setUrlParam("user", "reconciler").setUrlParam("pass", "hunter2").pipe(toEffect),
+          reportLogin({
+            request: (request) =>
+              request.pipe(Request.setQuery("user", "reconciler"), Request.setQuery("pass", "hunter2")),
+          }).execute(undefined),
         );
-        if (result._tag !== "ok" || result.body._tag !== "session") return "the gateway refused";
-        setReportSession(result.body.session);
-        return `gateway session ${result.body.session}`;
+        if (result._tag !== "ok" || result.value._tag !== "session") return "the gateway refused";
+        setReportSession(result.value.session);
+        return `gateway session ${result.value.session}`;
       },
     },
     {
@@ -79,14 +83,12 @@ export const renderSearchView = (): HTMLElement => {
         if (getReportSession() === undefined) return "sign in to the gateway first";
         const owner = `saga_${Date.now().toString(36)}`;
         const project = await run(
-          createProject()
-            .setBody({ name: `Reconciliation ${owner}`, description: "" })
-            .pipe(toEffect),
+          createProject().execute({ body: { name: `Reconciliation ${owner}`, description: "" } }),
         );
         if (project._tag !== "created") return "could not create the project to reconcile into";
 
         try {
-          const report = await run(runReconciliation(owner, "saga_password_123", project.body.id));
+          const report = await run(runReconciliation(owner, "saga_password_123", project.value.id));
           return [
             `1. Rust    signed in as ${report.username}`,
             `2. Perl    read ${report.extractedRecords} records, control total ${(report.controlTotal / 100).toFixed(2)}`,
@@ -117,7 +119,7 @@ export const renderSearchView = (): HTMLElement => {
   );
   onUnmount(view, () => {
     ++sequence;
-    void run(gate.dispose);
+    void run(Scope.close(scope, Exit.void));
   });
   return view;
 };

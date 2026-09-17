@@ -1,6 +1,5 @@
-import { schemaHttp } from "../runtime.js";
 import { Schema } from "effect";
-import { response, ResponseBody } from "viell-effect-schema-http";
+import { Body, Operation, Request, Response } from "viell-effect-schema-http";
 import {
   CreateNotification,
   CsrfRejected,
@@ -17,180 +16,183 @@ import {
   XssiGuarded,
 } from "../schemas/notifyService.js";
 import { getCsrfToken } from "../session.js";
-
+import { configure, executionOptions, type Options } from "./options.js";
 export const NOTIFY_SERVER_URL =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_NOTIFY_SERVER_URL) || "http://localhost:4500";
 
-/**
- * The 2011 notification service.
- *
- * Its credential is a CSRF token that has to be fetched first and echoed in a header, so
- * the API-wide declaration is one computed header. The *signature* cannot be declared
- * here at all — see `plans/signing.ts` for why — and is applied per call site with the
- * `signed` transform.
- */
-export const notifyApi = schemaHttp.createApi(NOTIFY_SERVER_URL, {
-  headers: {
-    "x-csrf-token": () => getCsrfToken(),
-  },
-});
+export const notifyRequest = (method: string, path: string, options: Options) =>
+  Request.make(method, path).pipe(
+    Request.baseUrl(NOTIFY_SERVER_URL),
+    Request.setHeader("x-csrf-token", () => getCsrfToken()),
+    configure(options),
+  );
 
-/**
- * `GET /session` — the token, two cookies, and three ways of saying "stop using this".
- *
- * The rule reads nothing special; everything interesting is on the envelope, which
- * carries the parsed cookies and the raw header entries alongside the decoded body.
- */
-export const notifySession = notifyApi.createRequest({
-  method: "GET",
-  path: "/session",
-  removeHeaders: ["x-csrf-token"],
-  responses: [response({ _tag: "ok", status: 200 }, SessionToken)],
-});
-
-/**
- * `GET /notifications.json` — JSON behind an anti-hijacking guard.
- *
- * The content type says `application/json` and the payload is not JSON, so the default
- * codec fails on the first byte. Reading it as text and stripping the guard in the
- * schema is the whole fix.
- */
-export const listNotifications = notifyApi.createRequest({
-  method: "GET",
-  path: "/notifications.json",
-  responses: [
-    response({ _tag: "ok", status: 200 }, XssiGuarded(Schema.Array(Notification)), { codec: ResponseBody.text }),
-  ],
-});
-
-/** `GET /notifications.js` — the same data as a JavaScript program, for a partner. */
-export const listNotificationsJsonp = notifyApi.createRequest({
-  method: "GET",
-  path: "/notifications.js",
-  urlParams: { callback: "receiveNotifications" },
-  responses: [
-    response(
-      {
-        _tag: "ok",
-        status: 200,
-        headers: { "content-type": (value) => value?.startsWith("application/javascript") ?? false },
-      },
-      Jsonp("receiveNotifications", Schema.Array(Notification)),
-      { codec: ResponseBody.text },
+/** GET /session. */
+export const notifySession = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/session", {}).pipe(Request.removeHeader("x-csrf-token"), configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(SessionToken), (decoder) => Response.tag("ok", decoder)),
     ),
-  ],
-});
+    executionOptions(options),
+  );
 
-/**
- * `GET /inbox` — JSON served as `text/html`.
- *
- * The header matcher is what makes this honest: the rule says "this is the case where
- * the service claims HTML", and the codec and schema together say "and it is really
- * JSON". A reader of the declaration can see both facts.
- */
-export const getInbox = notifyApi.createRequest({
-  method: "GET",
-  path: "/inbox",
-  responses: [
-    response(
-      {
-        _tag: "ok",
-        status: 200,
-        headers: { "content-type": (value) => value?.startsWith("text/html") ?? false },
-      },
-      JsonText(Inbox),
-      { codec: ResponseBody.text },
+/** GET /notifications.json. */
+export const listNotifications = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/notifications.json", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.text.pipe(Body.schema(XssiGuarded(Schema.Array(Notification))), (decoder) => Response.tag("ok", decoder)),
     ),
-  ],
-});
+    executionOptions(options),
+  );
 
-/**
- * `POST /notifications` — signed and CSRF-guarded.
- *
- * Apply the `signed` transform at the call site. Every rejection is a declared rule, so
- * "the signature was stale", "the token was wrong" and "the payload was empty" are three
- * distinguishable values rather than one thrown error with a status buried in it.
- */
-export const createNotification = notifyApi.createRequest({
-  method: "POST",
-  path: "/notifications",
-  body: CreateNotification,
-  responses: [
-    response({ _tag: "created", status: 201 }, Notification),
-    response({ _tag: "SignatureRejected", status: 401 }, SignatureRejected),
-    response({ _tag: "CsrfRejected", status: 403 }, CsrfRejected),
-    response({ _tag: "PayloadRejected", status: 422 }, PayloadRejected),
-  ],
-});
+/** GET /notifications.js. */
+export const listNotificationsJsonp = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/notifications.js", {}).pipe(
+      Request.setQuery("callback", "receiveNotifications"),
+      configure(options),
+    ),
+    Response.when(
+      (metadata) =>
+        metadata.status === 200 &&
+        ((value) => value?.startsWith("application/javascript") ?? false)(metadata.headers["content-type"]),
+      Body.text.pipe(Body.schema(Jsonp("receiveNotifications", Schema.Array(Notification))), (decoder) =>
+        Response.tag("ok", decoder),
+      ),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `GET /notifications` — an endpoint that only accepts `POST`.
- *
- * Nothing here declares the `405` the service answers, on purpose: this is the shape of
- * every response nobody modelled, and it is what `UnhandledResponse` is for.
- */
-export const listNotificationsUnmodelled = notifyApi.createRequest({
-  method: "GET",
-  path: "/notifications",
-  responses: [response({ _tag: "ok", status: 200 }, Schema.Array(Notification))],
-});
+/** GET /inbox. */
+export const getInbox = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/inbox", {}).pipe(configure(options)),
+    Response.when(
+      (metadata) =>
+        metadata.status === 200 &&
+        ((value) => value?.startsWith("text/html") ?? false)(metadata.headers["content-type"]),
+      Body.text.pipe(Body.schema(JsonText(Inbox)), (decoder) => Response.tag("ok", decoder)),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `GET /legacy/notifications` — the 2011 path, permanently moved in 2013.
- *
- * The `301` rule is declarable and, with the default Fetch provider, **unreachable**:
- * `fetch` follows redirects unless its `redirect` option says otherwise, so the client
- * sees the `200` from the new path and the rule never matches. The library has no plan
- * setter for that option — it belongs to the transport, not to the request — so the only
- * way to observe the redirect is to configure the provider. See `legacyRedirect.test.ts`.
- */
-export const legacyNotifications = notifyApi.createRequest({
-  method: "GET",
-  path: "/legacy/notifications",
-  responses: [
-    response({ _tag: "moved", status: 301 }, Schema.Struct({ moved: Schema.String, since: Schema.String })),
-    // What actually arrives, because the provider followed the Location for us.
-    response({ _tag: "followed", status: 200 }, XssiGuarded(Schema.Array(Notification)), { codec: ResponseBody.text }),
-  ],
-});
+/** POST /notifications. */
+export const createNotification = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("POST", "/notifications", {}).pipe(
+      configure(options),
+      Request.body(Body.jsonSchema(CreateNotification)),
+    ),
+    Response.status(
+      201,
+      Body.json.pipe(Body.schema(Notification), (decoder) => Response.tag("created", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          401,
+          Body.json.pipe(Body.schema(SignatureRejected), (decoder) => Response.tag("SignatureRejected", decoder)),
+        ),
+      ),
+      Response.orElse(
+        Response.status(
+          403,
+          Body.json.pipe(Body.schema(CsrfRejected), (decoder) => Response.tag("CsrfRejected", decoder)),
+        ),
+      ),
+      Response.orElse(
+        Response.status(
+          422,
+          Body.json.pipe(Body.schema(PayloadRejected), (decoder) => Response.tag("PayloadRejected", decoder)),
+        ),
+      ),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `GET /session/whoami` — reads the *cookie*, not the header.
- *
- * There is no cookie jar in Node's `fetch` and no cross-origin cookie in a browser
- * without `credentials: "include"` and a server that allows them. Either way the caller
- * ends up setting the header by hand, which is what `setHeader("cookie", …)` is for.
- */
-export const whoAmI = notifyApi.createRequest({
-  method: "GET",
-  path: "/session/whoami",
-  removeHeaders: ["x-csrf-token"],
-  responses: [
-    response({ _tag: "ok", status: 200 }, Schema.Struct({ token: Schema.String, valid: Schema.Boolean })),
-    response({ _tag: "noCookie", status: 401 }, Schema.Struct({ error: Schema.String, detail: Schema.String })),
-  ],
-});
+/** GET /notifications. */
+export const listNotificationsUnmodelled = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/notifications", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(Schema.Array(Notification)), (decoder) => Response.tag("ok", decoder)),
+    ),
+    executionOptions(options),
+  );
 
-/** `GET /notifications/poll` — holds the connection open, which is the point. */
-export const pollNotifications = notifyApi.createRequest({
-  method: "GET",
-  path: "/notifications/poll",
-  responses: [response({ _tag: "ok", status: 200 }, PollResult)],
-});
+/** GET /legacy/notifications. */
+export const legacyNotifications = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/legacy/notifications", {}).pipe(configure(options)),
+    Response.status(
+      301,
+      Body.json.pipe(Body.schema(Schema.Struct({ moved: Schema.String, since: Schema.String })), (decoder) =>
+        Response.tag("moved", decoder),
+      ),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          200,
+          Body.text.pipe(Body.schema(XssiGuarded(Schema.Array(Notification))), (decoder) =>
+            Response.tag("followed", decoder),
+          ),
+        ),
+      ),
+    ),
+    executionOptions(options),
+  );
 
-/**
- * `GET /throttled` — `420 Enhance Your Calm`.
- *
- * Twitter used `420` before `429` was standardized and this service copied it. It is not
- * registered, so the library's built-in transient set does not include it and never
- * should — `while` is the documented way to *add* a retryable case, and this is exactly
- * what that is for.
- */
-export const throttled = notifyApi.createRequest({
-  method: "GET",
-  path: "/throttled",
-  responses: [
-    response({ _tag: "ok", status: 200 }, ThrottleRelief),
-    response({ _tag: "EnhanceYourCalm", status: 420 }, EnhanceYourCalm),
-  ],
-});
+/** GET /session/whoami. */
+export const whoAmI = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/session/whoami", {}).pipe(Request.removeHeader("x-csrf-token"), configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(Schema.Struct({ token: Schema.String, valid: Schema.Boolean })), (decoder) =>
+        Response.tag("ok", decoder),
+      ),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          401,
+          Body.json.pipe(Body.schema(Schema.Struct({ error: Schema.String, detail: Schema.String })), (decoder) =>
+            Response.tag("noCookie", decoder),
+          ),
+        ),
+      ),
+    ),
+    executionOptions(options),
+  );
+
+/** GET /notifications/poll. */
+export const pollNotifications = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/notifications/poll", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(PollResult), (decoder) => Response.tag("ok", decoder)),
+    ),
+    executionOptions(options),
+  );
+
+/** GET /throttled. */
+export const throttled = (options: Options = {}) =>
+  Operation.make(
+    notifyRequest("GET", "/throttled", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(ThrottleRelief), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          420,
+          Body.json.pipe(Body.schema(EnhanceYourCalm), (decoder) => Response.tag("EnhanceYourCalm", decoder)),
+        ),
+      ),
+    ),
+    executionOptions(options),
+  );

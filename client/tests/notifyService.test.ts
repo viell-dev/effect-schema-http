@@ -1,4 +1,5 @@
-import { Cause, DateTime, Schema } from "effect";
+import { Cause, DateTime, Effect, Schedule, Schema } from "effect";
+import { Policy, Request } from "viell-effect-schema-http";
 import { beforeAll, describe, expect, it } from "vitest";
 import { signed } from "../src/plans/signing.js";
 import { RetirementNotice } from "../src/schemas/notifyService.js";
@@ -7,11 +8,11 @@ import {
   getInbox,
   listNotifications,
   listNotificationsJsonp,
+  NOTIFY_SERVER_URL,
   notifySession,
   pollNotifications,
   throttled,
 } from "../src/services/notifyClient.js";
-import { NOTIFY_SERVER_URL } from "../src/services/notifyClient.js";
 import { setCsrfToken } from "../src/session.js";
 import { call, callAny, callFailure, servicesUp } from "./support.js";
 
@@ -36,72 +37,78 @@ const signatureFor = async (method: string, path: string, timestamp: string, bod
 
 describe.runIf(up)("Notify service — signatures, guards, and a status code that was never registered", () => {
   beforeAll(async () => {
-    const session = await call(notifySession(), "ok");
-    setCsrfToken(session.body.csrf_token);
+    const session = await call(notifySession().execute(undefined), "ok");
+    setCsrfToken(session.value.csrf_token);
   });
 
   it("reports its own retirement three different ways, and carries two cookies", async () => {
-    const session = await call(notifySession(), "ok");
+    const session = await call(notifySession().execute(undefined), "ok");
 
     // Three headers saying the same thing, each from a different draft.
-    const notice = Schema.decodeUnknownSync(RetirementNotice)(session.headers);
+    const notice = Schema.decodeUnknownSync(RetirementNotice)(session.metadata.headers);
     expect(notice.deprecation).toBe("true");
     expect(DateTime.toEpochMillis(notice.sunset)).toBeGreaterThan(Date.now());
     expect(notice.warning).toContain("299");
 
     // Set-Cookie is the one header that may never be combined, and the envelope carries
     // the parsed cookies alongside the raw entries.
-    expect(session.cookies.cookies["notify_csrf"]?.value).toBe(session.body.csrf_token);
-    expect(session.cookies.cookies["notify_seen"]).toBeDefined();
+    expect(session.metadata.cookies.cookies["notify_csrf"]?.value).toBe(session.value.csrf_token);
+    expect(session.metadata.cookies.cookies["notify_seen"]).toBeDefined();
   });
 
   it("strips a guard that the default JSON codec would have choked on", async () => {
-    const ok = await call(listNotifications(), "ok");
+    const ok = await call(listNotifications().execute(undefined), "ok");
 
-    expect(ok.body.length).toBeGreaterThanOrEqual(2);
-    expect(ok.body[0]?.kind).toBe("mention");
-    expect(DateTime.isDateTime(ok.body[0]!.createdAt)).toBe(true);
+    expect(ok.value.length).toBeGreaterThanOrEqual(2);
+    expect(ok.value[0]?.kind).toBe("mention");
+    expect(DateTime.isDateTime(ok.value[0]!.createdAt)).toBe(true);
     // The content type claims JSON; the payload is not JSON until five bytes come off.
-    expect(ok.headers["content-type"]).toContain("application/json");
+    expect(ok.metadata.headers["content-type"]).toContain("application/json");
   });
 
   it("reads a JSONP response as data, by knowing exactly which wrapper to expect", async () => {
-    const ok = await call(listNotificationsJsonp(), "ok");
-    expect(ok.body[0]?.id).toBe("n-1001");
+    const ok = await call(listNotificationsJsonp().execute(undefined), "ok");
+    expect(ok.value[0]?.id).toBe("n-1001");
 
     // A different callback name is a decode failure rather than something to be clever
     // about: reading JSONP safely means refusing anything but the exact expected shape.
-    const wrong = await callFailure(listNotificationsJsonp().setUrlParam("callback", "somethingElse"));
-    expect((wrong as { readonly _tag: string })._tag).toBe("ResponseDecodeError");
+    const wrong = await callFailure(
+      listNotificationsJsonp({
+        request: (request) => request.pipe(Request.setQuery("callback", "somethingElse")),
+      }).execute(undefined),
+    );
+    expect((wrong as { readonly _tag: string })._tag).toBe("DecodeError");
   });
 
   it("reads JSON out of a response that says it is HTML", async () => {
-    const ok = await call(getInbox(), "ok");
-    expect(ok.headers["content-type"]).toContain("text/html");
-    expect(ok.body.items.length).toBeGreaterThanOrEqual(2);
-    expect(ok.body.unread).toBeGreaterThanOrEqual(1);
+    const ok = await call(getInbox().execute(undefined), "ok");
+    expect(ok.metadata.headers["content-type"]).toContain("text/html");
+    expect(ok.value.items.length).toBeGreaterThanOrEqual(2);
+    expect(ok.value.unread).toBeGreaterThanOrEqual(1);
   });
 
   describe("request signing, which a computed header cannot do", () => {
     it("signs the encoded body from mapClient, after encoding and per attempt", async () => {
       const created = await call(
-        createNotification().setBody({ kind: "note", text: "signed from the client" }).pipe(signed),
+        createNotification({ transformClient: signed }).execute({
+          body: { kind: "note", text: "signed from the client" },
+        }),
         "created",
       );
 
-      expect(created.body.text).toBe("signed from the client");
+      expect(created.value.text).toBe("signed from the client");
       // WEBrick absolutizes a relative Location, which is exactly what the Java
       // service's original servlet container used to do and its current one does not.
       // Same header, same intent, opposite results, decided by the container.
-      expect(created.headers.location).toBe(`${NOTIFY_SERVER_URL}/notifications/${created.body.id}`);
+      expect(created.metadata.headers.location).toBe(`${NOTIFY_SERVER_URL}/notifications/${created.value.id}`);
     });
 
     it("is rejected without the transform, as a typed response rather than a thrown error", async () => {
       const rejected = await call(
-        createNotification().setBody({ kind: "note", text: "unsigned" }),
+        createNotification().execute({ body: { kind: "note", text: "unsigned" } }),
         "SignatureRejected",
       );
-      expect(rejected.body.detail).toContain("required");
+      expect(rejected.value.detail).toContain("required");
     });
 
     it("does not care where in the pipeline the transform was applied", async () => {
@@ -111,10 +118,12 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
       // either — it resolves while the request is being materialized, before the body
       // schema has encoded anything.
       const created = await call(
-        createNotification().pipe(signed).setBody({ kind: "note", text: "signed before the body was set" }),
+        createNotification({ transformClient: signed }).execute({
+          body: { kind: "note", text: "signed before the body was set" },
+        }),
         "created",
       );
-      expect(created.body.text).toBe("signed before the body was set");
+      expect(created.value.text).toBe("signed before the body was set");
     });
 
     it("is rejected when the signature does not cover the body that was sent", async () => {
@@ -124,13 +133,13 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
       const stale = await signatureFor("POST", "/notifications", timestamp, '{"kind":"note","text":"original"}');
 
       const tampered = await call(
-        createNotification()
-          .setBody({ kind: "note", text: "substituted" })
-          .setHeader("x-timestamp", timestamp)
-          .setHeader("x-signature", stale),
+        createNotification({
+          request: (request) =>
+            request.pipe(Request.setHeader("x-timestamp", timestamp), Request.setHeader("x-signature", stale)),
+        }).execute({ body: { kind: "note", text: "substituted" } }),
         "SignatureRejected",
       );
-      expect(tampered.body.detail).toContain("mismatch");
+      expect(tampered.value.detail).toContain("mismatch");
     });
 
     it("is rejected when the signature is older than the window", async () => {
@@ -138,24 +147,24 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
       const signature = await signatureFor("POST", "/notifications", stale, '{"kind":"note","text":"late"}');
 
       const expired = await call(
-        createNotification()
-          .setBody({ kind: "note", text: "late" })
-          .setHeader("x-timestamp", stale)
-          .setHeader("x-signature", signature),
+        createNotification({
+          request: (request) =>
+            request.pipe(Request.setHeader("x-timestamp", stale), Request.setHeader("x-signature", signature)),
+        }).execute({ body: { kind: "note", text: "late" } }),
         "SignatureRejected",
       );
-      expect(expired.body.detail).toContain("window");
+      expect(expired.value.detail).toContain("window");
     });
 
     it("is rejected when the CSRF token is missing, separately from the signature", async () => {
       const rejected = await call(
-        createNotification()
-          .setBody({ kind: "note", text: "no token" })
-          .removeHeader("x-csrf-token")
-          .pipe(signed),
+        createNotification({
+          request: (request) => request.pipe(Request.removeHeader("x-csrf-token")),
+          transformClient: signed,
+        }).execute({ body: { kind: "note", text: "no token" } }),
         "CsrfRejected",
       );
-      expect(rejected.body.detail).toContain("GET /session");
+      expect(rejected.value.detail).toContain("GET /session");
     });
 
     it("validates the payload after both credentials pass", async () => {
@@ -163,23 +172,30 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
       // "non-empty", the server's is "non-blank", and the two were written eleven years
       // apart. Server-side validation is not redundant just because a schema exists.
       const rejected = await call(
-        createNotification().setBody({ kind: "note", text: " " }).pipe(signed),
+        createNotification({ transformClient: signed }).execute({ body: { kind: "note", text: " " } }),
         "PayloadRejected",
       );
-      expect(rejected.body.detail).toContain("text is required");
+      expect(rejected.value.detail).toContain("text is required");
     });
 
     it("refuses an empty text before a request is ever sent", async () => {
-      // `RequestBodyEncodeError`, from the body schema, with no network involved. The
+      // `ParseError`, from the body schema, with no network involved. The
       // library will not let an invalid domain value reach the transport.
-      const failure = await callFailure(createNotification().setBody({ kind: "note", text: "" }).pipe(signed));
-      expect((failure as { readonly _tag: string })._tag).toBe("RequestBodyEncodeError");
+      const failure = await callFailure(
+        createNotification({ transformClient: signed }).execute({ body: { kind: "note", text: "" } }),
+      );
+      expect((failure as { readonly _tag: string })._tag).toBe("ParseError");
     });
   });
 
   describe("420 Enhance Your Calm", () => {
     it("is not transient as far as the library is concerned, and should not be", async () => {
-      const first = await callAny(throttled().setHeader("x-client-id", `plain-${Date.now()}`).setRetries(3));
+      const first = await callAny(
+        throttled({
+          request: (request) => request.pipe(Request.setHeader("x-client-id", `plain-${Date.now()}`)),
+          policy: Policy.make(Schedule.recurs(3)),
+        }).execute(undefined),
+      );
       // Three built-in retries changed nothing: 420 is not a registered status and is
       // not in the transient set, which is the correct default.
       expect(first._tag).toBe("EnhanceYourCalm");
@@ -188,32 +204,35 @@ describe.runIf(up)("Notify service — signatures, guards, and a status code tha
     it("is retried when `while` says so, which is exactly what `while` is for", async () => {
       const client = `calm-${Date.now()}`;
       const ok = await callAny(
-        throttled()
-          .setHeader("x-client-id", client)
-          .setRetry({
-            times: 4,
-            // `while` can only *add* retryable cases; it cannot veto the built-in ones.
-            while: (input) =>
-              typeof input === "object" && input !== null && "status" in input && input.status === 420,
+        throttled({
+          request: (request) => request.pipe(Request.setHeader("x-client-id", client)),
+          policy: Policy.make(Schedule.recurs(4), {
+            while: (reason) => Policy.transient(reason) || reason.metadata?.status === 420,
           }),
+        }).execute(undefined),
       );
 
       expect(ok._tag).toBe("ok");
       // The server needed three calls, and the handler only ever saw the last one.
-      if (ok._tag === "ok") expect(ok.body.attempts).toBe(3);
+      if (ok._tag === "ok") expect(ok.value.attempts).toBe(3);
     });
   });
 
   describe("a long poll", () => {
     it("returns when the server does", async () => {
-      const ok = await call(pollNotifications().setUrlParam("wait", "1"), "ok");
-      expect(ok.body.waited).toBe(1);
-      expect(ok.body.events).toEqual([]);
+      const ok = await call(
+        pollNotifications({ request: (request) => request.pipe(Request.setQuery("wait", "1")) }).execute(undefined),
+        "ok",
+      );
+      expect(ok.value.waited).toBe(1);
+      expect(ok.value.events).toEqual([]);
     });
 
     it("is bounded by setTimeout, which fails the attempt rather than hanging", async () => {
       const failure = await callFailure(
-        pollNotifications().setUrlParam("wait", "5").setTimeout("400 millis"),
+        pollNotifications({ request: (request) => request.pipe(Request.setQuery("wait", "5")) })
+          .execute(undefined)
+          .pipe(Effect.timeout("400 millis")),
       );
       // A timeout is an Effect `TimeoutException`, not a mapped response: nothing came
       // back to map.

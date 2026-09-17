@@ -1,158 +1,125 @@
 import { Effect, Schema } from "effect";
-import { response, ResponseBody, type RequestBodyRequired, UnhandledResponse } from "viell-effect-schema-http";
+import { Body, Operation, Request, Response } from "viell-effect-schema-http";
 import { beforeAll, describe, expect, it } from "vitest";
-import { FILE_SERVER_URL, uploadRawBytes, uploadRawUnmodelled } from "../src/services/fileClient.js";
-import { lookup } from "../src/services/apiLegacyClient.js";
-import { apiServer } from "../src/services/apiClient.js";
-import { listNotificationsUnmodelled } from "../src/services/notifyClient.js";
-import { register, requestToken } from "../src/services/idClient.js";
 import { run } from "../src/runtime.js";
+import { apiRequest } from "../src/services/apiClient.js";
+import { lookup } from "../src/services/apiLegacyClient.js";
+import { FILE_SERVER_URL, fileRequest, uploadRawBytes } from "../src/services/fileClient.js";
+import { register, requestToken } from "../src/services/idClient.js";
+import { listNotificationsUnmodelled, notifyRequest } from "../src/services/notifyClient.js";
 import { setSession } from "../src/session.js";
 import { call, callFailure, servicesUp } from "./support.js";
 
-/**
- * The parts of the library's surface no service happened to force us into.
- *
- * Everything else in this suite is driven by a backend that genuinely behaves that way.
- * These are the remaining exported behaviours — raw byte bodies, retained unmapped
- * responses, base-URL replacement, repeated query parameters, and the compile-time
- * guards — exercised deliberately so the evaluation can say it covered them rather than
- * that nothing happened to need them.
- */
-describe.runIf(await servicesUp([4100, 4200, 4300, 4500]))("the rest of the library's surface", () => {
+describe.runIf(await servicesUp([4100, 4200, 4300, 4500]))("native llm2 composition against the services", () => {
   const username = `surface_${Date.now()}`;
   const password = "surface_password_123";
 
   beforeAll(async () => {
-    await call(register().setBody({ username, email: `${username}@test.invalid`, password }), "created");
-    const token = await call(requestToken().setBody({ grant_type: "password", username, password }), "ok");
+    await call(register().execute({ body: { username, email: `${username}@test.invalid`, password } }), "created");
+    const token = await call(requestToken().execute({ body: { grant_type: "password", username, password } }), "ok");
     setSession({
-      accessToken: token.body.access_token,
-      refreshToken: token.body.refresh_token,
+      accessToken: token.value.access_token,
+      refreshToken: token.value.refresh_token,
       tokenType: "Bearer",
       username,
     });
   });
 
-  it("sends raw bytes through the identity schema the codec pairs with", async () => {
+  it("sends raw bytes without an identity schema", async () => {
     const payload = new TextEncoder().encode("raw bytes from the ERP");
-
-    const created = await call(uploadRawBytes().setBody(payload).setUrlParam("name", "erp-export.dat"), "created");
-
-    expect(created.body).toMatch(/^[0-9a-f-]{36}$/u);
-    expect(created.headers["x-file-size"]).toBe(String(payload.byteLength));
+    const created = await call(
+      uploadRawBytes({ request: Request.setQuery("name", "erp-export.dat") }).execute({ body: payload }),
+      "created",
+    );
+    expect(created.value).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(created.metadata.headers["x-file-size"]).toBe(String(payload.byteLength));
   });
 
   describe("a response nobody modelled", () => {
-    it("is drained by default and reaches the caller as UnhandledResponse", async () => {
-      const failure = await callFailure(listNotificationsUnmodelled());
-
-      expect(failure).toBeInstanceOf(UnhandledResponse);
-      // The default is right: an undrained body holds a connection open, and a caller
-      // who has not asked for the payload almost never wants it.
-      expect((failure as UnhandledResponse).status).toBe(405);
+    it("is drained before reaching the caller as UnexpectedStatus", async () => {
+      const failure = await callFailure(listNotificationsUnmodelled().execute(undefined));
+      expect(failure).toBeInstanceOf(Response.UnexpectedStatus);
+      if (failure instanceof Response.UnexpectedStatus) expect(failure.metadata.status).toBe(405);
     });
 
-    it("is handed over when the caller asks to retain it, and then the caller owns it", async () => {
-      const failure = await callFailure(listNotificationsUnmodelled().setUnhandledResponseBody("retain"));
-      const unhandled = failure as UnhandledResponse;
-
-      expect(unhandled.status).toBe(405);
-      expect(unhandled.headers.allow).toBe("POST");
-
-      // Reading the live body is the whole point of retaining it: this is the only way
-      // to see what a service that nobody modelled actually said.
-      const text = await run(unhandled.response.text);
-      expect(text).toContain("only POST is accepted");
-    });
-
-    it("can be discarded instead of read, which is the other half of owning it", async () => {
-      const failure = await callFailure(
-        uploadRawUnmodelled()
-          .setBody(new Uint8Array([1, 2, 3]))
-          .setUnhandledResponseBody("retain"),
+    it("can be read by an explicit fallback inside the operation scope", async () => {
+      const operation = Operation.make(
+        notifyRequest("GET", "/notifications", {}),
+        Response.status(200, Response.tag("ok", Body.json)).pipe(
+          Response.orElse(Response.when(() => true, Response.tag("unmodelled", Body.text))),
+        ),
       );
-      const unhandled = failure as UnhandledResponse;
+      const result = await call(operation.execute(undefined), "unmodelled");
+      expect(result.metadata.status).toBe(405);
+      expect(result.metadata.headers.allow).toBe("POST");
+      expect(result.value).toContain("only POST is accepted");
+    });
 
-      expect(unhandled.status).toBe(201);
-      await run(unhandled.discard);
+    it("can discard the payload through an explicit empty fallback", async () => {
+      const operation = Operation.make(
+        fileRequest("POST", "/raw", {}).pipe(Request.body(Body.bytes)),
+        Response.status(200, Response.tag("ok", Body.text)).pipe(
+          Response.orElse(Response.when(() => true, Response.tag("discarded", Body.empty))),
+        ),
+      );
+      const result = await call(operation.execute({ body: new Uint8Array([1, 2, 3]) }), "discarded");
+      expect(result.metadata.status).toBe(201);
+      expect(result.value).toBeUndefined();
     });
   });
 
-  it("replaces the base URL for one call, leaving the endpoint's declaration alone", async () => {
-    // The same service under its other name. Real deployments have two: the internal
-    // DNS name and the one the load balancer answers to, and only one of them resolves
-    // from any given network.
+  it("replaces the base URL for one operation", async () => {
     const alias = FILE_SERVER_URL.replace("localhost", "127.0.0.1");
-
     const created = await call(
-      uploadRawBytes().setBody(new TextEncoder().encode("through the alias")).setBaseUrl(alias),
+      uploadRawBytes({ request: Request.baseUrl(alias) }).execute({
+        body: new TextEncoder().encode("through the alias"),
+      }),
       "created",
     );
-
-    expect(created.body).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(created.value).toMatch(/^[0-9a-f-]{36}$/u);
   });
 
-  it("sends repeated query parameters, which this service then ignores all but one of", async () => {
-    // `appendUrlParam` puts two `q` values on the wire. The Java service's 2014 query
-    // parser reads them into a Map<String, String>, so the last one wins and the first
-    // vanishes — the client did everything right and the server still lost data.
-    const both = await call(lookup().setUrlParam("q", "first").appendUrlParam("q", "second"), "ok");
-    const onlySecond = await call(lookup().setUrlParam("q", "second"), "ok");
-
-    expect(both.body.matches.length).toBe(onlySecond.body.matches.length);
+  it("sends repeated query parameters, which this service keeps only the last of", async () => {
+    const both = await call(
+      lookup({
+        request: (request) => request.pipe(Request.setQuery("q", "first"), Request.appendQuery("q", "second")),
+      }).execute(undefined),
+      "ok",
+    );
+    const onlySecond = await call(lookup({ request: Request.setQuery("q", "second") }).execute(undefined), "ok");
+    expect(both.value.matches.length).toBe(onlySecond.value.matches.length);
   });
 
   it("leaves empty path values to the application contract", async () => {
-    const endpoint = apiServer.createRequest({
-      method: "GET",
-      path: "/api/projects/:id",
-      responses: [response({ _tag: "ok", status: 200 }, Schema.Unknown)],
-    });
-
-    // Empty values are valid strings. Domain restrictions belong to the application.
-    expect(() => endpoint({ id: "" })).not.toThrow();
+    const request = apiRequest("GET", "/", {}).pipe(
+      Request.path(Schema.Struct({ id: Schema.String }), (value, encode) => `/api/projects/${encode(value.id)}`),
+    );
+    const prepared = await run(Request.materialize(request, { path: { id: "" } }));
+    expect(prepared.url).toMatch(/\/api\/projects\/$/u);
   });
 
-  it("does not offer an Effect for a body-bearing plan whose body was never set", async () => {
-    const endpoint = apiServer.createRequest({
-      method: "POST",
-      path: "/api/projects",
-      body: Schema.Struct({ name: Schema.String }),
-      responses: [response({ _tag: "ok", status: 201 }, Schema.Unknown)],
-    });
-
-    // The plan's `effect` is typed as a diagnostic value rather than as an Effect until
-    // `setBody` has been called, so the mistake is a compile error at every call site.
-    const diagnostic: RequestBodyRequired = endpoint().effect;
-
-    // At runtime the property is still an Effect — the diagnostic type is a compile-time
-    // marker, and bypassing it produces the same failure from the failure channel
-    // instead. The README says "available in the type system" and means it precisely.
-    expect(Effect.isEffect(diagnostic)).toBe(true);
-    const failure = await callFailure(endpoint());
-    expect((failure as { readonly _tag: string })._tag).toBe("RequestBodyRequired");
-
-    // With a body, it executes.
-    expect(Effect.isEffect(endpoint().setBody({ name: "ok" }).effect)).toBe(true);
+  it("requires the body in the operation input and validates it before dispatch", async () => {
+    const operation = Operation.make(
+      apiRequest("POST", "/api/projects", {}).pipe(
+        Request.body(Body.jsonSchema(Schema.Struct({ name: Schema.String }))),
+      ),
+      Response.status(201, Body.json),
+    );
+    // @ts-expect-error The complete input must include a body.
+    const incomplete = operation.execute({});
+    const failure = await callFailure(incomplete);
+    expect(failure._tag).toBe("ParseError");
+    expect(Effect.isEffect(operation.execute({ body: { name: "ok" } }))).toBe(true);
   });
 
-  it("rejects duplicate response tags, both in the type system and at declaration time", () => {
-    // Caught twice, which is the right amount: the type error is what a developer sees,
-    // and the synchronous throw covers a declaration built dynamically or from
-    // JavaScript. Two rules sharing a tag make `Match.tag` ambiguous rather than wrong,
-    // so without this the mistake would only surface as a response decoded by whichever
-    // rule happened to be declared first.
-    expect(() =>
-      apiServer.createRequest({
-        method: "GET",
-        path: "/api/projects",
-        // @ts-expect-error Response tags must be unique within a declaration.
-        responses: [
-          response({ _tag: "ok", status: 200 }, Schema.Unknown),
-          response({ _tag: "ok", status: 204 }, Schema.Unknown, { codec: ResponseBody.none }),
-        ],
-      }),
-    ).toThrow(/Duplicate response tag "ok"/u);
+  it("uses explicit response order and permits one tag for multiple statuses", async () => {
+    const contract = Response.status(200, Response.tag("ok", Body.json)).pipe(
+      Response.orElse(Response.status(204, Response.tag("ok", Body.empty))),
+    );
+    expect(contract).toBeDefined();
+    // Tags belong to decoders; ordered metadata predicates select the representation.
+    const result = await run(Operation.make(apiRequest("GET", "/api/projects", {}), contract).execute(undefined));
+    expect(result._tag).toBe("ok");
+    expect(Array.isArray(result.value)).toBe(true);
   });
 });

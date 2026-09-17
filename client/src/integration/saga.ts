@@ -1,16 +1,16 @@
 import type { HttpClient } from "@effect/platform";
 import { DateTime, Effect, Schema } from "effect";
-import { toEffect, type UnhandledResponse } from "viell-effect-schema-http";
+import { Request, Response } from "viell-effect-schema-http";
 import { signed } from "../plans/signing.js";
+import { tunnelMethod } from "../plans/transforms.js";
 import { CreateTaskInput } from "../schemas/apiServer.js";
+import { FixedWidthExtract } from "../schemas/reportGateway.js";
 import { createTask, deleteTask, search, uploadFileProxy } from "../services/apiClient.js";
 import { uploadFile } from "../services/fileClient.js";
 import { register, requestToken } from "../services/idClient.js";
 import { createNotification, notifySession } from "../services/notifyClient.js";
-import { FixedWidthExtract } from "../schemas/reportGateway.js";
 import { fetchExtract, reportLogin } from "../services/reportClient.js";
 import { setCsrfToken, setReportSession, setSession } from "../session.js";
-import { tunnelMethod } from "../plans/transforms.js";
 import { draftToCreateTaskInput, ExtractRecordToTaskDraft, TaskToNotification } from "./translate.js";
 
 /**
@@ -60,7 +60,7 @@ const expect = <Envelope extends { readonly _tag: string }, const Tag extends En
     : Effect.fail(
         new Error(
           `expected ${String(tag)} but the service answered ${envelope._tag}: ${JSON.stringify(
-            (envelope as { readonly body?: unknown }).body,
+            (envelope as { readonly value?: unknown }).value,
           )}`,
         ),
       );
@@ -74,33 +74,33 @@ export const runReconciliation = (
     // 1. The Rust identity server. One credential, three consumers, three spellings:
     //    `Bearer` for the SOAP service, `Token` for the Java service, and nothing at all
     //    for the Perl gateway, which has its own idea of a session.
-    yield* register().setBody({ username, email: `${username}@test.invalid`, password }).pipe(toEffect);
+    yield* register().execute({ body: { username, email: `${username}@test.invalid`, password } });
     const token = yield* requestToken()
-      .setBody({ grant_type: "password", username, password })
-      .pipe(toEffect, Effect.flatMap((envelope) => expect(envelope, "ok")));
+      .execute({ body: { grant_type: "password", username, password } })
+      .pipe(Effect.flatMap((envelope) => expect(envelope, "ok")));
     setSession({
-      accessToken: token.body.access_token,
-      refreshToken: token.body.refresh_token,
+      accessToken: token.value.access_token,
+      refreshToken: token.value.refresh_token,
       tokenType: "Bearer",
       username,
     });
 
     // 2. The Perl gateway. A second sign-in, with the credentials in a query string,
     //    because 1999 and because two crontabs still do it this way.
-    const gateway = yield* reportLogin()
-      .setUrlParam("user", username)
-      .setUrlParam("pass", password)
-      .pipe(toEffect, Effect.flatMap((envelope) => expect(envelope, "ok")));
-    const session = yield* expect(gateway.body, "session");
+    const gateway = yield* reportLogin({
+      request: (request) => request.pipe(Request.setQuery("user", username), Request.setQuery("pass", password)),
+    })
+      .execute(undefined)
+      .pipe(Effect.flatMap((envelope) => expect(envelope, "ok")));
+    const session = yield* expect(gateway.value, "session");
     setReportSession(session.session);
 
     // 3. The extract: Latin-1 bytes, fixed-length records, a trailer that has to
     //    reconcile. The schema checks the control total, so a truncated download fails
     //    here rather than silently importing half a month.
-    const extract = yield* fetchExtract().pipe(
-      toEffect,
-      Effect.flatMap((envelope) => expect(envelope, "ok")),
-    );
+    const extract = yield* fetchExtract()
+      .execute(undefined)
+      .pipe(Effect.flatMap((envelope) => expect(envelope, "ok")));
 
     // 4 & 5. Translate and write. The translation is a schema, so it is `Schema.decode`
     //    of one service's type into another's — not a mapping function that happens to
@@ -108,13 +108,13 @@ export const runReconciliation = (
     const toDraft = Schema.decode(ExtractRecordToTaskDraft);
     const createdTaskIds: Array<string> = [];
 
-    for (const record of extract.body.records) {
+    for (const record of extract.value.records) {
       const draft = yield* toDraft(record);
       const input: typeof CreateTaskInput.Type = draftToCreateTaskInput(draft, projectId);
       const created = yield* createTask()
-        .setBody(input)
-        .pipe(toEffect, Effect.flatMap((envelope) => expect(envelope, "created")));
-      createdTaskIds.push(created.body.id);
+        .execute({ body: input })
+        .pipe(Effect.flatMap((envelope) => expect(envelope, "created")));
+      createdTaskIds.push(created.value.id);
     }
 
     // Everything after this point can fail, and a failure has to undo the tasks: no
@@ -124,60 +124,59 @@ export const runReconciliation = (
       // Re-encode the decoded extract rather than holding on to the original bytes.
       // That is the round trip the translation tests pin, running for real: if the
       // schema were lossy the file stored here would differ from the file downloaded.
-      const bytes = yield* Schema.encode(FixedWidthExtract)(extract.body);
+      const bytes = yield* Schema.encode(FixedWidthExtract)(extract.value);
       const base64 = btoa([...bytes].map((byte) => String.fromCharCode(byte)).join(""));
 
       const stored = yield* uploadFile(`extract-${Date.now()}.dat`, "application/octet-stream", base64).pipe(
-        toEffect,
         Effect.flatMap((envelope) => expect(envelope, "ok")),
       );
-      const soapResult = yield* expect(stored.body, "ok");
+      const soapResult = yield* expect(stored.value, "ok");
 
       // 7. The same bytes again, this time through the Java proxy, which turns JSON into
       //    SOAP on the way and is the only path the mobile app has.
       const proxied = yield* uploadFileProxy()
-        .setBody({ fileName: "extract-proxied.dat", contentType: "application/octet-stream", fileData: base64 })
-        .pipe(toEffect, Effect.flatMap((envelope) => expect(envelope, "ok")));
+        .execute({
+          body: { fileName: "extract-proxied.dat", contentType: "application/octet-stream", fileData: base64 },
+        })
+        .pipe(Effect.flatMap((envelope) => expect(envelope, "ok")));
 
       // 8. The Ruby service. A third credential, and the one call that has to be signed.
-      const csrf = yield* notifySession().pipe(
-        toEffect,
-        Effect.flatMap((envelope) => expect(envelope, "ok")),
-      );
-      setCsrfToken(csrf.body.csrf_token);
+      const csrf = yield* notifySession()
+        .execute(undefined)
+        .pipe(Effect.flatMap((envelope) => expect(envelope, "ok")));
+      setCsrfToken(csrf.value.csrf_token);
 
       const notification = yield* Schema.decode(TaskToNotification)({
         id: createdTaskIds[0] ?? "",
         projectId,
-        title: extract.body.records[0]?.description ?? "the extract",
+        title: extract.value.records[0]?.description ?? "the extract",
         description: "",
-        status: extract.body.records[0]?.status ?? "OPEN",
+        status: extract.value.records[0]?.status ?? "OPEN",
         assignee: username,
         priority: 1,
         createdAt: DateTime.unsafeMake(Date.now()),
         updatedAt: DateTime.unsafeMake(Date.now()),
       });
 
-      const announced = yield* createNotification()
-        .setBody(notification)
-        .pipe(signed, toEffect, Effect.flatMap((envelope) => expect(envelope, "created")));
+      const announced = yield* createNotification({ transformClient: signed })
+        .execute({ body: notification })
+        .pipe(Effect.flatMap((envelope) => expect(envelope, "created")));
 
       // 9. Confirm the write is visible through the service's own search, which answers
       //    a bare object when it finds exactly one thing.
-      const found = yield* search(extract.body.records[0]?.description ?? "").pipe(
-        toEffect,
+      const found = yield* search(extract.value.records[0]?.description ?? "").pipe(
         Effect.flatMap((envelope) => expect(envelope, "ok")),
       );
 
       return {
         username,
-        extractedRecords: extract.body.records.length,
-        controlTotal: extract.body.controlTotal,
+        extractedRecords: extract.value.records.length,
+        controlTotal: extract.value.controlTotal,
         createdTaskIds,
         soapFileId: soapResult.value.fileId,
-        proxyStatus: proxied.body.status,
-        notificationText: announced.body.text,
-        foundInSearch: found.body.length,
+        proxyStatus: proxied.value.status,
+        notificationText: announced.value.text,
+        foundInSearch: found.value.length,
       } satisfies ReconciliationReport;
     });
 
@@ -189,7 +188,9 @@ export const runReconciliation = (
           createdTaskIds,
           (taskId) =>
             // The gateway strips DELETE, so even the rollback has to be tunnelled.
-            deleteTask({ id: taskId }).pipe(tunnelMethod("DELETE"), toEffect, Effect.ignore),
+            deleteTask({ request: (request) => request.pipe(tunnelMethod("DELETE")) })
+              .execute({ path: { id: taskId } })
+              .pipe(Effect.ignore),
           { discard: true },
         ),
       ),
@@ -197,4 +198,4 @@ export const runReconciliation = (
   });
 
 /** The failure type the saga can produce, for callers that want to match on it. */
-export type ReconciliationError = UnhandledResponse | Error;
+export type ReconciliationError = Response.UnexpectedStatus | Error;

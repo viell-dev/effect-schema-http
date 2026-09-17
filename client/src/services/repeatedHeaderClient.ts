@@ -1,7 +1,7 @@
 import { HttpClient, HttpClientError, HttpClientResponse } from "@effect/platform";
 import { Effect, Layer } from "effect";
 import { request as sendNodeRequest } from "node:http";
-import { attachHeaderEntries, getHeaderEntries } from "viell-effect-schema-http";
+import { Transport } from "viell-effect-schema-http";
 
 /**
  * A `node:http` provider that preserves repeated header field lines in both directions.
@@ -59,49 +59,50 @@ export const repeatedHeaderClient: HttpClient.HttpClient = HttpClient.makeWith<
 >(
   (requestEffect) =>
     Effect.flatMap(requestEffect, (request) =>
-      Effect.tryPromise({
-        try: () =>
-          new Promise<HttpClientResponse.HttpClientResponse>((resolve, reject) => {
-            const url = new URL(request.url);
-            // The plan's own ordered entries, not the normalized record: this is the
-            // only representation in which `x-scope: a` and `x-scope: b` are still two
-            // separate lines.
-            const headerEntries = getHeaderEntries(request);
-            const headers = headerEntries.flatMap(([name, value]) => [name, value]);
-            if (!headerEntries.some(([name]) => name.toLowerCase() === "host")) {
-              headers.push("host", url.host);
-            }
+      Effect.flatMap(Transport.headerLines(request), (headerEntries) =>
+        Effect.tryPromise({
+          try: () =>
+            new Promise<HttpClientResponse.HttpClientResponse>((resolve, reject) => {
+              const url = new URL(request.url);
+              // The plan's own ordered entries, not the normalized record: this is the
+              // only representation in which `x-scope: a` and `x-scope: b` are still two
+              // separate lines.
+              const headers = headerEntries.flatMap(([name, value]) => [name, value]);
+              if (!headerEntries.some(([name]) => name.toLowerCase() === "host")) {
+                headers.push("host", url.host);
+              }
 
-            const payload = bodyBytes(request.body);
-            if (payload !== undefined) headers.push("content-length", String(payload.byteLength));
+              const payload = bodyBytes(request.body);
+              if (payload !== undefined) headers.push("content-length", String(payload.byteLength));
 
-            const outgoing = sendNodeRequest(url, { headers, method: request.method }, (incoming) => {
-              const chunks: Array<Buffer> = [];
-              incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
-              incoming.once("error", reject);
-              incoming.once("end", () => {
-                const responseEntries = entriesFromRawHeaders(incoming.rawHeaders);
-                const source = new Response(
-                  // A 204/304 response must not carry a body, even an empty one.
-                  incoming.statusCode === 204 || incoming.statusCode === 304
-                    ? null
-                    : new Uint8Array(Buffer.concat(chunks)),
-                  {
-                    headers: responseEntries.map(([name, value]) => [name, value] as [string, string]),
-                    status: incoming.statusCode ?? 500,
-                    ...(incoming.statusMessage === undefined ? {} : { statusText: incoming.statusMessage }),
-                  },
-                );
-                resolve(attachHeaderEntries(HttpClientResponse.fromWeb(request, source), responseEntries));
+              const outgoing = sendNodeRequest(url, { headers, method: request.method }, (incoming) => {
+                const chunks: Array<Buffer> = [];
+                incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+                incoming.once("error", reject);
+                incoming.once("end", () => {
+                  const responseEntries = entriesFromRawHeaders(incoming.rawHeaders);
+                  const source = new Response(
+                    // A 204/304 response must not carry a body, even an empty one.
+                    incoming.statusCode === 204 || incoming.statusCode === 304
+                      ? null
+                      : new Uint8Array(Buffer.concat(chunks)),
+                    {
+                      headers: responseEntries.map(([name, value]) => [name, value] as [string, string]),
+                      status: incoming.statusCode ?? 500,
+                      ...(incoming.statusMessage === undefined ? {} : { statusText: incoming.statusMessage }),
+                    },
+                  );
+                  resolve(HttpClientResponse.fromWeb(request, source));
+                });
               });
-            });
 
-            outgoing.once("error", reject);
-            if (payload !== undefined) outgoing.write(payload);
-            outgoing.end();
-          }),
-        catch: (cause) => new HttpClientError.RequestError({ request, reason: "Transport", cause }),
-      }),
+              outgoing.once("error", reject);
+              if (payload !== undefined) outgoing.write(payload);
+              outgoing.end();
+            }),
+          catch: (cause) => new HttpClientError.RequestError({ request, reason: "Transport", cause }),
+        }),
+      ),
     ),
   Effect.succeed,
 );

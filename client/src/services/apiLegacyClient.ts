@@ -1,5 +1,6 @@
+import { HttpClient } from "@effect/platform";
 import { Schema } from "effect";
-import { response, ResponseBody } from "viell-effect-schema-http";
+import { Body, Operation, Request, Response } from "viell-effect-schema-http";
 import {
   BatchRequest,
   BatchResponse,
@@ -12,152 +13,159 @@ import {
   OrderPage,
   ProjectRecord,
 } from "../schemas/apiLegacy.js";
-import { apiServer } from "./apiClient.js";
+import { apiFailure, apiRequest } from "./apiClient.js";
+import { configure, executionOptions, type Options } from "./options.js";
 
-/**
- * The Java service's older endpoints.
- *
- * They share `apiServer`'s declaration — the `Token` authentication scheme and the two
- * error shapes — and differ in almost everything else.
- */
+/** GET /api/odata/Orders. */
+export const listOrders = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("GET", "/api/odata/Orders", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.text.pipe(Body.schema(losslessJsonOf(OrderPage)), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(Response.orElse(apiFailure)),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
 
-/**
- * `GET /api/odata/Orders` — read as **text**, not JSON.
- *
- * This is the one endpoint in the whole client that cannot use the default codec, and
- * the reason is worth stating precisely: the payload contains 64-bit ids above 2^53, and
- * `JSON.parse` rounds them. A schema applied after parsing cannot recover the digits,
- * because they are already gone. Reading the body as text and composing a different JSON
- * parser underneath the real schema is the only correct answer, and the library needs
- * nothing added to allow it — `ResponseBody.text` plus a `*FromString` schema is exactly
- * the case its documentation describes for "a custom JSON dialect".
- */
-export const listOrders = apiServer.createRequest({
-  method: "GET",
-  path: "/api/odata/Orders",
-  responses: [
-    response({ _tag: "ok", status: 200 }, losslessJsonOf(OrderPage), { codec: ResponseBody.text }),
-  ],
-});
+/** GET /api/reports/grid. */
+export const gridReport = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("GET", "/api/reports/grid", {}).pipe(configure(options)),
+    Response.when(
+      (metadata) =>
+        metadata.status === 200 &&
+        ((value) => value?.startsWith("text/json") ?? false)(metadata.headers["content-type"]),
+      Body.json.pipe(Body.schema(GridReport), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(Response.orElse(apiFailure)),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
 
-/**
- * `GET /api/reports/grid` — column-oriented rows behind an unregistered content type.
- *
- * The header matcher is load-bearing rather than decorative: the reporting gateway
- * answers `text/json` when it serves the grid and `application/json` when it serves an
- * error it forgot to give a status to, so the content type is what distinguishes them.
- */
-export const gridReport = apiServer.createRequest({
-  method: "GET",
-  path: "/api/reports/grid",
-  responses: [
-    response(
-      {
-        _tag: "ok",
-        status: 200,
-        headers: { "content-type": (value) => value?.startsWith("text/json") ?? false },
-      },
-      GridReport,
+/** GET /api/v2/projects/:id. */
+export const getVersionedProject = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("GET", "/api/v2/projects/:id", {}).pipe(
+      configure(options),
+      Request.path(Schema.Struct({ id: Schema.String }), (value, encode) => `/api/v2/projects/${encode(value.id)}`),
     ),
-  ],
-});
-
-/**
- * `GET /api/v2/projects/:id` — the one endpoint on this service that behaves correctly.
- *
- * A `304` is a mapped response with no body, which is exactly what `ResponseBody.none`
- * and `Schema.Void` describe. Nothing about it is an error, and modelling it as one
- * would be the mistake.
- */
-export const getVersionedProject = apiServer.createRequest({
-  method: "GET",
-  path: "/api/v2/projects/:id",
-  responses: [
-    response({ _tag: "ok", status: 200 }, ProjectRecord),
-    response({ _tag: "notModified", status: 304 }, Schema.Void, { codec: ResponseBody.none }),
-  ],
-});
-
-/**
- * The same resource, written.
- *
- * Declared as `PUT` so the call site reads honestly; `tunnelMethod("PUT")` rewrites the
- * dispatched method to `POST` and adds the override header the gateway expects. Without
- * that transform the request is refused with `405` — which is a declared rule here, so a
- * caller that forgets gets a typed value explaining exactly what to do rather than an
- * unhandled response.
- */
-export const putVersionedProject = apiServer.createRequest({
-  method: "PUT",
-  path: "/api/v2/projects/:id",
-  body: Schema.Struct({ name: Schema.optional(Schema.String), description: Schema.optional(Schema.String) }),
-  responses: [
-    response({ _tag: "ok", status: 200 }, ProjectRecord),
-    response({ _tag: "preconditionFailed", status: 412 }, Schema.Unknown),
-    response({ _tag: "preconditionRequired", status: 428 }, Schema.Unknown),
-    response({ _tag: "methodBlocked", status: 405 }, Schema.Unknown),
-  ],
-});
-
-/**
- * `POST /api/batch` — one `200` carrying several outcomes.
- *
- * The envelope says nothing about whether the individual calls worked, so the rule list
- * is a single `200` and all the discrimination happens in the schema. That is the
- * library's stated division of labour, and this endpoint is the case where it is
- * forced rather than chosen.
- */
-export const batchGet = apiServer.createRequest({
-  method: "POST",
-  path: "/api/batch",
-  body: BatchRequest,
-  responses: [response({ _tag: "ok", status: 200 }, BatchResponse)],
-});
-
-/** `POST /api/imports` — 202 with a relative `Location` the caller has to resolve. */
-export const startImport = apiServer.createRequest({
-  method: "POST",
-  path: "/api/imports",
-  body: Schema.Struct({ source: Schema.String }),
-  responses: [response({ _tag: "accepted", status: 202 }, ImportAccepted)],
-});
-
-/** `GET /api/imports/:id` — pending twice, then done. */
-export const importStatus = apiServer.createRequest({
-  method: "GET",
-  path: "/api/imports/:id",
-  responses: [response({ _tag: "ok", status: 200 }, ImportStatus)],
-});
-
-/**
- * `GET /api/lookup` — where failure is a header, not a status.
- *
- * Two rules at `200`, separated only by `x-error-code`. The header-bearing rule is more
- * specific and is therefore tried first, so the same call site renders matches or a
- * syntax error without either rule having to know about the other. This is the case that
- * shows why rules match on the envelope rather than on the body: the fact that decides
- * which shape arrived is in the headers, and it is available before a single byte of the
- * payload has been read.
- */
-export const lookup = apiServer.createRequest({
-  method: "GET",
-  path: "/api/lookup",
-  responses: [
-    response(
-      {
-        _tag: "LookupSyntaxError",
-        status: 200,
-        headers: { "x-error-code": (value) => value !== undefined },
-      },
-      LookupSyntaxError,
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(ProjectRecord), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          304,
+          Body.empty.pipe(Body.schema(Schema.Void), (decoder) => Response.tag("notModified", decoder)),
+        ),
+      ),
+      Response.orElse(apiFailure),
     ),
-    response({ _tag: "ok", status: 200 }, LookupMatches),
-  ],
-});
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
 
-/** `GET /api/projects` with the paginated contract, whose `Link` header is 0-based. */
-export const listProjectsPage = apiServer.createRequest({
-  method: "GET",
-  path: "/api/projects",
-  responses: [response({ _tag: "ok", status: 200 }, Schema.Array(ProjectRecord))],
-});
+/** PUT /api/v2/projects/:id. */
+export const putVersionedProject = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("PUT", "/api/v2/projects/:id", {}).pipe(
+      configure(options),
+      Request.path(Schema.Struct({ id: Schema.String }), (value, encode) => `/api/v2/projects/${encode(value.id)}`),
+      Request.body(
+        Body.jsonSchema(
+          Schema.Struct({ name: Schema.optional(Schema.String), description: Schema.optional(Schema.String) }),
+        ),
+      ),
+    ),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(ProjectRecord), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          412,
+          Body.json.pipe(Body.schema(Schema.Unknown), (decoder) => Response.tag("preconditionFailed", decoder)),
+        ),
+      ),
+      Response.orElse(
+        Response.status(
+          428,
+          Body.json.pipe(Body.schema(Schema.Unknown), (decoder) => Response.tag("preconditionRequired", decoder)),
+        ),
+      ),
+      Response.orElse(
+        Response.status(
+          405,
+          Body.json.pipe(Body.schema(Schema.Unknown), (decoder) => Response.tag("methodBlocked", decoder)),
+        ),
+      ),
+      Response.orElse(apiFailure),
+    ),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
+
+/** POST /api/batch. */
+export const batchGet = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("POST", "/api/batch", {}).pipe(configure(options), Request.body(Body.jsonSchema(BatchRequest))),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(BatchResponse), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(Response.orElse(apiFailure)),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
+
+/** POST /api/imports. */
+export const startImport = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("POST", "/api/imports", {}).pipe(
+      configure(options),
+      Request.body(Body.jsonSchema(Schema.Struct({ source: Schema.String }))),
+    ),
+    Response.status(
+      202,
+      Body.json.pipe(Body.schema(ImportAccepted), (decoder) => Response.tag("accepted", decoder)),
+    ).pipe(Response.orElse(apiFailure)),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
+
+/** GET /api/imports/:id. */
+export const importStatus = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("GET", "/api/imports/:id", {}).pipe(
+      configure(options),
+      Request.path(Schema.Struct({ id: Schema.String }), (value, encode) => `/api/imports/${encode(value.id)}`),
+    ),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(ImportStatus), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(Response.orElse(apiFailure)),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
+
+/** GET /api/lookup. */
+export const lookup = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("GET", "/api/lookup", {}).pipe(configure(options)),
+    Response.when(
+      (metadata) => metadata.status === 200 && ((value) => value !== undefined)(metadata.headers["x-error-code"]),
+      Body.json.pipe(Body.schema(LookupSyntaxError), (decoder) => Response.tag("LookupSyntaxError", decoder)),
+    ).pipe(
+      Response.orElse(
+        Response.status(
+          200,
+          Body.json.pipe(Body.schema(LookupMatches), (decoder) => Response.tag("ok", decoder)),
+        ),
+      ),
+      Response.orElse(apiFailure),
+    ),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );
+
+/** GET /api/projects. */
+export const listProjectsPage = (options: Options = {}) =>
+  Operation.make(
+    apiRequest("GET", "/api/projects", {}).pipe(configure(options)),
+    Response.status(
+      200,
+      Body.json.pipe(Body.schema(Schema.Array(ProjectRecord)), (decoder) => Response.tag("ok", decoder)),
+    ).pipe(Response.orElse(apiFailure)),
+    executionOptions(options, HttpClient.withTracerPropagation(false)),
+  );

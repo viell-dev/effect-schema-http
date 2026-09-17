@@ -1,8 +1,8 @@
 import { Effect, Schema } from "effect";
-import { makeRequestGate, toEffect } from "viell-effect-schema-http";
-import { ExtractRecordToTaskDraft, type TaskDraft } from "./translate.js";
+import { Interaction } from "viell-effect-schema-http";
 import { search } from "../services/apiClient.js";
 import { fetchExtract } from "../services/reportClient.js";
+import { ExtractRecordToTaskDraft, type TaskDraft } from "./translate.js";
 
 /** One gate owns each reconciliation interaction, including automatic interruption and retained success. */
 
@@ -27,29 +27,29 @@ export interface ReconciliationView {
  * key is the answer.
  */
 export const makeReconciliationGate = () =>
-  makeRequestGate(
+  Interaction.make(
     (term: string) =>
       Effect.gen(function* () {
         if (term.trim() === "") return { term, liveMatches: 0, drafts: [] } satisfies ReconciliationView;
-        const [live, extract] = yield* Effect.all([search(term).pipe(toEffect), fetchExtract().pipe(toEffect)], {
+        const [live, extract] = yield* Effect.all([search(term), fetchExtract().execute(undefined)], {
           concurrency: "unbounded",
         });
 
         const drafts =
           extract._tag === "ok"
             ? yield* Effect.forEach(
-                extract.body.records.filter((record) => record.description.toLowerCase().includes(term.toLowerCase())),
+                extract.value.records.filter((record) => record.description.toLowerCase().includes(term.toLowerCase())),
                 (record) => Schema.decode(ExtractRecordToTaskDraft)(record),
               )
             : [];
 
         return {
           term,
-          liveMatches: live._tag === "ok" ? live.body.length : 0,
+          liveMatches: live._tag === "ok" ? live.value.length : 0,
           drafts,
         } satisfies ReconciliationView;
       }),
-    { key: (term) => term.trim().toLowerCase() },
+    { equivalence: (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase(), retain: () => true },
   );
 
 /** Submit the next input; the gate itself interrupts superseded work. */

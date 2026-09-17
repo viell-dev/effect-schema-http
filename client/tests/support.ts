@@ -20,49 +20,28 @@ export const expectTag = <Envelope extends { readonly _tag: string }, const Tag 
   tag: Tag,
 ): Extract<Envelope, { readonly _tag: Tag }> => {
   if (envelope._tag !== tag) {
-    const body = (envelope as { readonly body?: unknown }).body;
-    throw new Error(`expected response ${JSON.stringify(tag)} but received ${JSON.stringify(envelope._tag)}: ${JSON.stringify(body)}`);
+    const body = (envelope as { readonly value?: unknown }).value;
+    throw new Error(
+      `expected response ${JSON.stringify(tag)} but received ${JSON.stringify(envelope._tag)}: ${JSON.stringify(body)}`,
+    );
   }
   return envelope as Extract<Envelope, { readonly _tag: Tag }>;
 };
 
-type AnyPlan<Envelope> = {
-  readonly effect: Effect.Effect<Envelope, unknown, HttpClient.HttpClient>;
-};
-
-/** Executes a plan and narrows the result to one expected tag. */
-export const call = async <Envelope extends { readonly _tag: string }, const Tag extends Envelope["_tag"]>(
-  plan: AnyPlan<Envelope>,
+/** Execute ordinary Effects while retaining each operation's precise error and value types. */
+export const call = async <Envelope extends { readonly _tag: string }, E, const Tag extends Envelope["_tag"]>(
+  effect: Effect.Effect<Envelope, E, HttpClient.HttpClient>,
   tag: Tag,
-): Promise<Extract<Envelope, { readonly _tag: Tag }>> => expectTag(await run(plan.effect as Effect.Effect<Envelope, never, HttpClient.HttpClient>), tag);
+): Promise<Extract<Envelope, { readonly _tag: Tag }>> => expectTag(await run(effect), tag);
 
-/** Executes a plan and returns the whole envelope, whichever tag it carries. */
-export const callAny = async <Envelope>(plan: AnyPlan<Envelope>): Promise<Envelope> =>
-  run(plan.effect as Effect.Effect<Envelope, never, HttpClient.HttpClient>);
-
-/**
- * Executes a plan expecting it to *fail*, and returns the typed failure.
- *
- * Library failures — `RequestBodyNotAllowed`, `ResponseDecodeError`, `UnhandledResponse`
- * — live in the Effect error channel, unlike mapped non-2xx responses, which do not.
- * Reading them through `Effect.either` keeps the tag rather than flattening everything
- * into a `FiberFailure` whose message is "An error has occurred".
- */
-export const callFailure = async <Envelope, Error>(plan: {
-  readonly effect: Effect.Effect<Envelope, Error, HttpClient.HttpClient>;
-}): Promise<Error> => {
-  const result = await run(Effect.either(plan.effect));
-  if (result._tag === "Right") {
-    throw new Error(`expected a failure but the request succeeded: ${JSON.stringify(result.right)}`);
-  }
+export const callAny = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>): Promise<A> => run(effect);
+export const callFailure = async <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>): Promise<E> => {
+  const result = await run(Effect.either(effect));
+  if (result._tag === "Right") throw new Error(`expected failure, received ${JSON.stringify(result.right)}`);
   return result.left;
 };
-
-/** Executes a plan against the repeated-header `node:http` provider instead of Fetch. */
-export const callWithRepeatedHeaders = <Envelope>(plan: AnyPlan<Envelope>): Promise<Envelope> =>
-  Effect.runPromise(
-    Effect.provide(plan.effect, RepeatedHeaderClientLayer) as Effect.Effect<Envelope, never, never>,
-  );
+export const callWithRepeatedHeaders = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>): Promise<A> =>
+  Effect.runPromise(Effect.provide(effect, RepeatedHeaderClientLayer));
 
 /** A layer bundle for programs that need to name their own provider. */
 export const providers = {

@@ -1,9 +1,9 @@
-import { Cause, DateTime, Schema } from "effect";
-import { toEffect } from "viell-effect-schema-http";
+import { Cause, DateTime, Effect, Schedule, Schema } from "effect";
+import { Policy, Request } from "viell-effect-schema-http";
 import { h } from "../dom.js";
 import { signed } from "../plans/signing.js";
-import { RetirementNotice } from "../schemas/notifyService.js";
 import { run } from "../runtime.js";
+import { RetirementNotice } from "../schemas/notifyService.js";
 import {
   createNotification,
   getInbox,
@@ -25,13 +25,13 @@ export const renderNotifyView = (): HTMLElement => {
       label: "Open a session",
       note: "A CSRF token in the body, two cookies, and three different ways of saying “stop using this”.",
       run: async () => {
-        const result = await run(notifySession().pipe(toEffect));
+        const result = await run(notifySession().execute(undefined));
         if (result._tag !== "ok") return show(result);
-        setCsrfToken(result.body.csrf_token);
-        const notice = Schema.decodeUnknownSync(RetirementNotice)(result.headers);
+        setCsrfToken(result.value.csrf_token);
+        const notice = Schema.decodeUnknownSync(RetirementNotice)(result.metadata.headers);
         return [
-          `csrf token ${result.body.csrf_token}`,
-          `cookies: ${Object.keys(result.cookies.cookies).join(", ")}`,
+          `csrf token ${result.value.csrf_token}`,
+          `cookies: ${Object.keys(result.metadata.cookies.cookies).join(", ")}`,
           "",
           `Deprecation: ${notice.deprecation}`,
           `Sunset:      ${DateTime.formatIso(notice.sunset)}`,
@@ -45,12 +45,12 @@ export const renderNotifyView = (): HTMLElement => {
       label: "List (behind an XSSI guard)",
       note: "The content type says JSON and the payload is not JSON until five bytes come off.",
       run: async () => {
-        const result = await run(listNotifications().pipe(toEffect));
+        const result = await run(listNotifications().execute(undefined));
         if (result._tag !== "ok") return show(result);
         return [
-          `content-type: ${result.headers["content-type"]}`,
+          `content-type: ${result.metadata.headers["content-type"]}`,
           "",
-          ...result.body.map((item) => `${item.id}  ${item.kind.padEnd(11)} ${item.text}`),
+          ...result.value.map((item) => `${item.id}  ${item.kind.padEnd(11)} ${item.text}`),
         ].join("\n");
       },
     },
@@ -58,19 +58,17 @@ export const renderNotifyView = (): HTMLElement => {
       label: "List (JSONP)",
       note: "A JavaScript program, read as data by knowing exactly which wrapper to expect.",
       run: async () => {
-        const result = await run(listNotificationsJsonp().pipe(toEffect));
-        return result._tag === "ok"
-          ? result.body.map((item) => `${item.id}  ${item.text}`).join("\n")
-          : show(result);
+        const result = await run(listNotificationsJsonp().execute(undefined));
+        return result._tag === "ok" ? result.value.map((item) => `${item.id}  ${item.text}`).join("\n") : show(result);
       },
     },
     {
       label: "Read the inbox (JSON as text/html)",
       note: "A 2012 template whose contents were replaced with a JSON literal and nothing else.",
       run: async () => {
-        const result = await run(getInbox().pipe(toEffect));
+        const result = await run(getInbox().execute(undefined));
         return result._tag === "ok"
-          ? `content-type: ${result.headers["content-type"]}\n\n${show(result.body)}`
+          ? `content-type: ${result.metadata.headers["content-type"]}\n\n${show(result.value)}`
           : show(result);
       },
     },
@@ -79,21 +77,21 @@ export const renderNotifyView = (): HTMLElement => {
       note: "HMAC over the encoded body, from mapClient, because a computed header cannot see it.",
       run: async () => {
         const result = await run(
-          createNotification().setBody({ kind: "note", text: message.input.value }).pipe(signed, toEffect),
+          createNotification({ transformClient: signed }).execute({
+            body: { kind: "note", text: message.input.value },
+          }),
         );
         return result._tag === "created"
-          ? `created ${result.body.id}\nLocation: ${result.headers.location}`
-          : `${result._tag}: ${show(result.body)}`;
+          ? `created ${result.value.id}\nLocation: ${result.metadata.headers.location}`
+          : `${result._tag}: ${show(result.value)}`;
       },
     },
     {
       label: "Post one (unsigned)",
       note: "The same plan without the transform. A typed 401, not a thrown error.",
       run: async () => {
-        const result = await run(
-          createNotification().setBody({ kind: "note", text: message.input.value }).pipe(toEffect),
-        );
-        return `${result._tag} (${result.status}): ${show(result.body)}`;
+        const result = await run(createNotification().execute({ body: { kind: "note", text: message.input.value } }));
+        return `${result._tag} (${result.metadata.status}): ${show(result.value)}`;
       },
     },
     {
@@ -101,8 +99,13 @@ export const renderNotifyView = (): HTMLElement => {
       note: "420 Enhance Your Calm is not registered and is correctly not in the transient set.",
       run: async () => {
         const client = `web-${Date.now()}`;
-        const result = await run(throttled().setHeader("x-client-id", client).setRetries(3).pipe(toEffect));
-        return `${result._tag} (${result.status}) after three built-in retries changed nothing`;
+        const result = await run(
+          throttled({
+            request: (request) => request.pipe(Request.setHeader("x-client-id", client)),
+            policy: Policy.make(Schedule.recurs(3)),
+          }).execute(undefined),
+        );
+        return `${result._tag} (${result.metadata.status}) after three built-in retries changed nothing`;
       },
     },
     {
@@ -111,28 +114,32 @@ export const renderNotifyView = (): HTMLElement => {
       run: async () => {
         const client = `web-${Date.now()}`;
         const result = await run(
-          throttled()
-            .setHeader("x-client-id", client)
-            .setRetry({
-              times: 4,
-              while: (input) =>
-                typeof input === "object" && input !== null && "status" in input && input.status === 420,
-            })
-            .pipe(toEffect),
+          throttled({
+            request: (request) => request.pipe(Request.setHeader("x-client-id", client)),
+            policy: Policy.make(Schedule.recurs(4), {
+              while: (reason) => Policy.transient(reason) || reason.metadata?.status === 420,
+            }),
+          }).execute(undefined),
         );
         return result._tag === "ok"
-          ? `succeeded after ${result.body.attempts} server-side attempts; the handler only saw the last one`
-          : `${result._tag}: ${show(result.body)}`;
+          ? `succeeded after ${result.value.attempts} server-side attempts; the handler only saw the last one`
+          : `${result._tag}: ${show(result.value)}`;
       },
     },
     {
       label: "Long poll, then time it out",
       note: "setTimeout bounds one attempt; a timeout is an Effect failure, not a mapped response.",
       run: async () => {
-        const quick = await run(pollNotifications().setUrlParam("wait", "1").pipe(toEffect));
-        const lines = [`waited ${quick._tag === "ok" ? quick.body.waited : "?"}s and returned normally`];
+        const quick = await run(
+          pollNotifications({ request: (request) => request.pipe(Request.setQuery("wait", "1")) }).execute(undefined),
+        );
+        const lines = [`waited ${quick._tag === "ok" ? quick.value.waited : "?"}s and returned normally`];
         try {
-          await run(pollNotifications().setUrlParam("wait", "5").setTimeout("400 millis").pipe(toEffect));
+          await run(
+            pollNotifications({ request: (request) => request.pipe(Request.setQuery("wait", "5")) })
+              .execute(undefined)
+              .pipe(Effect.timeout("400 millis")),
+          );
           lines.push("the five-second poll unexpectedly returned");
         } catch (error) {
           const cause = error instanceof Error ? (error as { readonly cause?: unknown }).cause : undefined;

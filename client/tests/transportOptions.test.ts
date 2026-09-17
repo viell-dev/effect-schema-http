@@ -1,5 +1,6 @@
 import { FetchHttpClient, HttpClient } from "@effect/platform";
 import { Effect } from "effect";
+import { Request } from "viell-effect-schema-http";
 import { describe, expect, it } from "vitest";
 import { legacyNotifications, notifySession, whoAmI } from "../src/services/notifyClient.js";
 import { call, servicesUp } from "./support.js";
@@ -18,14 +19,14 @@ import { call, servicesUp } from "./support.js";
  */
 describe.runIf(await servicesUp([4500]))("transport options are not request options", () => {
   it("never reaches a 301 rule, because the provider followed the redirect", async () => {
-    const result = await call(legacyNotifications(), "followed");
+    const result = await call(legacyNotifications().execute(undefined), "followed");
 
     // The `moved` rule is declared, typed, and unreachable: `fetch` followed the
     // Location and handed back the 200 from the new path. Nothing in the plan API can
     // change that, because the decision was made by the client before the library saw a
     // response at all.
-    expect(result.status).toBe(200);
-    expect(result.body.length).toBeGreaterThan(0);
+    expect(result.metadata.status).toBe(200);
+    expect(result.value.length).toBeGreaterThan(0);
   });
 
   it("reaches it when the provider is told not to follow", async () => {
@@ -36,34 +37,41 @@ describe.runIf(await servicesUp([4500]))("transport options are not request opti
     // documentation mentions it, because from the library's point of view it is someone
     // else's API.
     const moved = await Effect.runPromise(
-      legacyNotifications().effect.pipe(
-        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-        Effect.provide(FetchHttpClient.layer),
-      ),
+      legacyNotifications()
+        .execute(undefined)
+        .pipe(
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          Effect.provide(FetchHttpClient.layer),
+        ),
     );
 
     expect(moved._tag).toBe("moved");
     if (moved._tag === "moved") {
-      expect(moved.body.moved).toBe("/notifications.json");
-      expect(moved.body.since).toBe("2013-06-01");
+      expect(moved.value.moved).toBe("/notifications.json");
+      expect(moved.value.since).toBe("2013-06-01");
       // WEBrick absolutizes it; the Java service does not. Same header, same intent.
-      expect(moved.headers.location).toContain("/notifications.json");
+      expect(moved.metadata.headers.location).toContain("/notifications.json");
     }
   });
 
   it("sends no cookies of its own, so a cookie-reading endpoint needs the header by hand", async () => {
-    const session = await call(notifySession(), "ok");
+    const session = await call(notifySession().execute(undefined), "ok");
     // The service set `notify_csrf` in a Set-Cookie header on that response, and the
     // envelope parsed it — but nothing will send it back. Node's fetch has no cookie
     // jar, and a cross-origin browser fetch sends none without `credentials: "include"`
     // and a server that allows credentials against a specific origin.
-    expect(session.cookies.cookies["notify_csrf"]?.value).toBe(session.body.csrf_token);
+    expect(session.metadata.cookies.cookies["notify_csrf"]?.value).toBe(session.value.csrf_token);
 
-    const withoutCookie = await call(whoAmI(), "noCookie");
-    expect(withoutCookie.body.detail).toContain("a header is not the same thing");
+    const withoutCookie = await call(whoAmI().execute(undefined), "noCookie");
+    expect(withoutCookie.value.detail).toContain("a header is not the same thing");
 
-    const withCookie = await call(whoAmI().setHeader("cookie", `notify_csrf=${session.body.csrf_token}`), "ok");
-    expect(withCookie.body.valid).toBe(true);
+    const withCookie = await call(
+      whoAmI({
+        request: (request) => request.pipe(Request.setHeader("cookie", `notify_csrf=${session.value.csrf_token}`)),
+      }).execute(undefined),
+      "ok",
+    );
+    expect(withCookie.value.valid).toBe(true);
   });
 
   it("can install a whole different provider for one plan", async () => {
@@ -74,7 +82,7 @@ describe.runIf(await servicesUp([4500]))("transport options are not request opti
     const counting = HttpClient.tap(() => Effect.sync(() => (seen += 1)));
 
     const result = await Effect.runPromise(
-      legacyNotifications().mapClient(counting).effect.pipe(Effect.provide(FetchHttpClient.layer)),
+      legacyNotifications({ transformClient: counting }).execute(undefined).pipe(Effect.provide(FetchHttpClient.layer)),
     );
 
     expect(result._tag).toBe("followed");

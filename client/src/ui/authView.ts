@@ -1,9 +1,8 @@
 import { DateTime, Schema } from "effect";
-import { toEffect } from "viell-effect-schema-http";
 import { h } from "../dom.js";
 import { forceFresh, withNonce, withScopeLines } from "../plans/transforms.js";
-import { EdgeCacheStatus, TokenProbeHeaders } from "../schemas/idLegacy.js";
 import { run } from "../runtime.js";
+import { EdgeCacheStatus, TokenProbeHeaders } from "../schemas/idLegacy.js";
 import {
   directoryEntry,
   discovery,
@@ -37,11 +36,11 @@ export const renderAuthView = (): HTMLElement => {
       run: async () => {
         const { username: name, password: secret } = credentials();
         const result = await run(
-          register().setBody({ username: name, email: `${name}@example.invalid`, password: secret }).pipe(toEffect),
+          register().execute({ body: { username: name, email: `${name}@example.invalid`, password: secret } }),
         );
         return result._tag === "created"
-          ? `created ${result.body.username} (${result.body.id})`
-          : `${result._tag}: ${show(result.body)}`;
+          ? `created ${result.value.username} (${result.value.id})`
+          : `${result._tag}: ${show(result.value)}`;
       },
     },
     {
@@ -50,16 +49,16 @@ export const renderAuthView = (): HTMLElement => {
       run: async () => {
         const { username: name, password: secret } = credentials();
         const result = await run(
-          requestToken().setBody({ grant_type: "password", username: name, password: secret }).pipe(toEffect),
+          requestToken().execute({ body: { grant_type: "password", username: name, password: secret } }),
         );
-        if (result._tag !== "ok") return `${result._tag}: ${show(result.body)}`;
+        if (result._tag !== "ok") return `${result._tag}: ${show(result.value)}`;
         setSession({
-          accessToken: result.body.access_token,
-          refreshToken: result.body.refresh_token,
-          tokenType: result.body.token_type,
+          accessToken: result.value.access_token,
+          refreshToken: result.value.refresh_token,
+          tokenType: result.value.token_type,
           username: name,
         });
-        return `signed in\ntoken_type decoded as ${result.body.token_type}\naccess token ${result.body.access_token}`;
+        return `signed in\ntoken_type decoded as ${result.value.token_type}\naccess token ${result.value.access_token}`;
       },
     },
     {
@@ -68,26 +67,28 @@ export const renderAuthView = (): HTMLElement => {
       run: async () => {
         const { username: name, password: secret } = credentials();
         const result = await run(
-          formLogin().setBody({ grant_type: "password", username: name, password: secret }).pipe(toEffect),
+          formLogin().execute({ body: { grant_type: "password", username: name, password: secret } }),
         );
-        if (result._tag !== "ok") return `${result._tag}: ${show(result.body)}`;
+        if (result._tag !== "ok") return `${result._tag}: ${show(result.value)}`;
         setSession({
-          accessToken: result.body.access_token,
+          accessToken: result.value.access_token,
           refreshToken: "",
-          tokenType: result.body.token_type,
+          tokenType: result.value.token_type,
           username: name,
         });
-        return `signed in\ntoken_type on the wire was BEARER, decoded as ${result.body.token_type}\nexpires_in arrived as a string, decoded as ${result.body.expires_in}\nscope ${result.body.scope.join(", ")}`;
+        return `signed in\ntoken_type on the wire was BEARER, decoded as ${result.value.token_type}\nexpires_in arrived as a string, decoded as ${result.value.expires_in}\nscope ${result.value.scope.join(", ")}`;
       },
     },
     {
       label: "Probe the token (HEAD)",
       note: "A bodyless response whose facts are all in headers, decoded with an ordinary schema.",
       run: async () => {
-        const result = await run(probeToken().pipe(toEffect));
+        const result = await run(probeToken().execute(undefined));
         if (result._tag !== "valid") return "the token is not valid";
-        const facts = Schema.decodeUnknownSync(TokenProbeHeaders)(result.headers);
-        const lines = result.headerEntries.filter(([name]) => name.toLowerCase() === "x-token-scope");
+        const facts = Schema.decodeUnknownSync(TokenProbeHeaders)(result.metadata.headers);
+        const lines = Object.entries(result.metadata.headers).filter(
+          ([name]) => name.toLowerCase() === "x-token-scope",
+        );
         return `${show(facts)}\n\nThe server wrote ${facts["x-token-scope"].length} separate X-Token-Scope lines; Fetch delivered ${lines.length}.`;
       },
     },
@@ -95,34 +96,34 @@ export const renderAuthView = (): HTMLElement => {
       label: "Read the profile",
       note: "The endpoint with its own error format, which is why it declares exact-status rules.",
       run: async () => {
-        const result = await run(getUserInfo().pipe(toEffect));
-        return result._tag === "ok" ? show(result.body) : `${result._tag}: ${show(result.body)}`;
+        const result = await run(getUserInfo().execute(undefined));
+        return result._tag === "ok" ? show(result.value) : `${result._tag}: ${show(result.value)}`;
       },
     },
     {
       label: "Look up in the directory",
       note: "Query-parameter authentication, SCREAMING field names, LDAP time, and no 404s ever.",
       run: async () => {
-        const result = await run(directoryEntry({ username: credentials().username }).pipe(toEffect));
-        if (result._tag !== "ok") return `${result._tag}: ${show(result.body)}`;
-        const created = result.body.createdAt === null ? "none" : DateTime.formatIso(result.body.createdAt);
-        return `${show({ ...result.body, createdAt: created })}\n\nA missing user is a 200 with ACTIVE: "N", because operations asked for no 404s in the log.`;
+        const result = await run(directoryEntry().execute({ path: { username: credentials().username } }));
+        if (result._tag !== "ok") return `${result._tag}: ${show(result.value)}`;
+        const created = result.value.createdAt === null ? "none" : DateTime.formatIso(result.value.createdAt);
+        return `${show({ ...result.value, createdAt: created })}\n\nA missing user is a 200 with ACTIVE: "N", because operations asked for no 404s in the log.`;
       },
     },
     {
       label: "Fetch the key set",
       note: "Behind a proxy that ignores Cache-Control. Watch X-Cache across three calls.",
       run: async () => {
-        await run(purgeJwksCache().pipe(toEffect));
-        const first = await run(getJwks().pipe(toEffect));
-        const second = await run(getJwks().pipe(toEffect));
-        const bypassed = await run(getJwks().pipe(forceFresh, toEffect));
+        await run(purgeJwksCache().execute(undefined));
+        const first = await run(getJwks().execute(undefined));
+        const second = await run(getJwks().execute(undefined));
+        const bypassed = await run(getJwks({ request: (request) => request.pipe(forceFresh) }).execute(undefined));
         const status = (headers: Record<string, string | undefined>) =>
           Schema.decodeUnknownSync(EdgeCacheStatus)(headers);
         return [
-          `after a purge:      ${status(first.headers)["x-cache"]}`,
-          `immediately again:  ${status(second.headers)["x-cache"]}  (setCache alone changes nothing)`,
-          `with forceFresh:    ${status(bypassed.headers)["x-cache"]}  (a computed cache-busting parameter)`,
+          `after a purge:      ${status(first.metadata.headers)["x-cache"]}`,
+          `immediately again:  ${status(second.metadata.headers)["x-cache"]}  (setCache alone changes nothing)`,
+          `with forceFresh:    ${status(bypassed.metadata.headers)["x-cache"]}  (a computed cache-busting parameter)`,
         ].join("\n");
       },
     },
@@ -130,38 +131,46 @@ export const renderAuthView = (): HTMLElement => {
       label: "Narrow the scopes",
       note: "Needs repeated X-Scope header lines, which Fetch joins. Expect a rejection here.",
       run: async () => {
-        const result = await run(scopedToken().pipe(withScopeLines(["openid", "projects:read"]), toEffect));
+        const result = await run(
+          scopedToken({ request: (request) => request.pipe(withScopeLines(["openid", "projects:read"])) }).execute(
+            undefined,
+          ),
+        );
         return result._tag === "ok"
-          ? `narrowed to ${result.body.scope.join(", ")}`
-          : `rejected: ${result.body.error_description}\n\nThe plan retained two entries; the Fetch provider combined them. A node:http provider that reads getHeaderEntries preserves them — see repeatedHeaderClient.ts.`;
+          ? `narrowed to ${result.value.scope.join(", ")}`
+          : `rejected: ${result.value.error_description}\n\nThe plan retained two entries; the Fetch provider combined them. A node:http provider that reads getHeaderEntries preserves them — see repeatedHeaderClient.ts.`;
       },
     },
     {
       label: "Correlate with a nonce (built-in retry)",
       note: "The 503 is retried automatically; the nonce cannot change, so the replay check refuses it.",
       run: async () => {
-        await run(resetSessionEcho().pipe(toEffect));
+        await run(resetSessionEcho().execute(undefined));
         const result = await run(
-          sessionEcho().setBody({ message: "built-in retry" }).pipe(withNonce(Date.now()), toEffect).pipe(),
+          sessionEcho({ request: (request) => request.pipe(withNonce(Date.now())) }).execute({
+            body: { message: "built-in retry" },
+          }),
         );
         return result._tag === "ok"
-          ? `unexpectedly succeeded on attempt ${result.body.attempt}`
-          : `${result._tag}: ${show(result.body)}\n\nRequest encoding runs once per evaluation, so all attempts carried the same X-Nonce.`;
+          ? `unexpectedly succeeded on attempt ${result.value.attempt}`
+          : `${result._tag}: ${show(result.value)}\n\nRequest encoding runs once per evaluation, so all attempts carried the same X-Nonce.`;
       },
     },
     {
       label: "Correlate with a nonce (own loop)",
       note: "setRetries(0) and a loop over the cold plan, with a new nonce each time.",
       run: async () => {
-        await run(resetSessionEcho().pipe(toEffect));
+        await run(resetSessionEcho().execute(undefined));
         const trail: Array<string> = [];
         let nonce = Date.now();
         for (let attempt = 0; attempt < 5; attempt += 1) {
           const result = await run(
-            sessionEcho().setBody({ message: "own loop" }).pipe(withNonce(nonce), toEffect),
+            sessionEcho({ request: (request) => request.pipe(withNonce(nonce)) }).execute({
+              body: { message: "own loop" },
+            }),
           );
           trail.push(`nonce ${nonce} -> ${result._tag}`);
-          if (result._tag === "ok") return `${trail.join("\n")}\n\nsucceeded on attempt ${result.body.attempt}`;
+          if (result._tag === "ok") return `${trail.join("\n")}\n\nsucceeded on attempt ${result.value.attempt}`;
           nonce += 1;
         }
         return trail.join("\n");
@@ -171,8 +180,8 @@ export const renderAuthView = (): HTMLElement => {
       label: "Read the discovery document",
       note: "grant_types_supported is a space-delimited string where the spec requires an array.",
       run: async () => {
-        const result = await run(discovery().pipe(toEffect));
-        return result._tag === "ok" ? show(result.body) : show(result.body);
+        const result = await run(discovery().execute(undefined));
+        return result._tag === "ok" ? show(result.value) : show(result.value);
       },
     },
     {
@@ -181,10 +190,10 @@ export const renderAuthView = (): HTMLElement => {
       run: async () => {
         const session = getSession();
         if (session === undefined) return "not signed in";
-        const revoked = await run(revokeToken().setBody({ token: session.accessToken }).pipe(toEffect));
-        const after = await run(getUserInfo().pipe(toEffect));
+        const revoked = await run(revokeToken().execute({ body: { token: session.accessToken } }));
+        const after = await run(getUserInfo().execute(undefined));
         clearSession();
-        return `${revoked._tag} (${revoked.status}), and the profile now answers ${after._tag}`;
+        return `${revoked._tag} (${revoked.metadata.status}), and the profile now answers ${after._tag}`;
       },
     },
   ];

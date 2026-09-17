@@ -1,31 +1,7 @@
 import { HttpClient, type HttpClientRequest } from "@effect/platform";
 import { Effect } from "effect";
-import type { RequestPlanTransform } from "viell-effect-schema-http";
 
-/**
- * HMAC request signing for the 2011 notification service.
- *
- * This is the one requirement in the whole repository that a **computed header cannot
- * satisfy**, and the reason is worth stating exactly, because it is a property of the
- * design rather than an oversight:
- *
- * - A computed header value is `() => string | undefined`. It takes no arguments, so it
- *   cannot see the request, and it runs *while the request is being materialized* —
- *   before the body schema has encoded anything. A signature over the body is therefore
- *   not expressible as a declared header, and no amount of configuration changes that.
- * - `mapRequest` runs after encoding and does see the built request, so it has the body.
- *   But it is synchronous, and `crypto.subtle.sign` is not. There is no synchronous HMAC
- *   in either a browser or modern Node without pulling in an implementation.
- * - `mapClient` takes the request Effect, so it can be effectful and it runs after
- *   encoding. That is the seam, and the library documents it as such: "They run outside
- *   the Effect runtime, so they cannot fail, retry, or be interrupted; use a request
- *   transform, `mapClient`, or a gate for anything effectful."
- *
- * So the escape hatch exists, it is documented, and it is the right one — but the
- * library's own examples only ever use `mapClient` to change transport behaviour
- * (`withTracerPropagation`), never to compute a header from the encoded body, which is
- * the most common reason a real application reaches for it.
- */
+/** HMAC runs in the native HttpClient, after body encoding and once per attempt. */
 
 /** Committed to the repository in 2011 and never rotated. */
 const SHARED_SECRET = "notify-shared-secret-2011";
@@ -52,13 +28,9 @@ const bodyText = (body: HttpClientRequest.HttpClientRequest["body"]): string => 
 
 const hmacSha256 = (secret: string, message: string): Effect.Effect<string> =>
   Effect.promise(async () => {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
+    const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+      "sign",
+    ]);
     const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
     return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   });
@@ -97,8 +69,7 @@ export const signNotifyRequest = (
  * makes this the one place in the repository where per-attempt resolution is not merely
  * convenient but required.
  */
-export const signed: RequestPlanTransform = (plan) =>
-  plan.mapClient(HttpClient.mapRequestEffect(signNotifyRequest));
+export const signed = HttpClient.mapRequestEffect(signNotifyRequest);
 
 // ---------------------------------------------------------------------------
 // HTTP Digest, 1997 edition
@@ -129,7 +100,7 @@ const md5 = (value: string): string => {
   const bytes = new TextEncoder().encode(value);
   const words: Array<number> = [];
   for (let index = 0; index < bytes.length; index += 1) {
-    words[index >> 2] = (words[index >> 2] ?? 0) | (bytes[index]! << (index % 4 << 3));
+    words[index >> 2] = (words[index >> 2] ?? 0) | (bytes[index]! << ((index % 4) << 3));
   }
   words[bytes.length >> 2] = (words[bytes.length >> 2] ?? 0) | (0x80 << ((bytes.length % 4) << 3));
   const bitLength = bytes.length * 8;
@@ -153,12 +124,11 @@ const md5 = (value: string): string => {
   const constants = [
     -680876936, -389564586, 606105819, -1044525330, -176418897, 1200080426, -1473231341, -45705983, 1770035416,
     -1958414417, -42063, -1990404162, 1804603682, -40341101, -1502002290, 1236535329, -165796510, -1069501632,
-    643717713, -373897302, -701558691, 38016083, -660478335, -405537848, 568446438, -1019803690, -187363961,
-    1163531501, -1444681467, -51403784, 1735328473, -1926607734, -378558, -2022574463, 1839030562, -35309556,
-    -1530992060, 1272893353, -155497632, -1094730640, 681279174, -358537222, -722521979, 76029189, -640364487,
-    -421815835, 530742520, -995338651, -198630844, 1126891415, -1416354905, -57434055, 1700485571, -1894986606,
-    -1051523, -2054922799, 1873313359, -30611744, -1560198380, 1309151649, -145523070, -1120210379, 718787259,
-    -343485551,
+    643717713, -373897302, -701558691, 38016083, -660478335, -405537848, 568446438, -1019803690, -187363961, 1163531501,
+    -1444681467, -51403784, 1735328473, -1926607734, -378558, -2022574463, 1839030562, -35309556, -1530992060,
+    1272893353, -155497632, -1094730640, 681279174, -358537222, -722521979, 76029189, -640364487, -421815835, 530742520,
+    -995338651, -198630844, 1126891415, -1416354905, -57434055, 1700485571, -1894986606, -1051523, -2054922799,
+    1873313359, -30611744, -1560198380, 1309151649, -145523070, -1120210379, 718787259, -343485551,
   ];
   const shifts = [
     [7, 12, 17, 22],
@@ -189,9 +159,7 @@ const md5 = (value: string): string => {
   }
 
   return [a0, b0, c0, d0]
-    .map((word) =>
-      [0, 1, 2, 3].map((byte) => (((word >> (byte * 8)) & 0xff) + 0x100).toString(16).slice(1)).join(""),
-    )
+    .map((word) => [0, 1, 2, 3].map((byte) => (((word >> (byte * 8)) & 0xff) + 0x100).toString(16).slice(1)).join(""))
     .join("");
 };
 
