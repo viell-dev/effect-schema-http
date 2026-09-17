@@ -1,14 +1,14 @@
-/** Computations remain data until materialization. Maps also avoid prototype-key collisions. */
-export type Value = string | (() => string | undefined);
-export type Fields = ReadonlyMap<string, ReadonlyArray<Value>>;
+/** Computations remain data until materialization. Maps avoid prototype-key collisions. */
+export type Value<A = string> = A | (() => A | undefined);
+export type Fields<A = string> = ReadonlyMap<string, ReadonlyArray<Value<A>>>;
 
-export const set = (fields: Fields, key: string, value: Value, append = false): Fields => {
+export const set = <A>(fields: Fields<A>, key: string, value: Value<A>, append = false): Fields<A> => {
   const copy = new Map(fields);
   copy.set(key, append ? [...(copy.get(key) ?? []), value] : [value]);
   return copy;
 };
 
-export const remove = (fields: Fields, key: string, value?: string): Fields => {
+export const remove = <A>(fields: Fields<A>, key: string, value?: A): Fields<A> => {
   const copy = new Map(fields);
   if (value === undefined) copy.delete(key);
   else
@@ -19,8 +19,8 @@ export const remove = (fields: Fields, key: string, value?: string): Fields => {
   return copy;
 };
 
-export const resolve = (fields: Fields): Array<readonly [string, string]> => {
-  const output: Array<readonly [string, string]> = [];
+export const resolve = <A extends string | null>(fields: Fields<A>): Array<readonly [string, A]> => {
+  const output: Array<readonly [string, A]> = [];
   for (const [key, values] of fields) {
     for (const value of values) {
       const resolved = typeof value === "function" ? value() : value;

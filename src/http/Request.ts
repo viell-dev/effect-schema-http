@@ -1,8 +1,10 @@
-import { Headers, HttpClientRequest, HttpMethod, UrlParams } from "@effect/platform";
+import { Headers, HttpClientRequest, HttpMethod } from "@effect/platform";
 import { Data, Effect, ParseResult, Pipeable, Schema } from "effect";
 import * as Body from "./Body.js";
 import * as Url from "./Url.js";
 import * as Fields from "./internal/fields.js";
+import * as Query from "./internal/query.js";
+import * as Transport from "./Transport.js";
 
 export class InvalidRequest extends Data.TaggedError("InvalidRequest")<{
   readonly message: string;
@@ -14,7 +16,7 @@ interface Options<H extends boolean, Q extends boolean> {
   readonly url: string;
   readonly baseUrl: string;
   readonly headers: Fields.Fields;
-  readonly query: Fields.Fields;
+  readonly query: Fields.Fields<string | null>;
   readonly headersBound: H;
   readonly queryBound: Q;
 }
@@ -52,10 +54,12 @@ export const make = (method: string, url: string): Request<unknown> => {
   const hash = url.indexOf("#");
   const withoutHash = hash < 0 ? url : url.slice(0, hash);
   const start = withoutHash.indexOf("?");
-  const query = new Map<string, ReadonlyArray<Fields.Value>>();
+  const query = new Map<string, ReadonlyArray<Fields.Value<string | null>>>();
   if (start >= 0)
-    for (const [key, value] of new URLSearchParams(withoutHash.slice(start + 1))) {
-      query.set(key, [...(query.get(key) ?? []), value]);
+    for (const segment of withoutHash.slice(start + 1).split("&")) {
+      for (const [key, value] of new URLSearchParams(segment)) {
+        query.set(key, [...(query.get(key) ?? []), segment.includes("=") ? value : null]);
+      }
     }
   return construct(
     {
@@ -97,15 +101,15 @@ export const removeHeader =
       self.prepare,
     );
 export const setQuery =
-  (name: string, value: Fields.Value) =>
+  (name: string, value: Fields.Value<string | null>) =>
   <I, E, R, H extends boolean>(self: Request<I, E, R, H, false>): Request<I, E, R, H, false> =>
     construct({ ...self.options, query: Fields.set(self.options.query, name, value) }, self.prepare);
 export const appendQuery =
-  (name: string, value: Fields.Value) =>
+  (name: string, value: Fields.Value<string | null>) =>
   <I, E, R, H extends boolean>(self: Request<I, E, R, H, false>): Request<I, E, R, H, false> =>
     construct({ ...self.options, query: Fields.set(self.options.query, name, value, true) }, self.prepare);
 export const removeQuery =
-  (name: string, value?: string) =>
+  (name: string, value?: string | null) =>
   <I, E, R, H extends boolean>(self: Request<I, E, R, H, false>): Request<I, E, R, H, false> =>
     construct({ ...self.options, query: Fields.remove(self.options.query, name, value) }, self.prepare);
 
@@ -126,7 +130,7 @@ export const headers =
     );
 
 export const query =
-  <A, I extends UrlParams.Input, R2>(contract: Schema.Schema<A, I, R2>) =>
+  <A, I extends Url.QueryInput, R2>(contract: Schema.Schema<A, I, R2>) =>
   <Input, E, R, H extends boolean>(
     self: Request<Input, E, R, H, false>,
   ): Request<Input & { readonly query: A }, E | ParseResult.ParseError, R | R2, H, true> =>
@@ -134,7 +138,7 @@ export const query =
       Effect.gen(function* () {
         const encoded = yield* Schema.encode(contract)(input.query);
         const prepared = yield* self.prepare(input, request);
-        return HttpClientRequest.setUrlParams(prepared, encoded);
+        return Query.set(prepared, Url.queryEntries(encoded), yield* Query.Flags);
       }),
     );
 
@@ -184,41 +188,59 @@ export const mapEffect =
       Effect.flatMap(self.prepare(input, request), (prepared) => f(prepared, input)),
     );
 
-export const materialize = <I, E, R, H extends boolean, Q extends boolean>(
+export interface Compiled {
+  readonly request: HttpClientRequest.HttpClientRequest;
+  readonly headerLines: Transport.Lines;
+}
+
+/** Materialize both the native request and lossless provider hints. */
+export const compile = <I, E, R, H extends boolean, Q extends boolean>(
   self: Request<I, E, R, H, Q>,
   input: I,
-): Effect.Effect<HttpClientRequest.HttpClientRequest, E | InvalidRequest, R> =>
+): Effect.Effect<Compiled, E | InvalidRequest, R> =>
   Effect.gen(function* () {
     const service = yield* Url.Url;
+    const flags = new WeakSet<readonly [string, string]>();
+    let headerLines: Transport.Lines = [];
     const initial = yield* Effect.try({
       try: () => {
         // The platform constructor preserves custom method strings at runtime.
         let request = HttpClientRequest.make(self.options.method as HttpMethod.HttpMethod)(self.options.url);
         const grouped = new Map<string, Array<string>>();
-        for (const [key, value] of Fields.resolve(self.options.headers))
-          grouped.set(key, [...(grouped.get(key) ?? []), value]);
+        headerLines = Fields.resolve(self.options.headers);
+        for (const [key, value] of headerLines) grouped.set(key, [...(grouped.get(key) ?? []), value]);
         request = HttpClientRequest.setHeaders(
           request,
           Headers.fromInput([...grouped].map(([key, values]) => [key, values.join(", ")] as const)),
         );
-        return HttpClientRequest.setUrlParams(request, Fields.resolve(self.options.query));
+        return Query.set(request, Fields.resolve(self.options.query), flags);
       },
       catch: (cause) => new InvalidRequest({ message: "Failed to materialize request fields", cause }),
     });
-    const prepared = yield* self.prepare(input, initial);
+    const prepared = yield* self.prepare(input, initial).pipe(Effect.provideService(Query.Flags, flags));
     if ((prepared.method === "GET" || prepared.method === "HEAD") && prepared.body._tag !== "Empty") {
       return yield* new InvalidRequest({ message: `${prepared.method} cannot carry a request body` });
     }
     return yield* Effect.try({
       try: () => {
         const url = service.join(self.options.baseUrl, prepared.url);
-        const queryString = service.query(prepared.urlParams);
+        const queryString = service.query(
+          prepared.urlParams.map((pair) => [pair[0], flags.has(pair) ? null : pair[1]]),
+        );
         const finalUrl = queryString ? `${url}${url.includes("?") ? "&" : "?"}${queryString}` : url;
-        return HttpClientRequest.setHeaders(
+        const request = HttpClientRequest.setHeaders(
           HttpClientRequest.setBody(HttpClientRequest.make(prepared.method)(finalUrl), prepared.body),
           prepared.headers,
         );
+        return { request, headerLines: Transport.reconcile(headerLines, request.headers) };
       },
       catch: (cause) => new InvalidRequest({ message: "Failed to encode request URL", cause }),
     });
   });
+
+/** Explicit preparation without transport execution. Use compile for a custom lossless provider. */
+export const materialize = <I, E, R, H extends boolean, Q extends boolean>(
+  self: Request<I, E, R, H, Q>,
+  input: I,
+): Effect.Effect<HttpClientRequest.HttpClientRequest, E | InvalidRequest, R> =>
+  Effect.map(compile(self, input), (compiled) => compiled.request);

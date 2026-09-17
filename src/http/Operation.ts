@@ -3,6 +3,7 @@ import { Cause, Clock, Effect, Exit, Option, Pipeable, Schedule, Function } from
 import * as Policy from "./Policy.js";
 import * as Request from "./Request.js";
 import * as Response from "./Response.js";
+import * as Transport from "./Transport.js";
 
 /** Operations return ordinary cold Effects, with complete input and environment types. */
 export interface Operation<in I, out A, out E = never, out R = never> extends Pipeable.Pipeable {
@@ -53,7 +54,8 @@ export const make = <
 > =>
   fromEffect((input) =>
     Effect.gen(function* () {
-      let prepared = yield* Request.materialize(request, input);
+      const compiled = yield* Request.compile(request, input);
+      let prepared = compiled.request;
       if (prepared.headers.accept === undefined && response.accepts.length > 0)
         prepared = HttpClientRequest.setHeader(prepared, "accept", response.accepts.join(", "));
       const client = yield* HttpClient.HttpClient;
@@ -67,7 +69,9 @@ export const make = <
               options?.transformClient?.(client) ?? client;
             // A fresh request identity isolates Platform's scoped abort-controller association.
             const fresh = HttpClientRequest.setHeaders(prepared, {});
-            const received = yield* HttpClient.withScope(activeClient).execute(fresh);
+            const received = yield* HttpClient.withScope(activeClient)
+              .execute(fresh)
+              .pipe(Effect.provideService(Transport.HeaderLines, compiled.headerLines));
             info = Option.some(Response.metadata(received));
             return yield* Response.decode(response, received);
           }),

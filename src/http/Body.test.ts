@@ -30,4 +30,27 @@ describe("finite body contracts", () => {
       metadata: { status: 404 },
     });
   });
+  it("distinguishes JSON null from empty or malformed JSON", async () => {
+    expect(await Effect.runPromise(Body.json.decode(response("null")))).toBeNull();
+    for (const input of ["", " ", "not json"]) {
+      expect(Either.isLeft(await Effect.runPromise(Effect.either(Body.json.decode(response(input)))))).toBe(true);
+    }
+  });
+
+  it("accepts bodyless responses and drains ignored payloads without buffering", async () => {
+    const empty = HttpClientResponse.fromWeb(
+      HttpClientRequest.get("https://example.test"),
+      new globalThis.Response(null, { status: 204 }),
+    );
+    expect(await Effect.runPromise(Response.decode(Response.status(204, Body.empty), empty))).toBeUndefined();
+    expect(await Effect.runPromise(Body.empty.decode(response("unexpected body")))).toBeUndefined();
+    const unsupported = HttpClientResponse.fromWeb(
+      HttpClientRequest.get("https://example.test"),
+      new globalThis.Response(null, { status: 404 }),
+    );
+    const result = await Effect.runPromise(
+      Effect.either(Response.decode(Response.status(200, Body.text), unsupported)),
+    );
+    expect(Either.isLeft(result) && result.left._tag).toBe("UnexpectedStatus");
+  });
 });

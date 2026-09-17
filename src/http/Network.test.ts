@@ -1,11 +1,12 @@
-import { createServer, type RequestListener } from "node:http";
-import { FetchHttpClient } from "@effect/platform";
+import { createServer, request as sendRequest, type RequestListener } from "node:http";
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientResponse } from "@effect/platform";
 import { Deferred, Effect, Fiber, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Body from "./Body.js";
 import * as Operation from "./Operation.js";
 import * as Request from "./Request.js";
 import * as Response from "./Response.js";
+import * as Transport from "./Transport.js";
 
 const withServer = async (handler: RequestListener, use: (url: string) => Promise<void>) => {
   const server = createServer(handler);
@@ -118,6 +119,101 @@ describe("Fetch transport integration", () => {
         expect(
           await Effect.runPromise(upload.execute({ body: form }).pipe(Effect.provide(FetchHttpClient.layer))),
         ).toBe("uploaded");
+      },
+    );
+  });
+  it("sends bare query flags and preserves repeated physical headers with a supporting provider", async () => {
+    await withServer(
+      (request, response) => {
+        expect(request.url).toBe("/contract?wsdl&empty=");
+        const scopes: Array<string> = [];
+        request.rawHeaders.forEach((value, index) => {
+          if (index % 2 === 0 && value.toLowerCase() === "x-scope") scopes.push(request.rawHeaders[index + 1]);
+        });
+        response.end(JSON.stringify(scopes));
+      },
+      async (url) => {
+        const client = HttpClient.make((request, _url, signal) =>
+          Effect.flatMap(Transport.headerLines(request), (lines) =>
+            Effect.tryPromise({
+              try: () =>
+                new Promise<HttpClientResponse.HttpClientResponse>((resolve, reject) => {
+                  const outgoing = sendRequest(
+                    request.url,
+                    {
+                      method: request.method,
+                      headers: ["host", new URL(request.url).host, ...lines.flatMap(([key, value]) => [key, value])],
+                      signal,
+                    },
+                    (incoming) => {
+                      const chunks: Array<Buffer> = [];
+                      incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+                      incoming.on("error", reject);
+                      incoming.on("end", () =>
+                        resolve(
+                          HttpClientResponse.fromWeb(
+                            request,
+                            new globalThis.Response(new Uint8Array(Buffer.concat(chunks)), {
+                              status: incoming.statusCode,
+                            }),
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                  outgoing.on("error", reject);
+                  outgoing.end();
+                }),
+              catch: (cause) => new HttpClientError.RequestError({ request, reason: "Transport", cause }),
+            }),
+          ),
+        );
+        const operation = Operation.make(
+          Request.get(`${url}/contract?wsdl&empty=`).pipe(
+            Request.appendHeader("X-Scope", "openid"),
+            Request.appendHeader("X-Scope", "projects:read"),
+          ),
+          Response.status(200, Body.jsonSchema(Schema.Array(Schema.String))),
+        );
+        expect(
+          await Effect.runPromise(
+            operation.execute(undefined).pipe(Effect.provideService(HttpClient.HttpClient, client)),
+          ),
+        ).toEqual(["openid", "projects:read"]);
+        expect(
+          await Effect.runPromise(operation.execute(undefined).pipe(Effect.provide(FetchHttpClient.layer))),
+        ).toEqual(["openid, projects:read"]);
+      },
+    );
+  });
+
+  it("leaves redirects and other request-init options under provider control", async () => {
+    await withServer(
+      (request, response) => {
+        if (request.url === "/old") {
+          response.writeHead(301, { location: "/new" });
+          response.end("moved");
+        } else response.end("arrived");
+      },
+      async (url) => {
+        const operation = Operation.make(
+          Request.get(`${url}/old`),
+          Response.status(301, Response.tag("Moved", Body.text)).pipe(
+            Response.orElse(Response.status(200, Response.tag("Arrived", Body.text))),
+          ),
+        );
+        expect(
+          (await Effect.runPromise(operation.execute(undefined).pipe(Effect.provide(FetchHttpClient.layer))))._tag,
+        ).toBe("Arrived");
+        const manual = await Effect.runPromise(
+          operation
+            .execute(undefined)
+            .pipe(
+              Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+              Effect.provide(FetchHttpClient.layer),
+            ),
+        );
+        expect(manual).toMatchObject({ _tag: "Moved", metadata: { headers: { location: "/new" } } });
       },
     );
   });

@@ -35,7 +35,15 @@ export const make = <A, EE, DE, ER, DR>(
 
 export const json: Codec<unknown, HttpBody.HttpBodyError, HttpClientError.ResponseError> = make({
   encode: HttpBody.json,
-  decode: (response) => response.json,
+  decode: (response) =>
+    Effect.flatMap(response.text, (value) =>
+      Effect.try({
+        // Platform treats empty JSON as null. JSON syntax distinguishes those representations.
+        try: () => JSON.parse(value) as unknown,
+        catch: (cause) =>
+          new HttpClientError.ResponseError({ request: response.request, response, reason: "Decode", cause }),
+      }),
+    ),
   mediaType: "application/json",
 });
 
@@ -66,7 +74,13 @@ export const urlEncoded: Codec<UrlParams.UrlParams, never, HttpClientError.Respo
 /** Drain without buffering, including erroneous payloads on bodyless responses. */
 export const empty: Codec<void, never, HttpClientError.ResponseError> = make({
   encode: () => Effect.succeed(HttpBody.empty),
-  decode: (response) => Stream.runDrain(response.stream),
+  decode: (response) =>
+    Stream.runDrain(response.stream).pipe(
+      Effect.catchIf(
+        (error) => error.reason === "EmptyBody",
+        () => Effect.void,
+      ),
+    ),
 });
 
 export const map =
