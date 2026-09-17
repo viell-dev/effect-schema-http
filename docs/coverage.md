@@ -1,0 +1,56 @@
+# Behavioral coverage
+
+The design preserves the consumer capabilities established in the workspace while expressing their
+composition independently. These are implementation and test claims for this branch, not results from
+the separate evaluation applications.
+
+| Capability                                   | Mechanism / evidence                                                                    |
+| -------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Cold definitions and repeatable execution    | Request descriptions and ordinary Effects; `Operation.test.ts`                          |
+| Deferred removable header/query defaults     | Immutable declaration maps, materialized before attempts; `Operation.test.ts`           |
+| Bare and empty query values                  | Explicit null flag, empty string and schema-encoded flags; legacy and wire tests        |
+| Repeated physical request header lines       | Context reference plus a supporting Node provider; compared with Fetch on the wire      |
+| Typed path, header, query and body input     | Schema encoders and required input intersections; runtime and negative compile checks   |
+| Typed body readiness and default input       | Required argument properties; `Request.mapInput` composes defaults                      |
+| Alternate response envelopes and domain data | Ordered metadata-only cases, tagged values, Schema unions, Effect mapping               |
+| JSON / text / bytes / multipart / form data  | Independent encoders/decoders; body and real Fetch tests                                |
+| Legacy representations                       | Custom codec plus Schema; executable fixed-width example                                |
+| Schemas with services                        | Environment propagation; contextful schema test and compiled declarations               |
+| Shared client defaults and application APIs  | Reusable Request transforms, Context tags and Layers; executable Catalog example        |
+| URL policy replacement                       | Context reference and Layer; custom encoding test                                       |
+| Retry budget, classification and deadlines   | Native Schedule driver, Clock, Effect timeout; synthetic and TestClock tests            |
+| Per-attempt signatures / nonces              | Native client transforms with preserved error/environment channels                      |
+| Explicit response ownership                  | Per-attempt scopes, draining, real Fetch interruption and abort-signal assertions       |
+| Response metadata and cookies                | Platform metadata values retained in envelopes; Fetch cookie test                       |
+| HTTP cache hints                             | Ordinary headers; actual caching remains provider-owned                                 |
+| Interaction sharing and supersession         | Scope-owned workers, Deferred publication and semaphore transitions; interaction tests  |
+| Retention eligibility and predicate defects  | Typed predicate with guaranteed publication; interaction tests                          |
+| Awaited permanent disposal                   | Dedicated ownership scope and shared close completion; blocked-finalizer tests          |
+| Peer identity and distribution               | Tarball installed into an independent consumer, declaration emit and runtime smoke test |
+
+The numbered report elsewhere in the workspace describes the other implementation and is not this
+branch's API documentation. This branch's reference is [reference.md](reference.md).
+
+## Verification boundaries
+
+The suite runs against Effect 3.22.2 and Platform 0.97.2. Its real HTTP tests use Node's Fetch provider
+and ephemeral loopback servers. Examples execute without external services. Package verification uses
+an archive and independently installed peers, not a linked source checkout.
+
+No browser suite, Node-specific Platform adapter, Bun runtime, or five-service legacy evaluation has
+been run for this implementation. The custom codec extension point enables those integrations; it is
+not evidence that every transport or protocol combination has been exercised. Streaming is deferred,
+and a retry policy cannot establish idempotency or remote rollback.
+
+## Polyglot edge-case review
+
+The `repo-llm1-test2` README and current client tests informed additional focused regressions in
+`Legacy.test.ts` and `Network.test.ts`. They exercise bare WSDL keys, unchanged repeated header lines,
+HMAC over schema-encoded bytes with fresh attempt nonces, custom 420 retry classification, header-based
+errors under HTTP 200, payload unions, Latin-1 bytes, SOAP content-type ownership, method tunneling,
+PROPFIND construction, large integer decoding, HEAD metadata, empty 200/304 responses, and redirects.
+
+These are independent fixtures using this branch's API. The original five servers and their complete
+135-test evaluation were not run against this branch. Polling, Digest challenge/re-execution and saga
+compensation remain application Effects; response metadata and typed composition provide their inputs.
+Those workflows should be validated in a subsequent full application evaluation.

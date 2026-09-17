@@ -3,7 +3,7 @@
   "version": "0.1.0-alpha.1",
   "keywords": [],
   "author": "viell",
-  "license": "",
+  "license": "MIT",
   "packageManager": "pnpm@10.32.1",
   "type": "module",
   "main": "./dist/main.js",
@@ -13,9 +13,38 @@
       "types": "./dist/main.d.ts",
       "default": "./dist/main.js"
     },
-    "./*": {
-      "types": "./dist/*.d.ts",
-      "default": "./dist/*.js"
+    "./Body": {
+      "types": "./dist/http/Body.d.ts",
+      "default": "./dist/http/Body.js"
+    },
+    "./Request": {
+      "types": "./dist/http/Request.d.ts",
+      "default": "./dist/http/Request.js"
+    },
+    "./Response": {
+      "types": "./dist/http/Response.d.ts",
+      "default": "./dist/http/Response.js"
+    },
+    "./Operation": {
+      "types": "./dist/http/Operation.d.ts",
+      "default": "./dist/http/Operation.js"
+    },
+    "./Policy": {
+      "types": "./dist/http/Policy.d.ts",
+      "default": "./dist/http/Policy.js"
+    },
+    "./Url": {
+      "types": "./dist/http/Url.d.ts",
+      "default": "./dist/http/Url.js"
+    },
+    "./Interaction": {
+      "types": "./dist/concurrency/Interaction.d.ts",
+      "default": "./dist/concurrency/Interaction.js"
+    },
+    "./package.json": "./package.json",
+    "./Transport": {
+      "types": "./dist/http/Transport.d.ts",
+      "default": "./dist/http/Transport.js"
     }
   },
   "files": [
@@ -24,7 +53,8 @@
     "README.md",
     "docs",
     "!dist/**/*.test.*",
-    "!src/**/*.test.ts"
+    "!src/**/*.test.ts",
+    "examples"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -35,7 +65,10 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build",
-    "prepack": "pnpm build"
+    "prepack": "pnpm build",
+    "test:unit": "vitest run --exclude src/http/Network.test.ts",
+    "test:integration": "vitest run src/http/Network.test.ts",
+    "check:package": "node scripts/check-package.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

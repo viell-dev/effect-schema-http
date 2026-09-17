@@ -15,6 +15,8 @@ primary reference for integration details. It is a consumer-side contract librar
   transport services, and custom preparation requirements remain in its environment type.
 - `Policy` adds attempt retries using native schedules. Materialization occurs outside that loop;
   an ordinary `Effect.retry` around the complete operation deliberately materializes again.
+- `Transport` supplies repeated request header lines through a per-evaluation Context reference.
+  Supporting providers can preserve them without attaching a parallel request object to Platform.
 - `Interaction` owns shared work in a Scope. New input interrupts old work; equal input joins it or
   reuses the one retained success. Presentation state remains the application's responsibility.
 
@@ -32,3 +34,11 @@ interruption. Streaming is deferred because it requires a different lifetime and
 
 The implementation verifies behavior against the installed peers and local tests; these reference links
 explain upstream abstractions, not a compatibility claim for arbitrary versions or transports.
+
+## Provider boundaries
+
+Request descriptions distinguish bare query keys, empty values and repeated header lines. Preserve
+those distinctions even when a default execution service normalizes them. The provider documentation
+explains what survives on the wire; an ordinary consumer can use default HTTP behavior without
+configuring or learning these extension points. A consumer whose service needs a distinction can select
+an appropriate provider while keeping the same request contract.
