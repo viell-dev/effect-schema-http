@@ -42,3 +42,17 @@ those distinctions even when a default execution service normalizes them. The pr
 explains what survives on the wire; an ordinary consumer can use default HTTP behavior without
 configuring or learning these extension points. A consumer whose service needs a distinction can select
 an appropriate provider while keeping the same request contract.
+
+## Field representations
+
+Keep the representations the library knows. Repeated header lines, comma-containing values, bare query
+keys, empty values, and cross-name entry order are not interchangeable. Native HttpClient middleware still
+receives Platform's normalized headers; the original request lines remain available to supporting providers.
+Provider-observed response lines are optional metadata with explicit availability, alongside the normal
+lookup view. No normalization policy switch is needed for this boundary.
+
+Schemas are optional validation and transformation at that boundary. Their application type can be a domain
+value; their encoded type must fit the selected representation. Header arrays and ordered pairs are supported
+without joining them in the preserved representation. Standalone strings do not implicitly become whole
+field collections. Bodies similarly require an encoder/decoder, but not necessarily a schema: bytes and
+FormData already have useful runtime representations.

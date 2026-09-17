@@ -1,5 +1,5 @@
 import { Cookies, Headers, HttpClient, HttpClientResponse } from "@effect/platform";
-import { Clock, Effect, Fiber, Schedule, TestClock, TestContext } from "effect";
+import { Clock, Effect, Fiber, Option, Schedule, TestClock, TestContext } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Body from "./Body.js";
 import * as Operation from "./Operation.js";
@@ -11,6 +11,7 @@ const metadata = (status: number, retryAfter?: string): Response.Metadata => ({
   status,
   headers: Headers.fromInput(retryAfter === undefined ? {} : { "retry-after": retryAfter }),
   cookies: Cookies.empty,
+  headerLines: Option.none(),
 });
 
 describe("attempt policies", () => {

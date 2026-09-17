@@ -58,7 +58,8 @@ header wins over the union of declared response media types. Schemas can be cont
 Raw header values are strings or `() => string | undefined`. Raw query values additionally accept
 `null`, which means a bare key; `undefined` returned by a computation means omission. Set replaces all entries of a
 name; append
-retains them. Remove without a value removes the whole name. Remove with a string removes matching
+retains them. Entries retain their cross-name order. Set replaces a name at its first occurrence and
+removes its other entries; append places a new entry at the end. Remove without a value removes the whole name. Remove with a string removes matching
 static entries only, never evaluating a computed entry to test it. Repeated headers have a normalized
 comma-separated representation and retain their original lines for supporting providers through `Transport`.
 
@@ -66,8 +67,11 @@ Schemas replace the entire raw group. Compose repeated typed query values throug
 encode to `Url.QueryInput`: a record or iterable
 of pairs with scalar/array string, number, boolean, null, or undefined values. Null represents a bare
 key and undefined is omitted; nested query structures need explicit encoded bracket keys.
-Header schemas encode to records of strings or undefined; undefined fields are omitted. The original
-application shape need not be a record. Applying the same input binding twice intersects its input types;
+Header schemas encode to Platform's `Headers.Input`: records of strings, arrays of strings or undefined,
+or iterables of string pairs. Undefined fields are omitted; repeated values remain separate lines. The
+application-side `Schema.Type` can be any domain shape whose encoder produces a supported collection;
+it does not have to be a subtype of the wire representation. A bare string has no implicit interpretation
+as a complete header or query collection, but a schema can explicitly encode it to named fields. Applying the same input binding twice intersects its input types;
 construct an alternative description when replacing a schema with a different contract.
 
 Descriptions share application input values rather than deep-cloning mutable objects. Treat those values
@@ -108,9 +112,20 @@ leaving it unchanged; explicitly supply a different HeaderLines context to force
 themselves; provide `Transport.HeaderLines` around that execution. The simpler `materialize` returns
 only the normalized Platform request. Neither operation sends a request.
 
+`Transport.entries(input)` expands the supported header collections into ordered lines. `toHeaders(lines)`
+creates the normalized Platform compatibility view; it does not replace the original lines. Unchanged
+fields retain their line order, values and spelling during reconciliation; changed native fields are
+represented by the native value. Raw declaration setters lowercase names for case-insensitive edits.
+
 Fetch continues to combine repeated header lines. A Node provider that reads the context can preserve
-them on the wire; both behaviors have loopback tests. Response header normalization remains
-provider-owned; metadata uses Platform Headers and Cookies and cannot reconstruct discarded lines.
+them on the wire; both behaviors have loopback tests. A response provider can call
+`Transport.withResponseHeaders(response, lines)` before returning its Platform response. This attaches a
+snapshot of the observed names and values without changing the response's native headers. Metadata exposes
+these as `headerLines: Option<Transport.Lines>` alongside the normalized `headers` and parsed `cookies`.
+`None` means no provider-supplied lines were available; the library never splits comma-separated values
+or reconstructs apparent original lines from cookies. `responseHeaderLines(response)` reads the same
+attachment directly. Providers and middleware replacing the response object must propagate its lines
+if they still describe that response; the library cannot reconstruct data lost upstream.
 
 Provider settings remain ordinary Effect composition. For Fetch, supply
 `FetchHttpClient.RequestInit` with `redirect: "manual"`, `credentials: "include"`, or `cache: "reload"`
@@ -121,7 +136,7 @@ are provider configuration, not additional operation policy fields.
 
 ## Response
 
-`Response<A, E, R>` selects a `Body.Decoder` from `Metadata`: status, Platform Headers and Cookies.
+`Response<A, E, R>` selects a `Body.Decoder` from `Metadata`: status, Platform Headers and Cookies, and optional provider-observed header lines.
 `when(predicate, decoder)` constructs a case; `status(number, decoder)` is the exact-status convenience.
 `first.pipe(orElse(second))` gives the first case priority, with no specificity scoring or hidden
 replacement. The decoder is selected before its body is accessed. Use separate values to express

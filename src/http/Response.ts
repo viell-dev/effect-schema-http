@@ -1,12 +1,15 @@
 import { Cookies, Headers, HttpClientError, HttpClientResponse } from "@effect/platform";
 import { Data, Effect, Option, Pipeable } from "effect";
 import * as Body from "./Body.js";
+import * as Transport from "./Transport.js";
 
 /** Deliberately excludes all body readers. Predicates cannot consume the body. */
 export interface Metadata {
   readonly status: number;
   readonly headers: Headers.Headers;
   readonly cookies: Cookies.Cookies;
+  /** Provider-observed lines, if available. Normalized headers are always available separately. */
+  readonly headerLines: Option.Option<Transport.Lines>;
 }
 
 export class UnexpectedStatus extends Data.TaggedError("UnexpectedStatus")<{ readonly metadata: Metadata }> {}
@@ -24,6 +27,7 @@ export const metadata = (response: HttpClientResponse.HttpClientResponse): Metad
   status: response.status,
   headers: response.headers,
   cookies: response.cookies,
+  headerLines: Transport.responseHeaderLines(response),
 });
 
 const make = <A, E, R>(select: Response<A, E, R>["select"], accepts: ReadonlyArray<string>): Response<A, E, R> => ({

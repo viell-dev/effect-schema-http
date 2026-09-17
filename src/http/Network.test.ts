@@ -1,6 +1,6 @@
 import { createServer, request as sendRequest, type RequestListener } from "node:http";
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientResponse } from "@effect/platform";
-import { Deferred, Effect, Fiber, Schema } from "effect";
+import { Deferred, Effect, Fiber, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import * as Body from "./Body.js";
 import * as Operation from "./Operation.js";
@@ -130,6 +130,7 @@ describe("Fetch transport integration", () => {
         request.rawHeaders.forEach((value, index) => {
           if (index % 2 === 0 && value.toLowerCase() === "x-scope") scopes.push(request.rawHeaders[index + 1]);
         });
+        response.setHeader("X-Scope", ["openid", "projects:read"]);
         response.end(JSON.stringify(scopes));
       },
       async (url) => {
@@ -151,11 +152,17 @@ describe("Fetch transport integration", () => {
                       incoming.on("error", reject);
                       incoming.on("end", () =>
                         resolve(
-                          HttpClientResponse.fromWeb(
-                            request,
-                            new globalThis.Response(new Uint8Array(Buffer.concat(chunks)), {
-                              status: incoming.statusCode,
-                            }),
+                          Transport.withResponseHeaders(
+                            HttpClientResponse.fromWeb(
+                              request,
+                              new globalThis.Response(new Uint8Array(Buffer.concat(chunks)), {
+                                status: incoming.statusCode,
+                                headers: { "x-scope": String(incoming.headers["x-scope"]) },
+                              }),
+                            ),
+                            incoming.rawHeaders.flatMap((name, index) =>
+                              index % 2 === 0 ? [[name, incoming.rawHeaders[index + 1]] as const] : [],
+                            ),
                           ),
                         ),
                       );
@@ -173,16 +180,24 @@ describe("Fetch transport integration", () => {
             Request.appendHeader("X-Scope", "openid"),
             Request.appendHeader("X-Scope", "projects:read"),
           ),
-          Response.status(200, Body.jsonSchema(Schema.Array(Schema.String))),
+          Response.status(200, Response.tag("Scopes", Body.jsonSchema(Schema.Array(Schema.String)))),
         );
+        const preserved = await Effect.runPromise(
+          operation.execute(undefined).pipe(Effect.provideService(HttpClient.HttpClient, client)),
+        );
+        expect(preserved.value).toEqual(["openid", "projects:read"]);
         expect(
-          await Effect.runPromise(
-            operation.execute(undefined).pipe(Effect.provideService(HttpClient.HttpClient, client)),
-          ),
-        ).toEqual(["openid", "projects:read"]);
-        expect(
-          await Effect.runPromise(operation.execute(undefined).pipe(Effect.provide(FetchHttpClient.layer))),
-        ).toEqual(["openid, projects:read"]);
+          Option.getOrThrow(preserved.metadata.headerLines).filter(([name]) => name.toLowerCase() === "x-scope"),
+        ).toEqual([
+          ["X-Scope", "openid"],
+          ["X-Scope", "projects:read"],
+        ]);
+        const normalized = await Effect.runPromise(
+          operation.execute(undefined).pipe(Effect.provide(FetchHttpClient.layer)),
+        );
+        expect(normalized.value).toEqual(["openid, projects:read"]);
+        expect(Option.isNone(normalized.metadata.headerLines)).toBe(true);
+        expect(normalized.metadata.headers["x-scope"]).toBe("openid, projects:read");
       },
     );
   });

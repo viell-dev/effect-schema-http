@@ -1,8 +1,9 @@
-import { Headers, HttpClientRequest, HttpMethod } from "@effect/platform";
-import { Data, Effect, ParseResult, Pipeable, Schema } from "effect";
+import { HttpClientRequest, HttpMethod } from "@effect/platform";
+import { Data, Effect, ParseResult, Pipeable, Ref, Schema } from "effect";
 import * as Body from "./Body.js";
 import * as Url from "./Url.js";
 import * as Fields from "./internal/fields.js";
+import { HeaderState } from "./internal/headerState.js";
 import * as Query from "./internal/query.js";
 import * as Transport from "./Transport.js";
 
@@ -54,11 +55,11 @@ export const make = (method: string, url: string): Request<unknown> => {
   const hash = url.indexOf("#");
   const withoutHash = hash < 0 ? url : url.slice(0, hash);
   const start = withoutHash.indexOf("?");
-  const query = new Map<string, ReadonlyArray<Fields.Value<string | null>>>();
+  const query: Array<readonly [string, string | null]> = [];
   if (start >= 0)
     for (const segment of withoutHash.slice(start + 1).split("&")) {
       for (const [key, value] of new URLSearchParams(segment)) {
-        query.set(key, [...(query.get(key) ?? []), segment.includes("=") ? value : null]);
+        query.push([key, segment.includes("=") ? value : null]);
       }
     }
   return construct(
@@ -66,7 +67,7 @@ export const make = (method: string, url: string): Request<unknown> => {
       method,
       url: start < 0 ? withoutHash : withoutHash.slice(0, start),
       baseUrl: "",
-      headers: new Map(),
+      headers: [],
       query,
       headersBound: false,
       queryBound: false,
@@ -114,18 +115,17 @@ export const removeQuery =
     construct({ ...self.options, query: Fields.remove(self.options.query, name, value) }, self.prepare);
 
 export const headers =
-  <A, I extends Readonly<Record<string, string | undefined>>, R2>(contract: Schema.Schema<A, I, R2>) =>
+  <A, I extends Transport.HeaderInput, R2>(contract: Schema.Schema<A, I, R2>) =>
   <Input, E, R, Q extends boolean>(
     self: Request<Input, E, R, false, Q>,
   ): Request<Input & { readonly headers: A }, E | ParseResult.ParseError, R | R2, true, Q> =>
-    construct({ ...self.options, headers: new Map(), headersBound: true }, (input, request) =>
+    construct({ ...self.options, headers: [], headersBound: true }, (input, request) =>
       Effect.gen(function* () {
         const encoded = yield* Schema.encode(contract)(input.headers);
         const prepared = yield* self.prepare(input, request);
-        return HttpClientRequest.setHeaders(
-          prepared,
-          Object.entries(encoded).filter((pair): pair is [string, string] => pair[1] !== undefined),
-        );
+        const lines = Transport.entries(encoded);
+        yield* Ref.set(yield* HeaderState, lines);
+        return HttpClientRequest.setHeaders(prepared, Transport.toHeaders(lines));
       }),
     );
 
@@ -134,7 +134,7 @@ export const query =
   <Input, E, R, H extends boolean>(
     self: Request<Input, E, R, H, false>,
   ): Request<Input & { readonly query: A }, E | ParseResult.ParseError, R | R2, H, true> =>
-    construct({ ...self.options, query: new Map(), queryBound: true }, (input, request) =>
+    construct({ ...self.options, query: [], queryBound: true }, (input, request) =>
       Effect.gen(function* () {
         const encoded = yield* Schema.encode(contract)(input.query);
         const prepared = yield* self.prepare(input, request);
@@ -206,18 +206,17 @@ export const compile = <I, E, R, H extends boolean, Q extends boolean>(
       try: () => {
         // The platform constructor preserves custom method strings at runtime.
         let request = HttpClientRequest.make(self.options.method as HttpMethod.HttpMethod)(self.options.url);
-        const grouped = new Map<string, Array<string>>();
         headerLines = Fields.resolve(self.options.headers);
-        for (const [key, value] of headerLines) grouped.set(key, [...(grouped.get(key) ?? []), value]);
-        request = HttpClientRequest.setHeaders(
-          request,
-          Headers.fromInput([...grouped].map(([key, values]) => [key, values.join(", ")] as const)),
-        );
+        request = HttpClientRequest.setHeaders(request, Transport.toHeaders(headerLines));
         return Query.set(request, Fields.resolve(self.options.query), flags);
       },
       catch: (cause) => new InvalidRequest({ message: "Failed to materialize request fields", cause }),
     });
-    const prepared = yield* self.prepare(input, initial).pipe(Effect.provideService(Query.Flags, flags));
+    const state = yield* Ref.make(headerLines);
+    const prepared = yield* self
+      .prepare(input, initial)
+      .pipe(Effect.provideService(Query.Flags, flags), Effect.provideService(HeaderState, state));
+    headerLines = yield* Ref.get(state);
     if ((prepared.method === "GET" || prepared.method === "HEAD") && prepared.body._tag !== "Empty") {
       return yield* new InvalidRequest({ message: `${prepared.method} cannot carry a request body` });
     }

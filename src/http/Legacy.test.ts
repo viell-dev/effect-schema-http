@@ -16,7 +16,7 @@ describe("protocol edge cases identified in the polyglot evaluation", () => {
   it("preserves bare keys, empty values, repetition, and native query replacements", async () => {
     const source = Request.get(`${root}/service?wsdl&empty=&wsdl`);
     expect((await Effect.runPromise(Request.materialize(source, undefined))).url).toBe(
-      `${root}/service?wsdl&wsdl&empty=`,
+      `${root}/service?wsdl&empty=&wsdl`,
     );
     const changed = source.pipe(
       Request.setQuery("wsdl", null),
@@ -24,7 +24,7 @@ describe("protocol edge cases identified in the polyglot evaluation", () => {
       Request.setQuery("computed", () => null),
     );
     expect((await Effect.runPromise(Request.materialize(changed, undefined))).url).toBe(
-      `${root}/service?wsdl&wsdl=&empty=&computed`,
+      `${root}/service?wsdl&empty=&wsdl=&computed`,
     );
     const explicitEmpty = Request.get(`${root}/service?wsdl`).pipe(
       Request.mapEffect((request) => Effect.succeed(HttpClientRequest.setUrlParam(request, "wsdl", ""))),
