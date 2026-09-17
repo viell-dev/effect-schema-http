@@ -4,7 +4,7 @@ Consumer-owned HTTP contracts composed with Effect. Describe what an external se
 returns, encode application values with Schema, and execute through the `@effect/platform` HttpClient
 service.
 
-This is the independent `llm2` implementation, version `0.1.0-alpha.1`. It uses Effect 3.22.2 and
+This is the independent `llm2` implementation, version `0.1.0-alpha.2`. It uses Effect 3.22.2 and
 Platform 0.97.2. The package is private while the design is evaluated.
 
 ## A complete operation
@@ -41,7 +41,7 @@ and encodes input, obtains the supplied HttpClient, and decodes the selected res
 same Effect performs a fresh evaluation. A required body is a required input property, so an incomplete
 request cannot be passed to `execute` without a type error.
 
-Response cases use explicit **first-match order**. Predicates receive only status, headers, and cookies.
+Response cases use explicit **first-match order**. Predicates receive only transport metadata, including headers and cookies.
 A selected decoder's failure stays a failure. Use `Schema.Union` for payload alternatives under the same
 metadata. Recognized non-2xx results can be ordinary success values, as `Missing` is above; application
 code can move them into the failure channel using `Operation.mapEffect` or `Effect.flatMap`.
@@ -101,6 +101,19 @@ encodes them into the required wire shape. `Request.mapInput` adapts the final a
 application-selected default bodies. `Request.mapEffect` supports custom preparation with typed errors
 and service dependencies.
 
+Header schemas may encode records with string or string-array values, or ordered string pairs. Query
+schemas may encode records or pairs with supported scalar/array values, including null for bare keys.
+The restriction is on `Schema.Encoded`: a narrower application `Schema.Type` may use numbers, branded
+values or another domain shape. Headers and queries need no schema when plain declarations suffice.
+Bodies also need no schema when a built-in encoder/decoder such as `Body.bytes` already describes them.
+
+Request declarations preserve repeated values and their cross-name order. Native Platform headers are
+still available as a normalized compatibility view. Supporting providers can preserve request lines
+through `Transport.headerLines` and attach observed response lines with `Transport.withResponseHeaders`.
+Response metadata exposes these as `headerLines: Option<Transport.Lines>`. `None` means the provider did
+not supply them; the library does not split comma-containing values or invent lost lines. Ordinary
+consumers can continue using `metadata.headers` and `metadata.cookies`.
+
 ## Retries and lifetime
 
 Retries are opt-in. Supply `Policy.make(schedule, options)` as `Operation.make`'s `policy` option. The
@@ -108,7 +121,9 @@ schedule receives a `Policy.Reason`, and owns one retry budget across transport 
 statuses. The default classifier matches the installed Platform transient policy. Successful mapped
 responses such as `503` can be retried; exhaustion returns the final attempt's actual result.
 
-Each attempt owns a Scope and includes body decoding. Cleanup completes before the schedule delay.
+Each attempt owns a Scope and includes body decoding. Unmatched bodies are drained, and cleanup
+completes before retry classification or the schedule delay, including after decoding failure. Resourceful
+decoders and client middleware receive this Scope without requiring one from the caller.
 `Retry-After` sets a minimum delay by default. `attemptTimeout` bounds one attempt; wrap the complete
 operation in `Effect.timeout` for a total deadline. Effect interruption still waits for uninterruptible
 finalizers, so a timeout is not a guarantee that cleanup finishes by the deadline.
@@ -123,6 +138,18 @@ Changed input interrupts previous work; equal input joins active work or reuses 
 `run(input, { force: true })` starts fresh work. `close` is permanent and waits for all owned finalizers.
 A `retain(value, input)` predicate controls retention without changing the returned value. A waiter's
 interruption leaves shared work alive. See [the detailed contract](docs/reference.md).
+
+Unmatched responses fail with metadata-only `Response.UnexpectedStatus`. To inspect an unexpected body,
+add a final response case that reads text or bytes inside the attempt and returns a finite diagnostic
+value. A live response is not transferred through the error channel.
+
+## Logging
+
+Operations emit native Effect Debug events for attempts, retries and completion, with method, status,
+attempt number and outcome category. An operation log span supplies elapsed time. Request URLs, headers,
+cookies, bodies and error causes are not recorded by these events. Enable them with
+`Logger.withMinimumLogLevel(LogLevel.Debug)` or a native Logger layer; formatting, destinations and
+correlation remain application-owned. No library-specific logging option is required.
 
 ## Development and evidence
 
@@ -142,11 +169,14 @@ versions and never links a development checkout. Use `pnpm pack` and install the
 applications; keep Effect and Platform as consumer-owned peer dependencies.
 
 The tests cover synthetic transports, native TestClock retry timing, real Fetch uploads and cancellation,
-scoped concurrency, and compiled examples. This branch has not been run through the separate browser
-or full five-service evaluation applications. Focused regressions reproduce protocol edge cases identified
-in `repo-llm1-test2`, including bare queries, repeated header lines and per-attempt signing. Streaming is intentionally
-deferred. Core code never binds to a
-runtime transport; the real HTTP tests establish behavior for the tested Node Fetch provider only.
+scoped concurrency, preserved header lines in both directions, typed repeated fields, and compiled examples.
+The separate [five-service evaluation](../repo-llm2-test1/README.md) runs the unchanged Rust, Python, Java,
+Perl and Ruby services through an adapted client, including Node tests and a Chromium saga/cancellation
+check. Its README records the exact vendored revision and verification results. Adapted expectations are
+called out there; this is application evidence, not a claim of complete llm1 feature parity.
+
+Streaming is intentionally deferred. Core code never binds to a runtime transport. Provider behavior
+still needs verification for the runtime and transport selected by the consumer.
 
 See [design and tradeoffs](docs/design.md), [the module reference](docs/reference.md), and
 [behavioral coverage](docs/coverage.md).
