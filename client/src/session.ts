@@ -6,7 +6,7 @@ export interface Session {
   readonly expiresAt?: number;
 }
 
-const STORAGE_KEY = "test_llm1_2_session";
+const STORAGE_KEY = "test_llm2_1_session";
 
 let currentSession: Session | undefined = (() => {
   try {
@@ -45,9 +45,7 @@ export const clearSession = (): void => {
   }
 };
 
-export const onSessionChange = (
-  listener: (session: Session | undefined) => void,
-): (() => void) => {
+export const onSessionChange = (listener: (session: Session | undefined) => void): (() => void) => {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -74,8 +72,8 @@ export const setReportSession = (session: string | undefined): void => {
  * The notification service's CSRF token.
  *
  * A third credential, in a third format, for a third trust domain. It is double-submitted
- * — set as a cookie and returned in the body — and this client is cross-origin, so the
- * cookie never comes back and the body is the only half that works.
+ * — set as a cookie and returned in the body. The same-origin browser proxy can return
+ * the cookie; Node has no cookie jar. Both clients explicitly echo the body token.
  */
 let csrfToken: string | undefined;
 

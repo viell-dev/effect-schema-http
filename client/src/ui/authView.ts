@@ -1,4 +1,7 @@
-import { DateTime, Schema } from "effect";
+import { FetchHttpClient } from "@effect/platform";
+import { Effect } from "effect";
+import { Policy } from "viell-effect-schema-http";
+import { DateTime, Schedule, Schema } from "effect";
 import { h } from "../dom.js";
 import { forceFresh, withNonce, withScopeLines } from "../plans/transforms.js";
 import { run } from "../runtime.js";
@@ -63,7 +66,7 @@ export const renderAuthView = (): HTMLElement => {
     },
     {
       label: "Log in (form-encoded)",
-      note: "The RFC 6749 grant this service had first. RequestBody.urlParams, and every value a string.",
+      note: "The RFC 6749 grant this service had first. HttpBody.urlParams, and every value a string.",
       run: async () => {
         const { username: name, password: secret } = credentials();
         const result = await run(
@@ -117,12 +120,16 @@ export const renderAuthView = (): HTMLElement => {
         await run(purgeJwksCache().execute(undefined));
         const first = await run(getJwks().execute(undefined));
         const second = await run(getJwks().execute(undefined));
-        const bypassed = await run(getJwks({ request: (request) => request.pipe(forceFresh) }).execute(undefined));
+        const bypassed = await run(
+          getJwks({ request: forceFresh })
+            .execute(undefined)
+            .pipe(Effect.provideService(FetchHttpClient.RequestInit, { cache: "reload" })),
+        );
         const status = (headers: Record<string, string | undefined>) =>
           Schema.decodeUnknownSync(EdgeCacheStatus)(headers);
         return [
           `after a purge:      ${status(first.metadata.headers)["x-cache"]}`,
-          `immediately again:  ${status(second.metadata.headers)["x-cache"]}  (setCache alone changes nothing)`,
+          `immediately again:  ${status(second.metadata.headers)["x-cache"]}  (Cache-Control alone changes nothing)`,
           `with forceFresh:    ${status(bypassed.metadata.headers)["x-cache"]}  (a computed cache-busting parameter)`,
         ].join("\n");
       },
@@ -138,7 +145,7 @@ export const renderAuthView = (): HTMLElement => {
         );
         return result._tag === "ok"
           ? `narrowed to ${result.value.scope.join(", ")}`
-          : `rejected: ${result.value.error_description}\n\nThe plan retained two entries; the Fetch provider combined them. A node:http provider that reads getHeaderEntries preserves them — see repeatedHeaderClient.ts.`;
+          : `rejected: ${result.value.error_description}\n\nThe plan retained two entries; the Fetch provider combined them. A node:http provider that reads Transport.headerLines preserves them — see repeatedHeaderClient.ts.`;
       },
     },
     {
@@ -147,7 +154,7 @@ export const renderAuthView = (): HTMLElement => {
       run: async () => {
         await run(resetSessionEcho().execute(undefined));
         const result = await run(
-          sessionEcho({ request: (request) => request.pipe(withNonce(Date.now())) }).execute({
+          sessionEcho({ request: withNonce(Date.now()), policy: Policy.make(Schedule.recurs(3)) }).execute({
             body: { message: "built-in retry" },
           }),
         );
@@ -158,7 +165,7 @@ export const renderAuthView = (): HTMLElement => {
     },
     {
       label: "Correlate with a nonce (own loop)",
-      note: "setRetries(0) and a loop over the cold plan, with a new nonce each time.",
+      note: "A loop over cold Effects, with a new nonce and no automatic retries.",
       run: async () => {
         await run(resetSessionEcho().execute(undefined));
         const trail: Array<string> = [];
@@ -186,7 +193,7 @@ export const renderAuthView = (): HTMLElement => {
     },
     {
       label: "Revoke and sign out",
-      note: "RFC 7009: 200, a JSON content type, and zero bytes. ResponseBody.none is the declaration.",
+      note: "RFC 7009: 200, a JSON content type, and zero bytes. Body.empty is the declaration.",
       run: async () => {
         const session = getSession();
         if (session === undefined) return "not signed in";

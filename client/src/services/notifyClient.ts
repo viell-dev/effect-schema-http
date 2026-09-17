@@ -18,7 +18,8 @@ import {
 import { getCsrfToken } from "../session.js";
 import { configure, executionOptions, type Options } from "./options.js";
 export const NOTIFY_SERVER_URL =
-  (typeof import.meta !== "undefined" && import.meta.env?.VITE_NOTIFY_SERVER_URL) || "http://localhost:4500";
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_NOTIFY_SERVER_URL) ||
+  (typeof window === "undefined" ? "http://localhost:4500" : window.location.origin);
 
 export const notifyRequest = (method: string, path: string, options: Options) =>
   Request.make(method, path).pipe(

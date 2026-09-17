@@ -103,8 +103,14 @@ const renderApp = () => {
   mount(app, header, nav, main);
 };
 
-onSessionChange(() => {
-  renderApp();
+// A credential update must not unmount the action (or interaction scope) that produced it.
+onSessionChange((session) => {
+  const summary = app.querySelector(".header-title p");
+  if (summary)
+    summary.textContent =
+      session === undefined
+        ? "Not signed in. Each service has its own idea of a credential; start with Identity."
+        : `Signed in as ${session.username ?? "someone"} (${session.accessToken.slice(0, 12)}…)`;
 });
 
 renderApp();

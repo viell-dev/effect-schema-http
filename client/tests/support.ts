@@ -71,5 +71,9 @@ export const servicesUp = async (ports: ReadonlyArray<number>): Promise<boolean>
   };
 
   const checks = await Promise.all(ports.map(reachable));
-  return checks.every(Boolean);
+  const available = checks.every(Boolean);
+  if (!available && process.env.REQUIRE_SERVICES === "1") {
+    throw new Error(`Required services are unavailable: ${ports.filter((_, index) => !checks[index]).join(", ")}`);
+  }
+  return available;
 };

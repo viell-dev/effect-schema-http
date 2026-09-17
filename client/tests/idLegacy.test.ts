@@ -1,3 +1,4 @@
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "@effect/platform";
 import { Effect, Schedule, Schema } from "effect";
 import { Policy, Request } from "viell-effect-schema-http";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -36,7 +37,7 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
   });
 
   it("logs in through the form-encoded grant RFC 6749 actually specifies", async () => {
-    // `RequestBody.urlParams` receives the schema's *encoded* value, which for an
+    // `HttpBody.urlParams` receives the schema's *encoded* value, which for an
     // ordinary struct of strings is already the flat record the codec wants.
     const ok = await call(formLogin().execute({ body: { grant_type: "password", username, password } }), "ok");
 
@@ -124,12 +125,17 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
 
     const first = await call(getJwks().execute(undefined), "ok");
     const second = await call(getJwks().execute(undefined), "ok");
-    const bypassed = await call(getJwks({ request: (request) => request.pipe(forceFresh) }).execute(undefined), "ok");
+    const bypassed = await call(
+      getJwks({ request: forceFresh })
+        .execute(undefined)
+        .pipe(Effect.provideService(FetchHttpClient.RequestInit, { cache: "reload" })),
+      "ok",
+    );
 
     const status = (headers: Record<string, string | undefined>) => Schema.decodeUnknownSync(EdgeCacheStatus)(headers);
 
     expect(status(first.metadata.headers)["x-cache"]).toBe("MISS");
-    // `setCache({ control: "no-cache" })` alone changes nothing here: the proxy was
+    // `Cache-Control: no-cache` alone changes nothing here: the proxy was
     // configured in an era that ignored request directives.
     expect(status(second.metadata.headers)["x-cache"]).toBe("HIT");
     // The computed cache-busting parameter is what actually reaches the origin.
@@ -144,7 +150,7 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
 
     it("cannot use the built-in retry policy, because the replayed nonce is spent", async () => {
       // The endpoint answers 503 twice before it warms up, and the library retries a
-      // 503 without configuration — including honouring the `Retry-After`, which this
+      // 503 when a retry policy is selected — including honouring `Retry-After`, which this
       // server sends as an HTTP-date rather than seconds.
       //
       // It still fails, and the failure is the point: request encoding runs once per
@@ -189,6 +195,23 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
       expect(ok.value.nonce).toBe(2002);
       expect(ok.value.echo.message).toBe("manual loop");
     });
+  });
+
+  it("refreshes the nonce per attempt without giving up the retry policy", async () => {
+    await call(resetSessionEcho().execute(undefined), "reset");
+    let nonce = 3000;
+    const result = await call(
+      sessionEcho({
+        policy: Policy.make(Schedule.recurs(3)),
+        transformClient: HttpClient.mapRequestEffect((request) =>
+          Effect.sync(() => HttpClientRequest.setHeader(request, "x-nonce", String(nonce++))),
+        ),
+      }).execute({ body: { message: "native client middleware" } }),
+      "ok",
+    );
+    expect(result.value.attempt).toBe(3);
+    expect(result.value.nonce).toBe(3002);
+    expect(nonce).toBe(3003);
   });
 
   describe("repeated request header field lines", () => {
@@ -248,7 +271,7 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
 
   it("treats RFC 7009's empty 200 as a response, not as malformed JSON", async () => {
     // The response carries `Content-Type: application/json` and zero bytes. The default
-    // JSON codec rejects an empty payload, which is correct; `ResponseBody.none` is the
+    // JSON codec rejects an empty payload, which is correct; `Body.empty` is the
     // declaration that says so.
     const revoked = await call(revokeToken().execute({ body: { token: accessToken } }), "revoked");
     expect(revoked.value).toBeUndefined();
