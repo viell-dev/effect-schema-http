@@ -4,16 +4,18 @@ This is the `llm2-test1` worktree, branched from `llm1-test2` at `d3f011e`. It a
 TypeScript client to the independently designed [llm2 library](../repo-llm2). The Rust,
 Python, Java, Perl, and Ruby services are unchanged, as are their launch scripts.
 
-The client consumes `viell-effect-schema-http@0.1.0-alpha.1` from a packed archive built
-from library commit `df59220`. It uses that library directly: there is no llm1 dependency
-or compatibility implementation. No library changes were needed for this evaluation.
+The client consumes `viell-effect-schema-http@0.1.0-alpha.2` from a packed archive built
+from library commit `45a8069`. It uses that library directly: there is no llm1 dependency
+or compatibility implementation. This evaluation also verifies alpha.2’s representation
+preservation with a provider that exposes individual header lines.
 
 ## Verification
 
 Verified locally on 2026-09-17 with Node 22.23.2:
 
-- **136 tests pass**, with all five services available and no skipped tests. These include
-  the original 135 cases adapted to llm2 contracts and one additional per-attempt nonce case.
+- **138 tests pass**, with all five services available and no skipped tests. These include
+  the original 135 cases adapted to llm2 contracts, a per-attempt nonce case, and two
+  additional cases for schema-encoded request headers and observed response lines.
 - Consumer TypeScript checking and the Vite production build pass.
 - The Chromium smoke script exercises registration, both login representations, header-only
   responses, cache bypass, repeated-header rejection through Fetch, retry/nonce behavior,
@@ -24,8 +26,9 @@ Verified locally on 2026-09-17 with Node 22.23.2:
   closes the mounted interaction's scope, and returning creates a fresh interaction.
 
 The Node provider test separately confirms that two physical `X-Scope` lines reach Rust
-and succeed, while Fetch combines them and receives the expected rejection. This does
-not imply that browser Fetch can preserve those lines.
+and succeed, including through a schema accepting an array of values. It also preserves
+four separate response fields from Rust’s token probe. Fetch combines those fields;
+its metadata explicitly reports that original lines are unavailable.
 
 ## Running it
 
@@ -117,8 +120,10 @@ for a timeout per attempt.
 Bare query keys use `null`, empty values use `""`, and repeated fields use append
 combinators. The WSDL test confirms that the Python service observes `?wsdl` and `?wsdl=`
 as different requests. A custom Node provider reads `Transport.headerLines(request)`
-when physical repeated request headers matter. Response metadata uses Platform's
-normalized headers and cookies; it does not invent original response header lines.
+when physical repeated request headers matter and attaches observed response lines with
+`Transport.withResponseHeaders`. Response metadata includes native headers and cookies
+alongside `headerLines: Option<Transport.Lines>`. Fetch supplies `None`; the custom Node
+provider supplies `Some` without splitting or reconstructing comma-separated values.
 
 Interactions are acquired inside a `Scope`. Equivalent terms join or reuse retained
 success, new terms replace active work, and force executes again. The browser closes

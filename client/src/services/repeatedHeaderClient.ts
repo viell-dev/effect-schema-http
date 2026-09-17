@@ -7,7 +7,7 @@ import { Transport } from "viell-effect-schema-http";
  * Node-only provider for the Rust service's repeated X-Scope request lines.
  * Operation supplies Transport.HeaderLines; Transport.headerLines reconciles those
  * declarations with the final native request. Fetch combines them and Rust rejects it.
- * Responses use Platform's normalized headers and cookie representation.
+ * Responses expose the original observed lines alongside Platform headers and cookies.
  */
 
 const entriesFromRawHeaders = (rawHeaders: ReadonlyArray<string>): Array<readonly [string, string]> => {
@@ -77,7 +77,7 @@ export const repeatedHeaderClient: HttpClient.HttpClient = HttpClient.makeWith<
                       ...(incoming.statusMessage === undefined ? {} : { statusText: incoming.statusMessage }),
                     },
                   );
-                  resolve(HttpClientResponse.fromWeb(request, source));
+                  resolve(Transport.withResponseHeaders(HttpClientResponse.fromWeb(request, source), responseEntries));
                 });
               });
 

@@ -1,10 +1,10 @@
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "@effect/platform";
-import { Effect, Schedule, Schema } from "effect";
-import { Policy, Request } from "viell-effect-schema-http";
+import { Effect, Option, Schedule, Schema } from "effect";
+import { Body, Operation, Policy, Request, Response } from "viell-effect-schema-http";
 import { beforeAll, describe, expect, it } from "vitest";
 import { forceFresh, withNonce, withScopeLines } from "../src/plans/transforms.js";
 import { HttpDate, RetryAfterSeconds } from "../src/schemas/common.js";
-import { EdgeCacheStatus, TokenProbeHeaders } from "../src/schemas/idLegacy.js";
+import { EdgeCacheStatus, ScopedTokenResponse, TokenProbeHeaders } from "../src/schemas/idLegacy.js";
 import {
   directoryEntry,
   discovery,
@@ -12,6 +12,7 @@ import {
   formLoginJson,
   getJwks,
   getUserInfo,
+  idRequest,
   probeToken,
   purgeJwksCache,
   register,
@@ -77,12 +78,45 @@ describe.runIf(up)("ID server — the endpoints that accreted after 2019", () =>
     expect(facts["x-token-scope"]).toContain("projects:write");
 
     // The server wrote four separate `X-Token-Scope` field lines. Fetch combined them
-    // before Effect Platform ever saw them, so `headerEntries` reports one joined entry.
-    // This is a provider property, not a library one — see repeatedHeaderClient.ts.
+    // before Effect Platform ever saw them. Only the normalized lookup is available.
+    expect(Option.isNone(probe.metadata.headerLines)).toBe(true);
     const scopeLines = Object.entries(probe.metadata.headers).filter(
       ([name]) => name.toLowerCase() === "x-token-scope",
     );
     expect(scopeLines.length).toBe(1);
+  });
+
+  it("retains separate response lines when the provider exposes them", async () => {
+    const probe = expectTag(await callWithRepeatedHeaders(probeToken().execute(undefined)), "valid");
+    const lines = Option.getOrThrow(probe.metadata.headerLines).filter(
+      ([name]) => name.toLowerCase() === "x-token-scope",
+    );
+    expect(lines.map(([, value]) => value)).toEqual(["openid", "profile", "projects:read", "projects:write"]);
+    expect(probe.metadata.headers["x-token-scope"]).toBe("openid, profile, projects:read, projects:write");
+  });
+
+  it("sends repeated schema-encoded headers without joining their preserved representation", async () => {
+    const operation = Operation.make(
+      idRequest("POST", "/token/scoped", {}).pipe(
+        Request.headers(
+          Schema.Struct({
+            authorization: Schema.String,
+            "x-scope": Schema.Array(Schema.NonEmptyString),
+          }),
+        ),
+      ),
+      Response.status(200, Body.jsonSchema(ScopedTokenResponse)),
+    );
+    const result = await callWithRepeatedHeaders(
+      operation.execute({
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "x-scope": ["openid", "projects:read"],
+        },
+      }),
+    );
+    expect(result.scope_lines).toEqual(["openid", "projects:read"]);
+    expect(result.scope).toEqual(["openid", "projects:read"]);
   });
 
   it("decodes the LDAP gateway's spelling into the shape the rest of the client uses", async () => {
