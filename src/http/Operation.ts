@@ -1,9 +1,19 @@
 import { HttpClient, HttpClientError, HttpClientRequest } from "@effect/platform";
-import { Cause, Clock, Effect, Exit, Option, Pipeable, Schedule, Function } from "effect";
+import { Cause, Clock, Effect, Exit, Option, Pipeable, Schedule, Function, Scope } from "effect";
 import * as Policy from "./Policy.js";
 import * as Request from "./Request.js";
 import * as Response from "./Response.js";
 import * as Transport from "./Transport.js";
+
+/** Categories only: errors can contain credentials, response text or schema input. */
+const outcome = (exit: Exit.Exit<unknown, unknown>): string =>
+  Exit.isSuccess(exit)
+    ? "success"
+    : Cause.isInterrupted(exit.cause)
+      ? "interrupted"
+      : Cause.isDie(exit.cause)
+        ? "defect"
+        : "failure";
 
 /** Operations return ordinary cold Effects, with complete input and environment types. */
 export interface Operation<in I, out A, out E = never, out R = never> extends Pipeable.Pipeable {
@@ -50,7 +60,7 @@ export const make = <
   | Response.UnexpectedStatus
   | Response.DecodeError<E2 | HttpClientError.ResponseError>
   | Cause.TimeoutException,
-  R | R2 | R3 | RP | HttpClient.HttpClient
+  R | Exclude<R2 | R3, Scope.Scope> | RP | HttpClient.HttpClient
 > =>
   fromEffect((input) =>
     Effect.gen(function* () {
@@ -61,7 +71,15 @@ export const make = <
       const client = yield* HttpClient.HttpClient;
       const policy = options?.policy ?? Policy.none;
       const driver = yield* Schedule.driver(policy.schedule);
+      let number = 0;
       while (true) {
+        number++;
+        yield* Effect.logDebug("HTTP attempt started").pipe(
+          Effect.annotateLogs({
+            "http.method": prepared.method,
+            "http.attempt": number,
+          }),
+        );
         let info: Option.Option<Response.Metadata> = Option.none();
         const attempt = Effect.scoped(
           Effect.gen(function* () {
@@ -79,6 +97,14 @@ export const make = <
         const exit = yield* Effect.exit(
           policy.attemptTimeout === undefined ? attempt : Effect.timeout(attempt, policy.attemptTimeout),
         );
+        yield* Effect.logDebug("HTTP attempt completed").pipe(
+          Effect.annotateLogs({
+            "http.method": prepared.method,
+            "http.attempt": number,
+            "http.outcome": outcome(exit),
+            ...(Option.isSome(info) ? { "http.status": info.value.status } : {}),
+          }),
+        );
         if (Exit.isFailure(exit) && (Cause.isInterrupted(exit.cause) || Cause.isDie(exit.cause))) return yield* exit;
         const reason: Policy.Reason = Exit.isFailure(exit)
           ? { _tag: "Failure", cause: exit.cause, metadata: Option.getOrUndefined(info) }
@@ -88,11 +114,20 @@ export const make = <
         const earliest =
           reason.metadata !== undefined && policy.retryAfter ? Policy.retryAfterTime(reason.metadata, now) : now;
         const next = yield* Effect.option(driver.next(reason));
-        if (Option.isNone(next)) return yield* exit;
+        if (Option.isNone(next)) {
+          yield* Effect.logDebug("HTTP retry budget exhausted").pipe(Effect.annotateLogs({ "http.attempt": number }));
+          return yield* exit;
+        }
         const remaining = earliest - (yield* Clock.currentTimeMillis);
         if (remaining > 0) yield* Effect.sleep(remaining);
+        yield* Effect.logDebug("HTTP retrying").pipe(Effect.annotateLogs({ "http.attempt": number + 1 }));
       }
-    }),
+    }).pipe(
+      Effect.onExit((exit) =>
+        Effect.logDebug("HTTP operation completed").pipe(Effect.annotateLogs({ "http.outcome": outcome(exit) })),
+      ),
+      Effect.withLogSpan("schema-http.operation"),
+    ),
   );
 
 export const execute: {

@@ -56,3 +56,20 @@ value; their encoded type must fit the selected representation. Header arrays an
 without joining them in the preserved representation. Standalone strings do not implicitly become whole
 field collections. Bodies similarly require an encoder/decoder, but not necessarily a schema: bytes and
 FormData already have useful runtime representations.
+
+## Response ownership and retries
+
+Keep unmatched-response errors finite and resource-free. The default drains before failing with metadata;
+a consumer needing the payload selects an explicit fallback decoder and gets an ordinary finite result.
+Handing out a live response in an error would move scope ownership across a failure boundary. That does not
+fit Operation's contract, so no retain-live-response option is added.
+
+Keep decoding within each attempt and cleanup before retry classification or delay. This performs decoder
+work even for a response a later attempt may replace, but avoids a second execution path that bypasses the
+consumer's selected decoder. Native per-attempt and whole-operation timeouts bound stalled readers or custom
+decoders. A decoding failure still closes its attempt scope before retry. The attempt supplies Scope to
+resourceful decoders and client middleware, just as its runtime already does.
+
+Logging uses Effect's Debug level and operation log spans. Only method, numeric status, attempt number and
+outcome category are supplied by the library. Consumers own log levels, sinks, annotations and tracing;
+no new configuration hierarchy or logging service is introduced.

@@ -151,7 +151,10 @@ failure becomes `DecodeError<E> { metadata, cause }`, preserving the selected de
 A failed drain is also a DecodeError. Defects and interruption retain their native Effect meaning.
 For service-specific unknown-response recovery, declare a final `Response.when(() => true, decoder)`
 that consumes the needed body inside the attempt's lifetime. A raw stream cannot safely escape an
-operation's finite-body scope.
+operation's finite-body scope. This is deliberate: returning a live response in an error would make a
+failure silently transfer cleanup obligations to the caller. A fallback can return a finite diagnostic
+value (text or bytes plus metadata) for later handling. It may also fail during decoding; that failure
+still closes the attempt scope. No automatic diagnostic payload buffering is performed.
 
 ## Operation and Policy
 
@@ -160,6 +163,8 @@ operation's finite-body scope.
 Effect-returning function. `map` and `mapEffect` compose domain interpretation after HTTP execution.
 
 The environment includes HttpClient and every input/decoder/client-transform/schedule requirement.
+Decoder and client-transform Scope requirements are supplied by the attempt itself; they do not leak
+into the caller's environment. Request-encoding and schedule dependencies remain caller-provided.
 Input schema ParseErrors and custom preparation errors are preserved. Transport failures are native
 HttpClient errors. Response failures carry metadata as described above. A timeout is a native
 TimeoutException. The static operation error union includes TimeoutException even when no attempt
@@ -177,7 +182,9 @@ Materialization occurs once per evaluation. The attempt loop then:
 
 Successful intermediate responses are decoded before retry classification. This lets the loop release
 all response resources before sleeping, but can perform schema work that a later attempt replaces.
-Requests whose decoding can hang should specify an attempt timeout. Credential computation and request
+There is deliberately no separate retry-before-decoding mode. Matched responses are decoded and
+unmatched responses are drained. Cleanup also runs after a decoder fails, before classification,
+sleeping or dispatching again. Requests whose decoding can hang should specify an attempt timeout. Credential computation and request
 encoding sit outside that timeout; use a total `Effect.timeout` when those phases also need a deadline.
 
 `Policy.none` performs one attempt. `Policy.make(schedule, { while, attemptTimeout, retryAfter })` opts
@@ -189,6 +196,20 @@ HTTP date; malformed/nonfinite values impose no extra delay. Disable it with `re
 Use ordinary request headers for HTTP cache hints. This library does not implement a protocol cache.
 Avoid accidentally combining multiple retry owners; a client transform containing its own retries has
 its own budget. Custom request bodies must be replayable when retries are enabled.
+
+## Logging
+
+HTTP operations emit native `Effect.logDebug` events for attempt start/completion, retry execution,
+retry-budget exhaustion, and operation completion. An operation log span supplies elapsed time. Events
+include only available method, attempt number, numeric status and outcome category; they do not include
+URLs, query strings, headers, cookies, bodies, decoded values or error causes. This also applies to
+preparation failures, whose schemas may otherwise expose input in their error messages.
+
+Use `Logger.withMinimumLogLevel(LogLevel.Debug)` on an Effect, or a native
+`Logger.minimumLogLevel(LogLevel.Debug)` layer. Destinations, formatting, correlation annotations,
+configuration and tracing remain ordinary Effect composition. There is no library logging switch,
+logger service or runtime. Debug events are normally filtered at Effect's default Info level. Consumer
+and provider loggers may independently log other information; these rules describe the library's events.
 
 ## Interaction
 
