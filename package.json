@@ -95,5 +95,13 @@
   "peerDependencies": {
     "@effect/platform": "^0.97.2",
     "effect": "^3.22.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/viell-dev/effect-schema-http.git"
+  },
+  "homepage": "https://github.com/viell-dev/effect-schema-http#readme",
+  "bugs": {
+    "url": "https://github.com/viell-dev/effect-schema-http/issues"
   }
 }
