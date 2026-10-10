@@ -13,11 +13,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://codeberg.org/viell/effect-schema-http.git"
+    "url": "git+https://github.com/viell-dev/effect-schema-http.git"
   },
-  "homepage": "https://codeberg.org/viell/effect-schema-http",
+  "homepage": "https://github.com/viell-dev/effect-schema-http#readme",
   "bugs": {
-    "url": "https://codeberg.org/viell/effect-schema-http/issues"
+    "url": "https://github.com/viell-dev/effect-schema-http/issues"
   },
   "engines": {
     "node": ">=20"

@@ -1,6 +1,6 @@
 # Contributing
 
-Issues and pull requests are welcome on [Codeberg](https://codeberg.org/viell/effect-schema-http).
+Issues and pull requests are welcome on [GitHub](https://github.com/viell-dev/effect-schema-http).
 
 ## Development setup
 
