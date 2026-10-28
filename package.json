@@ -1,0 +1,51 @@
+{
+  "name": "viell-effect-schema-http",
+  "version": "0.1.0-alpha.1",
+  "description": "",
+  "license": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/viell-dev/effect-schema-http.git"
+  },
+  "homepage": "https://github.com/viell-dev/effect-schema-http#readme",
+  "bugs": {
+    "url": "https://github.com/viell-dev/effect-schema-http/issues"
+  },
+  "author": "viell",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    }
+  },
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "packageManager": "pnpm@12.16.1",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "oxlint && eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [],
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
+    "effect": "^4.0.7",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-oxlint": "^1.90.0",
+    "oxlint": "^1.90.0",
+    "prettier": "^3.9.10",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  }
+}
