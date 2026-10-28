@@ -4,5 +4,8 @@
     "correctness": "error",
     "suspicious": "warn"
   },
-  "ignorePatterns": ["dist/**"]
+  "ignorePatterns": ["dist/**"],
+  "rules": {
+    "eslint/no-underscore-dangle": "off"
+  }
 }

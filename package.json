@@ -1,7 +1,8 @@
 {
   "name": "viell-effect-schema-http",
   "version": "0.1.0-alpha.1",
-  "description": "",
+  "private": true,
+  "description": "Consumer-owned HTTP contracts composed with Effect",
   "license": "",
   "repository": {
     "type": "git",
@@ -13,35 +14,92 @@
   },
   "author": "viell",
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/main.d.ts",
       "default": "./dist/main.js"
-    }
+    },
+    "./Body": {
+      "types": "./dist/http/Body.d.ts",
+      "default": "./dist/http/Body.js"
+    },
+    "./Interaction": {
+      "types": "./dist/concurrency/Interaction.d.ts",
+      "default": "./dist/concurrency/Interaction.js"
+    },
+    "./Operation": {
+      "types": "./dist/http/Operation.d.ts",
+      "default": "./dist/http/Operation.js"
+    },
+    "./Policy": {
+      "types": "./dist/http/Policy.d.ts",
+      "default": "./dist/http/Policy.js"
+    },
+    "./Request": {
+      "types": "./dist/http/Request.d.ts",
+      "default": "./dist/http/Request.js"
+    },
+    "./Response": {
+      "types": "./dist/http/Response.d.ts",
+      "default": "./dist/http/Response.js"
+    },
+    "./Transport": {
+      "types": "./dist/http/Transport.d.ts",
+      "default": "./dist/http/Transport.js"
+    },
+    "./UrlEncoding": {
+      "types": "./dist/http/UrlEncoding.d.ts",
+      "default": "./dist/http/UrlEncoding.js"
+    },
+    "./package.json": "./package.json"
   },
   "main": "./dist/main.js",
   "types": "./dist/main.d.ts",
   "packageManager": "pnpm@12.16.1",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "lint": "oxlint && eslint .",
+    "check": "run-p check:*",
+    "check:tsc": "tsc --noEmit",
+    "check:prettier": "prettier --check .",
+    "check:mdrefine": "mdrefine format --check",
+    "format": "run-s format:*",
+    "format:prettier": "prettier --write .",
+    "format:mdrefine": "mdrefine format --write",
+    "lint": "run-s lint:*",
+    "lint:oxlint": "oxlint",
+    "lint:eslint": "eslint .",
+    "lint:mdrefine": "mdrefine lint",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "test:watch": "vitest"
   },
   "files": [
-    "dist"
+    "dist",
+    "src",
+    "docs",
+    "examples",
+    "README.md",
+    "!dist/**/*.test.*",
+    "!src/**/*.test.ts"
   ],
-  "keywords": [],
+  "keywords": [
+    "effect",
+    "http",
+    "schema"
+  ],
+  "peerDependencies": {
+    "effect": "^4.0.7"
+  },
   "devDependencies": {
+    "@effect/vitest": "^4.0.7",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.6",
     "effect": "^4.0.7",
     "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-oxlint": "^1.90.0",
+    "mdrefine": "^0.5.0",
+    "npm-run-all2": "^9.0.4",
     "oxlint": "^1.90.0",
     "prettier": "^3.9.10",
     "typescript": "^6.0.3",

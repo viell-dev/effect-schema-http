@@ -1,0 +1,7 @@
+{
+  "$schema": "./node_modules/mdrefine/config.schema.json",
+  "extends": ["recommended", "github"],
+  "rules": {
+    "style/wrap": ["warn", { "width": 100 }],
+  },
+}
